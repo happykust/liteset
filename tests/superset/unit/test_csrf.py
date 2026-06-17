@@ -99,11 +99,11 @@ def test_create_csrf_middleware_returns_definition() -> None:
 # ---------------------------------------------------------------------------
 # CSRFMiddleware.__call__ response-dispatch tests
 # ---------------------------------------------------------------------------
-# The original Flask handler (superset_old/views/error_handling.py:147-155):
+# The CSRF error handler behaviour:
 #   - request.is_json (werkzeug always lowercases MIME) → 400 JSON error
 #   - otherwise → 302 redirect to /login
-# These tests verify the liteset port mirrors that behaviour exactly,
-# including for mixed-case Content-Type values that RFC 7231 §3.1.1.1 allows.
+# These tests verify that behaviour, including for mixed-case Content-Type
+# values that RFC 7231 §3.1.1.1 allows.
 # ---------------------------------------------------------------------------
 
 
@@ -157,11 +157,7 @@ async def _call_middleware(
 
 @pytest.mark.asyncio
 async def test_csrf_missing_token_json_lowercase_ct_returns_400() -> None:
-    """Lowercase application/json Content-Type with no token → 400 (not 302).
-
-    Mirrors: superset_old/views/error_handling.py:152 request.is_json →
-    show_http_exception(400).
-    """
+    """Lowercase application/json Content-Type with no token → 400 (not 302)."""
     result = await _call_middleware("application/json")
     assert result["status"] == 400
     payload = json.loads(result["body"])
@@ -198,10 +194,7 @@ async def test_csrf_missing_token_json_plus_suffix_returns_400() -> None:
 
 @pytest.mark.asyncio
 async def test_csrf_missing_token_non_json_returns_302() -> None:
-    """text/html Content-Type with no token → 302 redirect to login.
-
-    Mirrors: superset_old/views/error_handling.py:154 redirect_to_login().
-    """
+    """text/html Content-Type with no token → 302 redirect to login."""
     result = await _call_middleware("text/html")
     assert result["status"] == 302
     location = result["headers"].get(b"location", b"").decode()

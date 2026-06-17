@@ -88,8 +88,8 @@ class Base(AsyncAttrs, DeclarativeBase):
     Lazy-loading policy: relationships keep the default ``lazy="select"``
     because the models are SHARED between the async request path and the
     sync Celery/Jinja helpers — Celery tasks (e.g. ``tasks/sql_lab.py``'s
-    ``query.database``) legitimately lazy-load via sync sessions, 1:1 with
-    upstream.  ``lazy="raise"`` is therefore NOT applicable here; async
+    ``query.database``) legitimately lazy-load via sync sessions.
+    ``lazy="raise"`` is therefore NOT applicable here; async
     callers must eager-load (selectinload) or use ``awaitable_attrs``, and
     a missed load in async context fails loudly as MissingGreenlet, which
     the aiosqlite test suite reproduces deterministically.
@@ -101,9 +101,7 @@ class Base(AsyncAttrs, DeclarativeBase):
 metadata = Base.metadata
 
 
-# ---------------------------------------------------------------------------
 # Column type helpers
-# ---------------------------------------------------------------------------
 
 
 def MediumText() -> sa_types.Text:  # noqa: N802
@@ -117,10 +115,6 @@ def LongText() -> sa_types.Text:  # noqa: N802
 def convert_uuids(obj: Any) -> Any:
     """
     Convert UUID objects to str so we can use yaml.safe_dump
-
-    1:1 with ``superset_old/models/helpers.py::convert_uuids`` — recurses into
-    lists and dicts so a UUID nested inside a JSON-typed column value (e.g.
-    ``params``) is also stringified, not just top-level UUID columns.
     """
     if isinstance(obj, uuid.UUID):
         return str(obj)
@@ -193,9 +187,7 @@ class BinaryUUID(sa_types.TypeDecorator[uuid.UUID]):
             return None
 
 
-# ---------------------------------------------------------------------------
 # Mixins
-# ---------------------------------------------------------------------------
 
 
 class UUIDMixin:
@@ -303,11 +295,7 @@ class AuditMixinNullable:
         return ""
 
     def creator(self) -> str:
-        """Return the formatted name of the user who created this object.
-
-        Mirrors the upstream AuditMixin.creator() which is used by
-        Superset's entity serializers (e.g., Dashboard/Slice tags).
-        """
+        """Return the formatted name of the user who created this object."""
         if self.created_by:
             return str(self.created_by)
         return ""
@@ -318,8 +306,7 @@ class ImportExportMixin(UUIDMixin):
 
     The actual import/export logic lives in superset.importexport.
     This mixin provides the ``uuid`` column, the export field declarations
-    and a ported ``export_to_dict`` helper (see original at
-    superset_old/models/helpers.py:368).
+    and a ported ``export_to_dict`` helper.
     """
 
     export_parent: str | None = None
@@ -333,9 +320,6 @@ class ImportExportMixin(UUIDMixin):
     ) -> dict[str, Any]:
         """Return a schema description for the model — used by
         :func:`superset.utils.dict_import_export.export_schema_to_dict`.
-
-        Direct port of original ``ImportExportMixin.export_schema`` at
-        ``superset_old/models/helpers.py:217``.
         """
         parent_excludes: set[str] = set()
         if not include_parent_ref:
@@ -369,18 +353,16 @@ class ImportExportMixin(UUIDMixin):
     def params_dict(self) -> dict[Any, Any]:
         """Parsed ``params`` JSON column as a dict.
 
-        1:1 with ``superset_old/models/helpers.py:459-461``
-        (``json_to_dict(self.params)``).  Dashboard/Slice override this
-        with model-specific behaviour; models like ``SqlaTable`` that only
-        have a plain ``params`` column inherit this default.
+        Dashboard/Slice override this with model-specific behaviour; models
+        like ``SqlaTable`` that only have a plain ``params`` column inherit
+        this default.
         """
         raw = getattr(self, "params", None)
         if not raw:
             return {}
         try:
             # Strip trailing commas before closing braces/brackets so legacy
-            # rows written by older tools parse — 1:1 with upstream
-            # ``json_to_dict`` (helpers.py:140-145).
+            # rows written by older tools parse.
             val = re.sub(r",[ \t\r\n]+}", "}", raw)
             val = re.sub(r",[ \t\r\n]+\]", "]", val)
             return json.loads(val) or {}
@@ -388,37 +370,27 @@ class ImportExportMixin(UUIDMixin):
             return {}
 
     def override(self, obj: Any) -> None:
-        """Override the plain (``export_fields``) columns from ``obj``.
-
-        1:1 with ``superset_old/models/helpers.py:427-430``.
-        """
+        """Override the plain (``export_fields``) columns from ``obj``."""
         for field in obj.__class__.export_fields:
             setattr(self, field, getattr(obj, field))
 
     def copy(self) -> Any:
         """Create a relationship-free copy of this model.
 
-        1:1 with ``superset_old/models/helpers.py:432-436`` — used by the
-        legacy V0 dashboard export to detach objects before serialising.
+        Used by the legacy V0 dashboard export to detach objects before serialising.
         """
         new_obj = self.__class__()
         new_obj.override(self)
         return new_obj
 
     def alter_params(self, **kwargs: Any) -> None:
-        """Merge ``kwargs`` into the JSON ``params`` column.
-
-        1:1 with ``superset_old/models/helpers.py:438-441``.
-        """
+        """Merge ``kwargs`` into the JSON ``params`` column."""
         params = self.params_dict
         params.update(kwargs)
         self.params = json.dumps(params)  # type: ignore[attr-defined]
 
     def remove_params(self, param_to_remove: str) -> None:
-        """Drop a single key from the JSON ``params`` column.
-
-        1:1 with ``superset_old/models/helpers.py:443-446``.
-        """
+        """Drop a single key from the JSON ``params`` column."""
         params = self.params_dict
         params.pop(param_to_remove, None)
         self.params = json.dumps(params)  # type: ignore[attr-defined]
@@ -432,8 +404,7 @@ class ImportExportMixin(UUIDMixin):
     ) -> dict[Any, Any]:
         """Serialize the model to a plain dict using ``export_fields``.
 
-        Direct port of original ``ImportExportMixin.export_to_dict`` —
-        used by the theme/dashboard/chart export commands to render YAML.
+        Used by the theme/dashboard/chart export commands to render YAML.
         """
         export_fields = set(self.export_fields)
         if export_uuids:
@@ -486,16 +457,14 @@ class ImportExportMixin(UUIDMixin):
                 )
 
         # Convert UUID values (incl. those nested in JSON-typed columns) to
-        # plain strings so yaml/json serialise cleanly — 1:1 with upstream's
-        # ``return convert_uuids(dict_rep)``.
+        # plain strings so yaml/json serialise cleanly.
         return convert_uuids(dict_rep)
 
 
 class ExtraJSONMixin:
     """Provides an ``extra_json`` Text column with a parsed ``extra`` property.
 
-    Mirrors the original upstream mixin: ``extra_json`` stores a JSON
-    string, ``extra`` is a property that parses/serialises it as a dict.
+    ``extra_json`` stores a JSON string; ``extra`` parses/serialises it as a dict.
     """
 
     extra_json = sa.Column("extra_json", MediumText(), default="{}")
@@ -563,17 +532,13 @@ class CertificationMixin:
         return self.get_extra_dict().get("warning_markdown")
 
 
-# ---------------------------------------------------------------------------
 # Constants used by ExploreMixin
-# ---------------------------------------------------------------------------
 
 VIRTUAL_TABLE_ALIAS = "virtual_table"
 SERIES_LIMIT_SUBQ_ALIAS = "series_limit"
 DTTM_ALIAS = "__timestamp"
 
-# ---------------------------------------------------------------------------
-# Enums used by ExploreMixin (ported from superset_old/utils/core.py)
-# ---------------------------------------------------------------------------
+# Enums used by ExploreMixin
 
 
 class AdhocMetricExpressionType(StrEnum):
@@ -602,7 +567,7 @@ class FilterOperator(StrEnum):
     TEMPORAL_RANGE = "TEMPORAL_RANGE"
 
 
-# Type aliases matching superset_old/superset_typing.py
+# Type aliases
 AdhocMetric = dict[str, Any]
 AdhocColumn = dict[str, Any]
 ColumnTyping = Union[AdhocColumn, str]
@@ -614,16 +579,12 @@ QueryObjectDict = dict[str, Any]
 QueryObjectFilterClause = dict[str, Any]
 
 
-# ---------------------------------------------------------------------------
 # AdvancedDataTypeResponse (lightweight TypedDict replacement)
-# ---------------------------------------------------------------------------
 
 AdvancedDataTypeResponse = dict[str, Any]
 
 
-# ---------------------------------------------------------------------------
 # Query result types
-# ---------------------------------------------------------------------------
 
 
 class QueryResult:
@@ -677,9 +638,7 @@ class SqlaQuery(NamedTuple):
     sqla_query: Select
 
 
-# ---------------------------------------------------------------------------
-# validate_adhoc_subquery (no legacy WSGI dependency)
-# ---------------------------------------------------------------------------
+# validate_adhoc_subquery
 
 
 def validate_adhoc_subquery(
@@ -704,8 +663,6 @@ def validate_adhoc_subquery(
     parsed_statement = SQLStatement(sql, engine)
     if parsed_statement.has_subquery():
         if not feature_flag_manager.is_feature_enabled("ALLOW_ADHOC_SUBQUERY"):
-            # 1:1 with superset_old/models/helpers.py:127-131 — a SupersetError
-            # payload (not a ``message`` kwarg, which raises TypeError → 500).
             raise SupersetSecurityException(
                 SupersetError(
                     error_type=SupersetErrorType.ADHOC_SUBQUERY_NOT_ALLOWED_ERROR,
@@ -720,20 +677,12 @@ def validate_adhoc_subquery(
     return parsed_statement.format()
 
 
-# ---------------------------------------------------------------------------
 # ExploreMixin -- the core SQL generation engine for all chart queries
-# ---------------------------------------------------------------------------
 
 
 class ExploreMixin:
     """Allows any SQLAlchemy model (Query, Table, etc.) to power a chart
     inside /explore.
-
-    This is the core SQL-building mixin ported 1:1 from the original
-    ``superset_old/models/helpers.py``.  Legacy-stack integration
-    points (the request-scoped current user, ``superset.i18n._``, and the
-    app config) have been removed; the pure SQLAlchemy query-building logic
-    is preserved exactly.
     """
 
     sqla_aggregations: dict[str, Any] = {  # noqa: RUF012
@@ -845,10 +794,8 @@ class ExploreMixin:
     ) -> list[TextClause]:
         """RLS hook for ``ExploreMixin``-only datasources (SQL Lab Query).
 
-        1:1 with
-        ``superset_old.models.helpers.ExploreMixin.get_sqla_row_level_filters``
-        (line 823): RLS is *not* applicable for datasources of type
-        ``query`` (a SQL Lab result), so this returns an empty list.
+        RLS is *not* applicable for datasources of type ``query`` (a SQL Lab
+        result), so this returns an empty list.
 
         The real RLS implementation lives on
         :class:`superset.models.connectors.BaseDatasource` — which
@@ -2130,9 +2077,8 @@ class ExploreMixin:
 
                 # Get ADVANCED_DATA_TYPES from config when needed — the
                 # registry lives on the Pydantic settings field
-                # ``advanced_data_types`` (1:1 with upstream
-                # ``app.config.get("ADVANCED_DATA_TYPES", {})``). Resolved
-                # LAZILY: constructing ``SupersetSettings()`` runs the full
+                # ``advanced_data_types``. Resolved LAZILY: constructing
+                # ``SupersetSettings()`` runs the full
                 # Pydantic validation chain (~10ms — os.environ scan,
                 # version_info.json read), far too costly to pay per filter
                 # on the hot query path; the registry is only needed when the
@@ -2274,8 +2220,7 @@ class ExploreMixin:
                             f"Invalid filter operation type: {op}"
                         )
         # ── Row-Level Security ──────────────────────────────────────
-        # Two paths exist for RLS clause injection (1:1 with original
-        # behaviour, but with concurrency-safe push-down added):
+        # Two paths exist for RLS clause injection:
         #
         # 1. *Pull* (default, when ``rls_filters is None``):
         #    delegate to :meth:`get_sqla_row_level_filters` which

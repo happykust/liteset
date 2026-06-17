@@ -15,29 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Apache Hive engine spec -- sync-compatible.
-
-Ported 1:1 from ``superset_old/db_engine_specs/hive.py`` with legacy
-imports removed.  ``HiveEngineSpec`` subclasses ``PrestoEngineSpec`` (1:1
-with upstream) so Hive reuses the Presto partition / ``expand_data`` /
-column-introspection behaviour.
-
-The upstream request globals / ``app.config`` are replaced with the
-port's established equivalents:
-
-* ``app.config["DB_POLL_INTERVAL_SECONDS"]`` -> ``SupersetSettings``.
-* ``db.session.commit()`` -> the ``query`` ORM object's own (sync) session,
-  resolved via ``object_session`` (same as the Trino port).
-* ``cache_manager.cache.memoize`` -> ``cache_manager.sync_cache`` manual
-  get/set (matching the ClickHouse / Presto ports).
-
-The CSV/Parquet-to-Hive upload path (``upload_to_s3`` + ``df_to_sql``) is
-intentionally omitted: it is a legacy-stack-only feature that depends on
-the request-scoped current user, ``boto3``, ``UPLOAD_FOLDER`` and the
-``CSV_TO_HIVE_UPLOAD_DIRECTORY_FUNC`` config callable, none of which are
-wired in the port's sync metadata / SQL-Lab paths.  Likewise the
-pyhive-only ``patch`` classmethod is preserved (driver monkey-patch).
-"""
+"""Apache Hive database engine spec."""
 
 from __future__ import annotations
 
@@ -68,8 +46,6 @@ logger = logging.getLogger(__name__)
 
 
 class HiveEngineSpec(PrestoEngineSpec):
-    """Reuses PrestoEngineSpec functionality."""
-
     engine = "hive"
     engine_name = "Apache Hive"
     max_column_name_length = 767
@@ -79,8 +55,6 @@ class HiveEngineSpec(PrestoEngineSpec):
     supports_dynamic_schema = True
     supports_cross_catalog_queries = False
 
-    # When running `SHOW FUNCTIONS`, what is the name of the column with the
-    # function names?
     _show_functions_column = "tab_name"
 
     # pylint: disable=line-too-long
@@ -98,15 +72,10 @@ class HiveEngineSpec(PrestoEngineSpec):
         TimeGrain.WEEK_STARTING_SUNDAY: "date_format(date_add({col}, -INT(from_unixtime(unix_timestamp({col}), 'u'))), 'yyyy-MM-dd 00:00:00')",  # noqa: E501
     }
 
-    # Scoping regex at class level to avoid recompiling
-    # 17/02/07 19:36:38 INFO ql.Driver: Total jobs = 5
     jobs_stats_r = re.compile(r".*INFO.*Total jobs = (?P<max_jobs>[0-9]+)")
-    # 17/02/07 19:37:08 INFO ql.Driver: Launching Job 2 out of 5
     launching_job_r = re.compile(
         ".*INFO.*Launching Job (?P<job_number>[0-9]+) out of (?P<max_jobs>[0-9]+)"
     )
-    # 17/02/07 19:36:58 INFO exec.Task: 2017-02-07 19:36:58,152 Stage-18
-    # map = 0%,  reduce = 0%
     stage_progress_r = re.compile(
         r".*INFO.*Stage-(?P<stage_number>[0-9]+).*"
         r"map = (?P<map_progress>[0-9]+)%.*"
@@ -176,9 +145,6 @@ class HiveEngineSpec(PrestoEngineSpec):
         sqlalchemy_uri: URL,
         connect_args: dict[str, Any],
     ) -> str | None:
-        """
-        Return the configured schema.
-        """
         return parse.unquote(sqlalchemy_uri.database)
 
     @classmethod
@@ -233,7 +199,6 @@ class HiveEngineSpec(PrestoEngineSpec):
     def handle_cursor(  # pylint: disable=too-many-locals  # noqa: C901
         cls, cursor: Any, query: Query
     ) -> None:
-        """Updates progress information"""
         # pylint: disable=import-outside-toplevel
         from pyhive import hive
         from sqlalchemy.orm import object_session
@@ -251,9 +216,6 @@ class HiveEngineSpec(PrestoEngineSpec):
         query_id = query.id
         session = object_session(query)
         while polled.operationState in unfinished_states:
-            # Queries don't terminate when user clicks the STOP button on SQL LAB.
-            # Refresh session so that the `query.status` modified in stop_query in
-            # views/core.py is reflected here.
             if session is not None:
                 session.refresh(query)
                 query = session.query(type(query)).filter_by(id=query_id).one()
@@ -291,9 +253,6 @@ class HiveEngineSpec(PrestoEngineSpec):
                         logger.info("Query %s: Job id: %s", str(query_id), str(job_id))
                         needs_commit = True
                 if job_id and len(log_lines) > last_log_line:
-                    # Wait for job id before logging things out
-                    # this allows for prefixing all log lines and becoming
-                    # searchable in something like Kibana
                     for l in log_lines[last_log_line:]:  # noqa: E741
                         logger.info("Query %s: [%s] %s", str(query_id), str(job_id), l)
                     last_log_line = len(log_lines)
@@ -356,7 +315,7 @@ class HiveEngineSpec(PrestoEngineSpec):
 
     @classmethod
     def _latest_partition_from_df(cls, df: Any) -> list[str] | None:
-        """Hive partitions look like ds={partition name}/ds={partition name}"""
+        # Hive partitions look like ds={partition name}/ds={partition name}
         if not df.empty:
             return [
                 partition_str.split("=")[1]
@@ -438,19 +397,8 @@ class HiveEngineSpec(PrestoEngineSpec):
 
     @classmethod
     def get_function_names(cls, database: Database) -> list[str]:
-        """
-        Get a list of function names that are able to be called on the database.
-        Used for SQL Lab autocomplete.
-
-        Results are cached per-database for SQL Lab autocomplete — the business
-        equivalent of upstream's ``@cache_manager.cache.memoize()``. The port's
-        cache layer exposes no upstream ``memoize``, so this uses the sync
-        cache slot (``cache_manager.sync_cache``) directly with a manual
-        get/set, matching the ClickHouse / Presto ports.
-
-        :param database: The database to get functions for
-        :return: A list of function names useable in the database
-        """
+        """Results cached per-database via sync_cache (manual get/set);
+        no upstream memoize shim available."""
         from superset.extensions import cache_manager
 
         cache_key = f"db:{getattr(database, 'id', None)}:hive:function_names"
@@ -471,7 +419,6 @@ class HiveEngineSpec(PrestoEngineSpec):
 
     @classmethod
     def _fetch_function_names(cls, database: Database) -> list[str]:
-        """Query ``SHOW FUNCTIONS`` (uncached); see :meth:`get_function_names`."""
         df = database.get_df("SHOW FUNCTIONS")
         if cls._show_functions_column in df:
             return df[cls._show_functions_column].tolist()
@@ -484,23 +431,13 @@ class HiveEngineSpec(PrestoEngineSpec):
             ", ".join(columns),
             exc_info=True,
         )
-        # if the results have a single column, use that
         if len(columns) == 1:
             return df[columns[0]].tolist()
 
-        # otherwise, return no function names to prevent errors
         return []
 
     @classmethod
     def has_implicit_cancel(cls) -> bool:
-        """
-        Return True if the live cursor handles the implicit cancelation of the query,
-        False otherwise.
-
-        :return: Whether the live cursor implicitly cancels the query
-        :see: handle_cursor
-        """
-
         return True
 
     @classmethod
@@ -544,12 +481,8 @@ class HiveEngineSpec(PrestoEngineSpec):
         database: Database,
         schema: str | None = None,
     ) -> Any:
-        """Port equivalent of the original ``Database.get_raw_connection``.
-
-        Reuses the Presto port's ``_raw_connection`` helper (sync engine +
-        prequeries) — the original Hive ``get_view_names`` likewise relies on
-        the inherited raw-connection behaviour.
-        """
+        """Reuses the Presto port's ``_raw_connection`` helper
+        (sync engine + prequeries)."""
         from superset.db_engine_specs.presto import _raw_connection
 
         return _raw_connection(database, schema=schema)

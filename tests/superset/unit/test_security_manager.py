@@ -546,8 +546,8 @@ async def test_can_access_dashboard_rbac_published_no_matching_role(mock_dao):
 async def test_has_access_includes_group_roles(manager, mock_dao):
     """A user with no direct roles is granted via a group-inherited role.
 
-    1:1 with FAB ``_has_view_access`` which resolves permissions across both
-    ``ab_user_role`` and ``ab_user_group`` → ``ab_group_role``.
+    Resolves permissions across both ``ab_user_role`` and ``ab_user_group``
+    → ``ab_group_role``.
     """
     user = MockUser(id=5, roles=[])  # no direct roles
     mock_dao.get_user_groups = AsyncMock(return_value=[(10, "grp1")])
@@ -585,7 +585,7 @@ async def test_has_access_combines_direct_and_group_roles(manager, mock_dao):
 
 def test_get_schema_perm_object_uses_name(manager):
     """A Database OBJECT resolves via ``str(database)`` → name
-    (``verbose_name or database_name``), 1:1 with the original access check.
+    (``verbose_name or database_name``).
     """
     db = MagicMock()
     db.__str__.return_value = "Prod DB"  # mimics Database.__repr__ → name
@@ -616,7 +616,7 @@ async def test_get_catalogs_accessible_by_user_admin_hierarchical_true(
 ) -> None:
     """Admin gets all catalogs when hierarchical=True (via can_access_database).
 
-    1:1 with original: ``if hierarchical and self.can_access_database(database)``
+    ``if hierarchical and self.can_access_database(database)``
     short-circuits for admin because can_access_database includes is_admin check.
     """
     admin_user = MockUser(roles=[MockRole()])
@@ -636,9 +636,8 @@ async def test_get_catalogs_accessible_by_user_admin_hierarchical_false_no_perms
 ) -> None:
     """Admin is NOT exempt when hierarchical=False; perm filtering applies.
 
-    Original (superset_old/security/manager.py:983): the admin shortcut is
-    ``if hierarchical and self.can_access_database(database)``, so with
-    hierarchical=False the shortcut is skipped even for admins and the full
+    The admin shortcut is ``if hierarchical and self.can_access_database(database)``,
+    so with hierarchical=False the shortcut is skipped even for admins and the full
     catalog_access / schema_access / datasource_access filtering runs.
     """
     admin_user = MockUser(roles=[MockRole()])

@@ -33,7 +33,7 @@ from sqlalchemy import create_engine, pool
 
 logger = logging.getLogger("alembic.env")
 
-# Apply the logging configuration from alembic.ini, 1:1 with upstream
+# Apply the logging configuration from alembic.ini:
 # ``if not ALEMBIC_SKIP_LOG_CONFIG: fileConfig(config.config_file_name)``. The
 # settings read is guarded so migrations still run if config can't be resolved.
 try:  # pragma: no cover — best-effort logging setup
@@ -89,7 +89,6 @@ def _load_models_metadata() -> Any:
     return Base.metadata
 
 
-# target_metadata is used by autogenerate; None during upgrade/downgrade
 target_metadata = None
 
 
@@ -110,8 +109,8 @@ def _process_revision_directives(
 ) -> None:
     """Skip generating an empty migration on ``--autogenerate``.
 
-    1:1 with upstream env.py — when the schema is unchanged, clear the
-    directives so Alembic doesn't write an empty revision file.
+    When the schema is unchanged, clear the directives so Alembic doesn't
+    write an empty revision file.
     """
     if getattr(context.config.cmd_opts, "autogenerate", False):
         script = directives[0]
@@ -137,9 +136,9 @@ def run_migrations_online() -> None:
     url = _get_sync_url()
     connectable = create_engine(url, poolclass=pool.NullPool)
     with connectable.connect() as connection:
-        # 1:1 with upstream env.py: sqlite/mysql lack reliable transactional
-        # DDL, so run each migration in its own transaction to avoid a failed
-        # migration leaving a half-applied schema.
+        # sqlite/mysql lack reliable transactional DDL, so run each migration
+        # in its own transaction to avoid a failed migration leaving a
+        # half-applied schema.
         if connectable.name in ("sqlite", "mysql"):
             context.configure(
                 connection=connection,

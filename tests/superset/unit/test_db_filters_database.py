@@ -16,13 +16,12 @@
 # under the License.
 """Unit tests for database-access filter helpers in ``superset/db/filters.py``.
 
-Mirrors the original ``superset_old/databases/filters.py::DatabaseFilter``:
+Covers ``DatabaseFilter`` behaviour:
   * ``_databases_from_view_menus`` extracts DB names from view-menu strings.
   * ``_apply_extra_dynamic_database_filters`` adapts the
     ``EXTRA_DYNAMIC_QUERY_FILTERS["databases"]`` callable for async use.
   * ``database_access_filters`` applies dynamic clauses BEFORE the RBAC check
-    so that even all-DB-access users receive any configured dynamic restriction
-    (original lines 52-59 of DatabaseFilter.apply).
+    so that even all-DB-access users receive any configured dynamic restriction.
 """
 
 from __future__ import annotations
@@ -46,8 +45,7 @@ from superset.models.core import Database
 def test_databases_from_view_menus_datasource_access() -> None:
     """Extracts DB names from datasource_access-style view menu strings.
 
-    Mirrors ``superset_old/databases/filters.py::can_access_databases`` which
-    does ``vm.split(".")[0][1:-1]`` over the raw view-menu name set.
+    Uses ``vm.split(".")[0][1:-1]`` over the raw view-menu name set.
     """
     names = _databases_from_view_menus(
         {
@@ -296,9 +294,8 @@ async def test_database_access_filters_all_db_access_with_dynamic() -> None:
 async def test_database_access_filters_restricted_user_rbac_clauses() -> None:
     """Restricted user gets dynamic clauses PLUS the RBAC OR clause.
 
-    Mirrors ``superset_old/databases/filters.py:DatabaseFilter.apply`` lines
-    61-75: ``database_perms`` and ``database_names`` derived from view-menu
-    names are combined into a single OR and appended after any dynamic clauses.
+    ``database_perms`` and ``database_names`` derived from view-menu names are
+    combined into a single OR and appended after any dynamic clauses.
     """
     sm = _make_security_manager(
         can_access_all_databases=False,

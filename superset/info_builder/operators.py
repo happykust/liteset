@@ -55,10 +55,6 @@ from sqlalchemy.orm.interfaces import (
     ONETOMANY,
 )
 
-# ---------------------------------------------------------------------------
-# Operator catalog (arg_name → display name)
-# ---------------------------------------------------------------------------
-
 _OP_NAMES: dict[str, str] = {
     "sw": "Starts with",
     "nsw": "Not Starts with",
@@ -79,73 +75,37 @@ _OP_NAMES: dict[str, str] = {
 
 
 def _ops(*arg_names: str) -> list[dict[str, str]]:
-    """Build an ordered ``[{name, operator}, ...]`` list from ``arg_names``."""
     return [{"name": _OP_NAMES[arg], "operator": arg} for arg in arg_names]
 
 
-# ---------------------------------------------------------------------------
-# Per-type operator lists — order matches upstream SQLAFilterConverter output
-# ---------------------------------------------------------------------------
-
-#: Many-to-one / one-to-one relationship operators.
 _OPS_REL_SINGULAR: list[dict[str, str]] = _ops("rel_o_m", "nrel_o_m")
-
-#: Many-to-many / one-to-many relationship operators.
 _OPS_REL_PLURAL: list[dict[str, str]] = _ops("rel_m_m")
-
-#: Enum column operators.
 _OPS_ENUM: list[dict[str, str]] = _ops("eq", "neq")
-
-#: Free-text columns (``Text``, ``MediumText``, ``LongText``).
 _OPS_TEXT: list[dict[str, str]] = _ops(
     "sw", "ew", "ct", "eq", "nsw", "new", "nct", "neq", "in", "not_in"
 )
-
-#: Binary blobs — like text but no IN/NOT IN.
 _OPS_BINARY: list[dict[str, str]] = _ops(
     "sw", "ew", "ct", "eq", "nsw", "new", "nct", "neq"
 )
-
-#: ``String``/``UUIDType`` columns (same shape as text).
 _OPS_STRING: list[dict[str, str]] = _ops(
     "sw", "ew", "ct", "eq", "nsw", "new", "nct", "neq", "in", "not_in"
 )
-
-#: Numeric columns (``Integer``/``BigInteger``/``Float``/``Numeric``…).
 _OPS_NUMERIC: list[dict[str, str]] = _ops("eq", "gt", "lt", "neq", "in", "not_in")
-
-#: Date columns — comparable but no IN/NOT IN.
 _OPS_DATE: list[dict[str, str]] = _ops("eq", "gt", "lt", "neq")
-
-#: Boolean columns.
 _OPS_BOOLEAN: list[dict[str, str]] = _ops("eq", "neq")
-
-#: DateTime columns — same shape as date.
 _OPS_DATETIME: list[dict[str, str]] = _ops("eq", "gt", "lt", "neq")
-
-#: JSON columns — like text but no IN/NOT IN.
 _OPS_JSON: list[dict[str, str]] = _ops(
     "sw", "ew", "ct", "eq", "nsw", "new", "nct", "neq"
 )
 
 
-# ---------------------------------------------------------------------------
-# Lazy import of UUIDType — kept optional so the module loads even when
-# ``sqlalchemy_utils`` isn't installed (e.g. in a thin test environment).
-# ---------------------------------------------------------------------------
-
-
+# UUIDType is optional — sqlalchemy_utils may not be installed in thin test envs.
 def _uuid_type() -> type | None:
     try:
         from sqlalchemy_utils import UUIDType
     except ImportError:  # pragma: no cover - sqlalchemy_utils is a hard dep
         return None
     return UUIDType
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def operators_for_column(model_cls: type, column_name: str) -> list[dict[str, str]]:
@@ -176,23 +136,17 @@ def operators_for_column(model_cls: type, column_name: str) -> list[dict[str, st
     """
     mapper: Any = sa.inspect(model_cls)
 
-    # --- 1) Relationships ---------------------------------------------------
     if column_name in mapper.relationships:
         rel = mapper.relationships[column_name]
         direction = rel.direction
         if direction is MANYTOONE:
-            # Upstream treats ``uselist=False`` (one-to-one) and the
-            # ordinary many-to-one relationship the same — both yield the
-            # ``rel_o_m``/``nrel_o_m`` pair.
             return list(_OPS_REL_SINGULAR)
         if direction is MANYTOMANY:
             return list(_OPS_REL_PLURAL)
         if direction is ONETOMANY:
             return list(_OPS_REL_PLURAL)
-        # Unknown direction — be conservative.
         return []
 
-    # --- 2) Plain columns ---------------------------------------------------
     column = mapper.columns[column_name]
     return _operators_for_type(column.type)
 
@@ -200,7 +154,7 @@ def operators_for_column(model_cls: type, column_name: str) -> list[dict[str, st
 def _operators_for_type(col_type: Any) -> list[dict[str, str]]:  # noqa: C901  # complex business logic
     """First-match-wins resolution of a column ``type`` to its op list.
 
-    The check order mirrors the upstream
+    The check order follows
     ``SQLAFilterConverter.conversion_table`` — in particular ``Text`` is
     checked **before** ``String`` so the
     Superset ``MediumText``/``LongText`` variants (which are
@@ -209,53 +163,43 @@ def _operators_for_type(col_type: Any) -> list[dict[str, str]]:  # noqa: C901  #
     identical, but this preserves the canonical lookup that the snapshot
     fixtures encode.
     """
-    # Enums short-circuit the type ladder.
     if isinstance(col_type, sa.Enum):
         return list(_OPS_ENUM)
 
-    # Text columns (Text, MediumText, LongText) — checked before String
-    # because ``sa.Text`` subclasses ``sa.String`` in SQLAlchemy.
+    # Text checked before String because sa.Text subclasses sa.String;
+    # MediumText/LongText are Text variants that must not fall through to _OPS_STRING.
     if isinstance(col_type, sa.Text):
         return list(_OPS_TEXT)
 
-    # Binary blobs — narrower than text (no IN/NOT IN).
     if isinstance(col_type, sa.LargeBinary):
         return list(_OPS_BINARY)
 
-    # Plain strings + UUIDType (string-shaped TypeDecorator).
     uuid_type = _uuid_type()
     if isinstance(col_type, sa.String) or (
         uuid_type is not None and isinstance(col_type, uuid_type)
     ):
         return list(_OPS_STRING)
 
-    # Boolean — checked before numeric because ``sa.Boolean`` historically
-    # presented as an integer-shaped value on some backends, and we want
-    # the boolean-specific ``eq/neq`` pair.
+    # Boolean checked before Integer: sa.Boolean presents as integer-shaped on some
+    # backends, and we need the boolean-specific eq/neq pair.
     if isinstance(col_type, sa.Boolean):
         return list(_OPS_BOOLEAN)
 
-    # Integer family.
     if isinstance(col_type, sa.Integer):
         return list(_OPS_NUMERIC)
 
-    # Floats / Numeric / Decimal.
     if isinstance(col_type, sa.Float):
         return list(_OPS_NUMERIC)
     if isinstance(col_type, sa.Numeric):
         return list(_OPS_NUMERIC)
 
-    # DateTime checked before Date because ``sa.DateTime`` does *not*
-    # subclass ``sa.Date`` — but some custom decorators do.
+    # DateTime checked before Date: sa.DateTime does not subclass sa.Date.
     if isinstance(col_type, sa.DateTime):
         return list(_OPS_DATETIME)
     if isinstance(col_type, sa.Date):
         return list(_OPS_DATE)
 
-    # JSON columns (sa.JSON, JSONB-backed variants).
     if isinstance(col_type, sa.JSON):
         return list(_OPS_JSON)
 
-    # Unknown / unrecognised — surface an empty list, mirroring the
-    # upstream behaviour of silently dropping the column from the catalog.
     return []

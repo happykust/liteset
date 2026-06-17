@@ -16,38 +16,18 @@
 # under the License.
 """Thumbnail generation Celery tasks for Superset.
 
-Port of ``superset_old/tasks/thumbnails.py`` to the Liteset (async +
-Litestar) runtime.  Celery workers themselves stay synchronous: each
-task opens a sync :class:`~sqlalchemy.orm.Session` (driven by
-:func:`superset.db.session.get_sync_session`) to load the chart /
-dashboard model and resolve the executor user, then drives the
-synchronous Selenium / Playwright capture path through
-:class:`~superset.utils.screenshots.ChartScreenshot` /
-:class:`~superset.utils.screenshots.DashboardScreenshot`.
+Workers stay synchronous: each task opens a sync Session to load the model,
+then drives the Selenium/Playwright capture path via ChartScreenshot /
+DashboardScreenshot.
 
-Key adaptations vs. the original:
-
-* ``security_manager.find_user(username)`` is replaced with a direct
-  sync ``SELECT`` against the ``ab_user`` table (eager-loading
-  ``roles`` + ``groups`` so subsequent ``is_admin`` / RBAC checks made
-  by the screenshot pipeline never trip a lazy load).
-* The request-scoped ``override_user`` context manager is replaced by
-  :func:`superset.utils.core.override_user`, which writes the executor user
-  to a per-task :class:`~contextvars.ContextVar` and restores the previous
-  value on exit, so the binding never leaks between Celery tasks re-using the
-  same worker thread.
-* ``app.config["THUMBNAIL_EXECUTORS"]`` is read off
-  :class:`SupersetSettings` (cached in
-  :func:`superset.utils.webdriver.cached_settings`); the upstream default of
-  ``[ExecutorType.CURRENT_USER]`` lives in the config, exactly as in the
-  original.
-* The ``thumbnail_cache`` accessor goes through the
-  ``CacheManager.sync_thumbnail_cache`` proxy exposed by
-  :mod:`superset.utils.screenshots`; the original used
-  ``superset.thumbnail_cache`` directly.
-* ``security_manager.get_guest_user_from_token`` is replaced by
-  :class:`superset.security.guest.GuestUser.from_token_payload`, which
-  takes the same dict shape the original ``GuestToken`` produced.
+Key adaptations:
+* ``security_manager.find_user`` replaced with a direct sync SELECT that
+  eager-loads ``roles`` + ``groups`` — lazy loading against a closed session
+  raises ``DetachedInstanceError`` inside the webdriver thread.
+* ``override_user`` writes the executor user to a per-task ContextVar and
+  restores it on exit — the binding never leaks across tasks on the same thread.
+* Guest token decoded via ``GuestUser.from_token_payload`` (same dict shape
+  the original ``GuestToken`` produced).
 """
 
 from __future__ import annotations
@@ -63,23 +43,15 @@ from superset.utils.webdriver import cached_settings
 
 logger = logging.getLogger(__name__)
 
-# Type alias matching the original webdriver.WindowSize.
 WindowSize = tuple[int, int]
 
 
-# ---------------------------------------------------------------------------
-# Helpers (sync — invoked from inside the Celery worker)
-# ---------------------------------------------------------------------------
-
-
 def _find_user_by_username(session: Any, username: str) -> Any | None:
-    """Return the :class:`User` for ``username`` (eager-loading
-    ``roles`` + ``groups``), or ``None`` if no such user exists.
+    """Return the User for ``username`` with roles + groups eager-loaded.
 
-    Eager loading matters because the screenshot pipeline calls
-    :meth:`MachineAuthProvider.get_auth_cookies` which serialises
-    ``user.roles`` into the JWT payload — a lazy load against an
-    already-closed session would raise ``DetachedInstanceError`` deep
+    Eager loading is required: the screenshot pipeline serialises ``user.roles``
+    into the JWT payload via MachineAuthProvider.get_auth_cookies, and a lazy
+    load against an already-closed session raises DetachedInstanceError deep
     inside the webdriver thread.
     """
     from superset.models.security import User
@@ -96,21 +68,13 @@ def _find_user_by_username(session: Any, username: str) -> Any | None:
 
 
 def _compute_digest(model: Any) -> str | None:
-    """Return the digest string used as part of the screenshot cache key.
+    """Return the model digest for the screenshot cache key.
 
-    Delegates to ``Slice.digest`` / ``Dashboard.digest`` (computed by
-    :func:`superset.thumbnails.digest.get_chart_digest` /
-    :func:`superset.thumbnails.digest.get_dashboard_digest`) so the cache
-    key here matches the one embedded in the model's ``thumbnail_url``
-    property exactly — preserving the original invariant
+    Delegates to ``Slice.digest`` / ``Dashboard.digest`` so the cache key
+    matches the one in ``thumbnail_url`` — preserving the invariant
     ``thumbnail.url == cache.lookup(model.digest)``.
     """
     return getattr(model, "digest", None)
-
-
-# ---------------------------------------------------------------------------
-# Celery tasks
-# ---------------------------------------------------------------------------
 
 
 @celery_app.task(
@@ -125,8 +89,6 @@ def cache_chart_thumbnail(  # noqa: C901
     thumb_size: Optional[WindowSize] = None,
 ) -> None:
     """Render a chart screenshot and cache it under the canonical key.
-
-    1:1 port of ``superset_old.tasks.thumbnails.cache_chart_thumbnail``.
 
     :param current_user: Username of the user that initiated the task
         (forwarded as the ``CURRENT_USER`` candidate to
@@ -200,8 +162,6 @@ def cache_dashboard_thumbnail(  # noqa: C901
     cache_key: str | None = None,
 ) -> None:
     """Render a dashboard screenshot and cache it under the canonical key.
-
-    1:1 port of ``superset_old.tasks.thumbnails.cache_dashboard_thumbnail``.
 
     :param current_user: Username of the user that initiated the task.
     :param dashboard_id: Primary key of the
@@ -279,7 +239,6 @@ def cache_dashboard_screenshot(  # noqa: C901
 ) -> None:
     """Render a dashboard screenshot for a *given URL* (download flow).
 
-    1:1 port of ``superset_old.tasks.thumbnails.cache_dashboard_screenshot``.
     Used by the dashboard download-as-PNG / PDF flow: the URL is
     constructed by the controller (with ``anchor``, ``activeTabs``,
     ``dataMask`` query parameters baked in) and passed straight through
@@ -318,12 +277,7 @@ def cache_dashboard_screenshot(  # noqa: C901
         logger.info("Caching dashboard: %s", dashboard_url)
 
         current_user_obj: Any
-        # Requests from Embedded should always use the Guest user.
         if guest_token:
-            # Embedded / guest flow — mint the in-process user record
-            # directly from the JWT payload.  The original code
-            # called ``security_manager.get_guest_user_from_token``
-            # which built the same shape via the upstream user model.
             current_user_obj = GuestUser.from_token_payload(guest_token)
         else:
             _, exec_username = get_executor(

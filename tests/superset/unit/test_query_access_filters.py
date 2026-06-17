@@ -16,10 +16,9 @@
 # under the License.
 """Unit tests for ``query_access_filters`` (SQL Lab query RBAC scoping).
 
-Mirrors ``superset_old/queries/filters.py::QueryFilter``: a user holding the
-``all_query_access`` permission (gated through
-``security_manager.can_access_all_queries``) sees every query; everyone else is
-scoped to the queries they own (``Query.user_id == <id>``).
+A user holding the ``all_query_access`` permission (gated through
+``security_manager.can_access_all_queries``) sees every query; everyone else
+is scoped to the queries they own (``Query.user_id == <id>``).
 """
 
 from __future__ import annotations
@@ -62,7 +61,6 @@ async def test_query_access_filters_without_permission_scoped_to_owner():
     filters = await query_access_filters(sm, user)
 
     assert len(filters) == 1
-    # The scoped branch must constrain on the owning user's id.
     expected = Query.user_id == 42
     assert str(filters[0]) == str(expected)
     sm.can_access_all_queries.assert_awaited_once_with(user=user)

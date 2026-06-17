@@ -14,8 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Key-value store type definitions -- ported 1:1 from
-superset_old/key_value/types.py.
+"""Key-value store type definitions.
 
 Codecs are NOT duplicated here; the canonical codec hierarchy lives in
 ``superset.key_value.manager`` (KeyValueCodec, JsonCodec, PickleCodec).
@@ -44,7 +43,7 @@ class KeyValueResource(enum.StrEnum):
     """Namespaces for key-value entries.
 
     Each resource maps to a distinct logical store within the ``key_value``
-    table.  Ported 1:1 from ``superset_old/key_value/types.py``.
+    table.
     """
 
     APP = "app"
@@ -59,7 +58,6 @@ class SharedKey(enum.StrEnum):
     """Well-known key names shared across subsystems.
 
     Used for storing salts used by permalink hashing.
-    Ported 1:1 from ``superset_old/key_value/types.py``.
     """
 
     DASHBOARD_PERMALINK_SALT = "dashboard_permalink_salt"

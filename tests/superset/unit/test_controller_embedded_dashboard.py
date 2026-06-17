@@ -14,8 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Tests for EmbeddedDashboardController."""
-
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -24,15 +22,9 @@ import pytest
 
 from superset.controllers.embedded_dashboard import EmbeddedDashboardController
 
-# ---------------------------------------------------------------------------
-# Helpers — Litestar decorators wrap methods; access the raw fn for unit tests.
-# ---------------------------------------------------------------------------
-
 
 def _get_raw_method(controller_cls: type, method_name: str):
-    """Return the underlying async function from a Litestar-decorated controller
-    method.
-    """
+    """Litestar decorators wrap methods; unwrap to the raw fn for unit tests."""
     handler = getattr(controller_cls, method_name)
     if hasattr(handler, "fn"):
         return handler.fn
@@ -48,11 +40,7 @@ def controller():
 
 
 def test_embedded_disabled(monkeypatch):
-    """EMBEDDED_SUPERSET off → controller-level guard raises 404.
-
-    Mirrors the original ``@before_request ensure_embedded_enabled`` hook
-    (superset_old/embedded/api.py:43-46) which gates every route with a 404.
-    """
+    """EMBEDDED_SUPERSET off → controller-level guard raises 404."""
     from litestar.exceptions import NotFoundException
 
     from superset.utils.feature_flags import feature_flag_manager
@@ -130,12 +118,9 @@ def test_controller_tags():
 
 
 def test_endpoint_requires_auth():
-    """The get_embedded API endpoint must require ``can_read EmbeddedDashboard``.
-
-    Upstream ``EmbeddedDashboardRestApi.get`` is ``@protect()`` + can_read, so
-    the JSON config endpoint must NOT be ``exclude_from_auth`` and must carry an
-    RBAC guard (the previous open behaviour leaked embedded config anonymously).
-    """
+    """Upstream ``EmbeddedDashboardRestApi.get`` is ``@protect()`` + can_read;
+    the endpoint must NOT be ``exclude_from_auth`` — the previous open
+    behaviour leaked embedded config to unauthenticated callers."""
     handler = EmbeddedDashboardController.get_embedded
     opt = getattr(handler, "opt", {})
     assert opt.get("exclude_from_auth") is not True

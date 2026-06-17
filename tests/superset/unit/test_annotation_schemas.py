@@ -14,14 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for superset/schemas/annotation.py.
-
-These tests assert that liteset's msgspec structs match the validation
-behaviour of the original Marshmallow schemas
-(superset_old/annotation_layers/schemas.py and
-superset_old/annotation_layers/annotations/schemas.py).
-"""
-
 from __future__ import annotations
 
 import msgspec
@@ -34,16 +26,11 @@ from superset.schemas.annotation import (
     AnnotationPutSchema,
 )
 
-# ---------------------------------------------------------------------------
-# AnnotationLayerPostSchema
-# ---------------------------------------------------------------------------
-
 
 def test_annotation_layer_post_descr_null_accepted():
     """POST with descr=null must be accepted.
 
-    Original: ``descr = fields.String(allow_none=True)``
-    (superset_old/annotation_layers/schemas.py:49-51).
+    ``descr`` is ``String(allow_none=True)`` so JSON null is valid.
     Regression: bare ``str`` type rejects JSON null → 422 instead of 201.
     """
     body = msgspec.json.decode(
@@ -55,7 +42,6 @@ def test_annotation_layer_post_descr_null_accepted():
 
 
 def test_annotation_layer_post_descr_string_accepted():
-    """descr as a non-null string is still accepted."""
     body = msgspec.json.decode(
         b'{"name": "My Layer", "descr": "some description"}',
         type=AnnotationLayerPostSchema,
@@ -66,8 +52,7 @@ def test_annotation_layer_post_descr_string_accepted():
 def test_annotation_layer_post_descr_omitted_defaults():
     """descr omitted from body stays UNSET (column keeps SQL NULL).
 
-    Marshmallow ``descr = fields.String(allow_none=True)`` with no
-    ``missing`` (superset_old/annotation_layers/schemas.py:49-51) omits the
+    ``descr = fields.String(allow_none=True)`` with no ``missing`` omits the
     absent field from the loaded dict — it must NOT default to ``""``.
     """
     body = msgspec.json.decode(
@@ -78,7 +63,6 @@ def test_annotation_layer_post_descr_omitted_defaults():
 
 
 def test_annotation_layer_post_name_required():
-    """name is required; omitting it raises ValidationError."""
     with pytest.raises(msgspec.ValidationError):
         msgspec.json.decode(
             b'{"descr": "no name here"}',
@@ -87,7 +71,6 @@ def test_annotation_layer_post_name_required():
 
 
 def test_annotation_layer_post_name_min_length():
-    """name must be at least 1 character."""
     with pytest.raises(msgspec.ValidationError):
         msgspec.json.decode(
             b'{"name": ""}',
@@ -96,7 +79,6 @@ def test_annotation_layer_post_name_min_length():
 
 
 def test_annotation_layer_post_name_max_length():
-    """name must not exceed 250 characters."""
     long_name = "x" * 251
     with pytest.raises(msgspec.ValidationError):
         msgspec.json.decode(
@@ -105,18 +87,11 @@ def test_annotation_layer_post_name_max_length():
         )
 
 
-# ---------------------------------------------------------------------------
-# AnnotationPostSchema
-# ---------------------------------------------------------------------------
-
-
 def test_annotation_post_short_descr_max_length_enforced():
     """short_descr must not exceed 500 characters.
 
-    Original: ``validate=[Length(1, 500)]``
-    (superset_old/annotation_layers/annotations/schemas.py:59-64).
-    Regression: without max_length the DB column (String(500)) raises a
-    data-too-long error → 500 instead of the original's clean 422.
+    ``validate=[Length(1, 500)]`` is required; without max_length the DB
+    column (String(500)) raises a data-too-long error → 500 instead of 422.
     """
     too_long = "x" * 501
     payload = (
@@ -129,7 +104,6 @@ def test_annotation_post_short_descr_max_length_enforced():
 
 
 def test_annotation_post_short_descr_max_length_boundary_accepted():
-    """Exactly 500 characters is accepted."""
     at_limit = "x" * 500
     payload = (
         f'{{"short_descr": "{at_limit}",'
@@ -141,7 +115,6 @@ def test_annotation_post_short_descr_max_length_boundary_accepted():
 
 
 def test_annotation_post_short_descr_min_length():
-    """short_descr must be at least 1 character."""
     with pytest.raises(msgspec.ValidationError):
         msgspec.json.decode(
             b'{"short_descr": "",'
@@ -152,7 +125,6 @@ def test_annotation_post_short_descr_min_length():
 
 
 def test_annotation_post_valid():
-    """A fully-valid POST body is decoded correctly."""
     body = msgspec.json.decode(
         b'{"short_descr": "My annotation",'
         b' "start_dttm": "2024-01-01T00:00:00",'
@@ -166,13 +138,7 @@ def test_annotation_post_valid():
     assert body.json_metadata is None
 
 
-# ---------------------------------------------------------------------------
-# AnnotationLayerPutSchema
-# ---------------------------------------------------------------------------
-
-
 def test_annotation_layer_put_partial():
-    """PUT body may omit fields; omitted fields become UNSET."""
     body = msgspec.json.decode(
         b'{"name": "Updated Name"}',
         type=AnnotationLayerPutSchema,
@@ -182,11 +148,10 @@ def test_annotation_layer_put_partial():
 
 
 def test_annotation_layer_put_descr_null_rejected():
-    """PUT with descr=null must be rejected (original has no allow_none=True).
+    """PUT with descr=null must be rejected (no allow_none=True on this field).
 
-    Original ``AnnotationLayerPutSchema.descr = fields.String(required=False)``
-    (superset_old/annotation_layers/schemas.py:60-62) — Marshmallow 3.x
-    defaults ``allow_none=False``, so ``{"descr": null}`` yields 422.
+    ``AnnotationLayerPutSchema.descr = fields.String(required=False)`` —
+    Marshmallow 3.x defaults ``allow_none=False``, so ``{"descr": null}`` yields 422.
     Regression: liteset used ``str | None | UNSET`` which silently accepted
     null instead of rejecting it.
     """
@@ -197,13 +162,7 @@ def test_annotation_layer_put_descr_null_rejected():
         )
 
 
-# ---------------------------------------------------------------------------
-# AnnotationPutSchema
-# ---------------------------------------------------------------------------
-
-
 def test_annotation_put_partial():
-    """PUT body may omit fields; omitted fields become UNSET."""
     body = msgspec.json.decode(
         b'{"short_descr": "New title"}',
         type=AnnotationPutSchema,
@@ -212,17 +171,11 @@ def test_annotation_put_partial():
     assert body.long_descr is msgspec.UNSET
 
 
-# ---------------------------------------------------------------------------
-# Finding 1: descr has no max_length constraint (original: Text column)
-# ---------------------------------------------------------------------------
-
-
 def test_annotation_layer_post_descr_over_250_accepted():
     """POST descr longer than 250 chars must be accepted.
 
-    Original: ``descr = fields.String(allow_none=True)`` — no Length validator
-    (superset_old/annotation_layers/schemas.py:49-51).  The DB column is
-    ``Column(Text)``, unlimited.  Regression: liteset added
+    ``descr = fields.String(allow_none=True)`` has no Length validator; the
+    DB column is ``Column(Text)``, unlimited.  Regression: liteset added
     ``Meta(max_length=250)`` to descr (copied from name) causing 422 for
     long descriptions.
     """
@@ -235,9 +188,8 @@ def test_annotation_layer_post_descr_over_250_accepted():
 def test_annotation_layer_put_descr_over_250_accepted():
     """PUT descr longer than 250 chars must be accepted.
 
-    Original: ``descr = fields.String(required=False)`` — no Length validator
-    (superset_old/annotation_layers/schemas.py:60-62).  Same regression as
-    the POST case above.
+    ``descr = fields.String(required=False)`` has no Length validator.
+    Same regression as the POST case above.
     """
     long_descr = "x" * 251
     payload = f'{{"descr": "{long_descr}"}}'.encode()
@@ -245,36 +197,27 @@ def test_annotation_layer_put_descr_over_250_accepted():
     assert len(body.descr) == 251
 
 
-# ---------------------------------------------------------------------------
-# Finding 3: AnnotationPostSchema long_descr / json_metadata absent → None
-# ---------------------------------------------------------------------------
-
-
 def test_annotation_post_long_descr_absent_defaults_none():
     """Absent long_descr must default to None (maps to NULL in DB).
 
-    Original: ``long_descr = fields.String(allow_none=True)`` with no
-    ``missing`` argument (superset_old/annotation_layers/annotations/
-    schemas.py:65-67) — absent field is omitted from the loaded dict so the
-    column keeps its SQL default (NULL).  Regression: liteset default was
-    ``""`` which stored an empty string instead of NULL.
+    ``long_descr = fields.String(allow_none=True)`` with no ``missing``
+    argument — absent field is omitted from the loaded dict so the column
+    keeps its SQL default (NULL).  Regression: liteset default was ``""``
+    which stored an empty string instead of NULL.
     """
     body = msgspec.json.decode(
         b'{"short_descr": "s", "start_dttm": "2024-01-01T00:00:00",'
         b' "end_dttm": "2024-01-02T00:00:00"}',
         type=AnnotationPostSchema,
     )
-    # UNSET (absent) — never written to the model, so the column keeps its
-    # SQL default (NULL); also keeps the field out of the echoed 201 body.
     assert body.long_descr is msgspec.UNSET
 
 
 def test_annotation_post_json_metadata_absent_defaults_none():
     """Absent json_metadata must default to None (maps to NULL in DB).
 
-    Original: ``json_metadata = fields.String(allow_none=True)`` with no
-    ``missing`` argument (superset_old/annotation_layers/annotations/
-    schemas.py:76-80) — absent field is omitted from the loaded dict.
+    ``json_metadata = fields.String(allow_none=True)`` with no ``missing``
+    argument — absent field is omitted from the loaded dict.
     Regression: liteset default was ``""`` which stored an empty string.
     """
     body = msgspec.json.decode(
@@ -282,5 +225,4 @@ def test_annotation_post_json_metadata_absent_defaults_none():
         b' "end_dttm": "2024-01-02T00:00:00"}',
         type=AnnotationPostSchema,
     )
-    # UNSET (absent) — omitted from the loaded dict, exactly like Marshmallow.
     assert body.json_metadata is msgspec.UNSET

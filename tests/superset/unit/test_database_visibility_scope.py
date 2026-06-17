@@ -17,15 +17,12 @@
 """Regression tests for R13-07 — DatabaseFilter visibility scope on by-id
 database endpoints.
 
-Upstream applies ``DatabaseFilter`` as the DAO ``base_filter`` on EVERY by-id
-operation (superset_old/daos/database.py:38 + daos/base.py:52-92, FAB
-``base_filters`` at databases/api.py:187): a database outside the user's
-visibility scope behaves exactly like a missing one — 404, no metadata, no
-mutation.  The liteset port had the equivalent in-Python gate
-(``_database_is_accessible``) on only 3 endpoints; the other by-pk endpoints
-did an unscoped ``find_by_id``, letting any user with the class-level
-permission read connection details / related objects / function names of —
-or modify — databases they cannot access.
+A database outside the user's visibility scope behaves exactly like a missing
+one — 404, no metadata, no mutation.  The previous implementation gated only
+3 endpoints with ``_database_is_accessible``; the other by-pk endpoints did an
+unscoped ``find_by_id``, letting any user with the class-level permission read
+connection details / related objects / function names of — or modify — databases
+they cannot access.
 """
 
 from __future__ import annotations
@@ -71,8 +68,9 @@ _ENDPOINTS: dict[str, dict[str, object]] = {
 
 @pytest.mark.parametrize("name", sorted(_ENDPOINTS))
 async def test_by_id_endpoint_hides_inaccessible_database(name: str) -> None:
-    """An existing database the user cannot see must 404 — 1:1 with the
-    upstream DatabaseFilter base_filter — instead of serving/mutating it."""
+    """An existing database the user cannot see must 404 instead of
+    serving/mutating it.
+    """
     controller, dao, sm, user = _common()
     with patch(
         "superset.controllers.database._database_is_accessible",

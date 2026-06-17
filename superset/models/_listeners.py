@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""SQLAlchemy event listeners ported 1:1 from ``superset_old/``.
+"""SQLAlchemy event listeners for Superset models.
 
 The original Superset registers listeners against the FAB ``Model`` —
 ``Slice.before_insert/before_update`` propagates a chart's datasource
@@ -32,9 +32,8 @@ async-compatible without smuggling event-loop primitives into the sync
 flush phase.
 
 Tag updaters and the welcome-dashboard clone listener follow the same
-pattern as the original ``superset_old/tags/models.py:ObjectUpdater`` —
-they open a short-lived sync ``Session`` bound to the flush connection
-and commit before yielding back to the outer transaction.
+pattern — they open a short-lived sync ``Session`` bound to the flush
+connection and commit before yielding back to the outer transaction.
 """
 
 from __future__ import annotations
@@ -59,14 +58,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Sync sessionmaker bound at flush time to the connection passed by SQLA.
-# Mirrors the original ``superset_old/tags/models.py:Session = sessionmaker()``.
 Session = sessionmaker()
-
-
-# ---------------------------------------------------------------------------
-# Slice listeners (1:1 with superset_old/models/slice.py)
-# ---------------------------------------------------------------------------
 
 
 def _slice_set_related_perm(
@@ -74,7 +66,6 @@ def _slice_set_related_perm(
 ) -> None:
     """Propagate the datasource's perm strings onto the chart row.
 
-    Direct port of ``superset_old/models/slice.py:set_related_perm``.
     Originally executed via the ORM (``db.session.query(SqlaTable)``);
     we use the raw connection because the listener fires inside the
     sync flush phase of an :class:`AsyncSession` where ORM access would
@@ -102,9 +93,7 @@ def _slice_after_changed(
 ) -> None:
     """Trigger thumbnail regeneration after a chart insert/update.
 
-    1:1 with ``event_after_chart_changed`` in
-    ``superset_old/models/slice.py``.  Only fires when
-    ``THUMBNAILS_SQLA_LISTENERS`` is enabled (matches the original).
+    Only fires when ``THUMBNAILS_SQLA_LISTENERS`` is enabled.
     """
     try:
         from superset.tasks.thumbnails import cache_chart_thumbnail
@@ -130,19 +119,12 @@ def _slice_after_changed(
         )
 
 
-# ---------------------------------------------------------------------------
-# Dashboard listeners (1:1 with superset_old/models/dashboard.py)
-# ---------------------------------------------------------------------------
-
-
 def _dashboard_after_changed(
     _mapper: Mapper[Any], _connection: Connection, target: "Dashboard"
 ) -> None:
     """Trigger thumbnail regeneration after a dashboard insert/update.
 
-    1:1 with the ``THUMBNAILS_SQLA_LISTENERS`` block in
-    ``superset_old/models/dashboard.py`` — calls
-    :func:`cache_dashboard_thumbnail.delay`.
+    Calls :func:`cache_dashboard_thumbnail.delay`.
     """
     try:
         from superset.tasks.thumbnails import cache_dashboard_thumbnail
@@ -168,21 +150,13 @@ def _dashboard_after_changed(
         )
 
 
-# ---------------------------------------------------------------------------
-# User listener -- welcome-dashboard clone
-# (1:1 with superset_old/models/dashboard.py:copy_dashboard)
-# ---------------------------------------------------------------------------
-
-
 def _user_copy_dashboard(
     _mapper: Mapper[Any], connection: Connection, target: "User"
 ) -> None:
     """Clone the welcome dashboard for a newly-registered user.
 
-    Direct port of ``copy_dashboard`` in
-    ``superset_old/models/dashboard.py``.  The original reads
-    ``app.config["DASHBOARD_TEMPLATE_ID"]`` — Liteset stores the same
-    setting under ``SupersetSettings.dashboard_template_id``.
+    Reads ``SupersetSettings.dashboard_template_id`` (the Liteset equivalent
+    of ``app.config["DASHBOARD_TEMPLATE_ID"]``).
     """
     try:
         from superset.config import SupersetSettings
@@ -226,15 +200,6 @@ def _user_copy_dashboard(
         session.commit()
 
 
-# ---------------------------------------------------------------------------
-# Database listeners -- perm sync
-# (1:1 with superset_old/models/core.py:1202-1204)
-#
-# Uses raw SQL on the flush connection because the original
-# ``security_manager.database_after_*`` hooks operated identically.
-# ---------------------------------------------------------------------------
-
-
 def _database_perm_for(target: "Database") -> str:
     return f"[{target.database_name}].(id:{target.id})"
 
@@ -242,10 +207,7 @@ def _database_perm_for(target: "Database") -> str:
 def _database_after_insert(
     _mapper: Mapper[Any], connection: Connection, target: "Database"
 ) -> None:
-    """Create the ``database_access`` PVM after a database insert.
-
-    Mirrors ``security_manager.database_after_insert``.
-    """
+    """Create the ``database_access`` PVM after a database insert."""
     perm_name = _database_perm_for(target)
     _ensure_pvm(connection, "database_access", perm_name)
 
@@ -255,8 +217,7 @@ def _database_after_update(
 ) -> None:
     """Rename PVMs when ``database_name`` changes.
 
-    Mirrors ``security_manager.database_after_update``.  A SQLAlchemy
-    history check tells us whether ``database_name`` actually changed.
+    A SQLAlchemy history check tells us whether ``database_name`` actually changed.
     """
     state = sa.inspect(target)
     history = state.attrs.database_name.history
@@ -320,14 +281,9 @@ def _database_after_update(
 def _database_after_delete(
     _mapper: Mapper[Any], connection: Connection, target: "Database"
 ) -> None:
-    """Delete database/schema/catalog PVMs when a database is deleted.
-
-    Mirrors ``security_manager.database_after_delete``.
-    """
+    """Delete database/schema/catalog PVMs when a database is deleted."""
     db_perm = _database_perm_for(target)
     _delete_pvm(connection, "database_access", db_perm)
-    # delete schema_access / catalog_access PVMs whose view_menu starts
-    # with ``[<db>].``.
     prefix = f"[{target.database_name}]."
     rows = connection.execute(
         text(
@@ -342,17 +298,6 @@ def _database_after_delete(
     ).fetchall()
     for row in rows:
         _delete_pvm_by_id(connection, int(row.id), int(row.view_menu_id))
-
-
-# ---------------------------------------------------------------------------
-# SqlaTable listeners (1:1 with superset_old/connectors/sqla/models.py:2002+)
-#
-# The original behaviour is split: ``before_update`` re-loads the
-# ``database`` relationship and updates ``perm`` / ``schema_perm`` /
-# ``catalog_perm``; ``after_insert`` / ``after_delete`` create or remove
-# the corresponding ``datasource_access`` PVM.  Liteset's
-# ``security_manager`` keeps the same effects.
-# ---------------------------------------------------------------------------
 
 
 def _dataset_perm(connection: Connection, target: "SqlaTable") -> str | None:
@@ -383,11 +328,7 @@ def _update_dataset_perm(
     new_permission_name: str | None,
     target: "SqlaTable",
 ) -> None:
-    """Propagate a dataset perm rename to the VM, the dataset and its charts.
-
-    1:1 with ``security_manager._update_dataset_perm``
-    (superset_old/security/manager.py:1934-2006).
-    """
+    """Propagate a dataset perm rename to the VM, the dataset and its charts."""
     logger.info(
         "Updating dataset perm, old: %s, new: %s",
         old_permission_name,
@@ -415,14 +356,11 @@ def _update_dataset_perm(
         )
         _ensure_pvm(connection, "datasource_access", new_permission_name)
         return
-    # Update VM (rename keeps existing role grants attached)
     _rename_view_menu(connection, str(old_permission_name), new_permission_name)
-    # Update dataset (SqlaTable perm field)
     connection.execute(
         text("UPDATE tables SET perm = :new WHERE id = :id"),
         {"new": new_permission_name, "id": int(target.id)},
     )
-    # Update charts (Slice perm field)
     connection.execute(
         text(
             "UPDATE slices SET perm = :new "
@@ -438,19 +376,12 @@ def _update_dataset_catalog_schema_perm(
     schema_permission_name: str | None,
     target: "SqlaTable",
 ) -> None:
-    """Propagate catalog/schema perm changes to the dataset and its charts.
-
-    1:1 with ``security_manager._update_dataset_catalog_schema_perm``
-    (superset_old/security/manager.py:1863-1932).
-    """
-    # insert new PVMs if they don't exist (upstream's
-    # ``_insert_pvm_on_sqla_event`` no-ops on a falsy name)
+    """Propagate catalog/schema perm changes to the dataset and its charts."""
     if catalog_permission_name:
         _ensure_pvm(connection, "catalog_access", catalog_permission_name)
     if schema_permission_name:
         _ensure_pvm(connection, "schema_access", schema_permission_name)
 
-    # Update dataset
     connection.execute(
         text("UPDATE tables SET catalog_perm = :c, schema_perm = :s WHERE id = :id"),
         {
@@ -459,7 +390,6 @@ def _update_dataset_catalog_schema_perm(
             "id": int(target.id),
         },
     )
-    # Update charts (Slice catalog_perm/schema_perm fields)
     connection.execute(
         text(
             "UPDATE slices SET catalog_perm = :c, schema_perm = :s "
@@ -478,13 +408,10 @@ def _sqlatable_before_update(  # noqa: C901
 ) -> None:
     """Propagate dataset perm changes before update.
 
-    1:1 with ``security_manager.dataset_before_update``
-    (superset_old/security/manager.py:1771-1860): when ``database_id``,
+    When ``database_id``,
     ``table_name``, ``catalog`` or ``schema`` change, rename the
     ``ab_view_menu`` entry (keeping role grants) and update
     ``perm``/``schema_perm``/``catalog_perm`` on the dataset AND its charts.
-    The previous version only refreshed ``target.perm``, so users with
-    ``datasource_access`` on the old PVM lost access after a rename.
     """
     from superset.security.permission_manager import (
         get_catalog_perm,
@@ -503,7 +430,6 @@ def _sqlatable_before_update(  # noqa: C901
         {"id": int(target.id)},
     ).first()
     if current is None:
-        # Fresh row (insert path) — keep the legacy perm refresh only.
         perm = _dataset_perm(connection, target)
         if perm is not None:
             target.perm = perm  # type: ignore[assignment]
@@ -511,7 +437,6 @@ def _sqlatable_before_update(  # noqa: C901
 
     database_name = _database_name_for(connection, target.database_id)
 
-    # When database changes
     if current.database_id != target.database_id:
         new_dataset_vm_name = get_dataset_perm(
             target.id, target.table_name, database_name
@@ -524,7 +449,6 @@ def _sqlatable_before_update(  # noqa: C901
         )
         target.perm = new_dataset_vm_name  # type: ignore[assignment]
 
-        # Updates catalog/schema permissions
         _update_dataset_catalog_schema_perm(
             connection,
             get_catalog_perm(database_name, target.catalog),
@@ -532,7 +456,6 @@ def _sqlatable_before_update(  # noqa: C901
             target,
         )
 
-    # When table name changes
     if current.table_name != target.table_name:
         new_dataset_vm_name = get_dataset_perm(
             target.id, target.table_name, database_name
@@ -545,7 +468,6 @@ def _sqlatable_before_update(  # noqa: C901
         )
         target.perm = new_dataset_vm_name  # type: ignore[assignment]
 
-    # When catalog/schema change
     if current.catalog != target.catalog or current.schema_name != target.schema:
         _update_dataset_catalog_schema_perm(
             connection,
@@ -560,10 +482,8 @@ def _sqlatable_after_insert(
 ) -> None:
     """Create the dataset PVMs and persist local perms after insert.
 
-    1:1 with ``security_manager.dataset_after_insert``
-    (superset_old/security/manager.py:1661-1743): attribute changes made
-    inside an ``after_insert`` handler are NOT included in the flush, so the
-    perm columns must be written through the connection explicitly.
+    Attribute changes made inside an ``after_insert`` handler are NOT included
+    in the flush, so the perm columns must be written through the connection explicitly.
     """
     from superset.security.permission_manager import (
         get_catalog_perm,
@@ -580,7 +500,6 @@ def _sqlatable_after_insert(
         {"perm": perm, "id": int(target.id)},
     )
 
-    # update catalog and schema perms
     database_name = _database_name_for(connection, target.database_id)
     values: dict[str, str | None] = {}
     if target.schema:
@@ -620,19 +539,6 @@ def _sqlatable_after_delete(
     _delete_pvm(connection, "datasource_access", str(target.perm))
 
 
-# ---------------------------------------------------------------------------
-# Tag updater listeners (1:1 with superset_old/tags/models.py)
-#
-# These maintain the implicit ``owner:`` / ``type:`` /
-# ``favorited_by:`` tags that the Tag UI surfaces — without them users
-# see broken filters.
-# ---------------------------------------------------------------------------
-
-
-# String values match ``superset_old/tags/models.py:ObjectType``.  We use
-# the lowercase string form because that's what the ``object_type``
-# column persists (and what the M2M Slice/Dashboard relationship
-# matches against in superset/models/slice.py / dashboard.py).
 _OBJECT_TYPE_CHART = "chart"
 _OBJECT_TYPE_DASHBOARD = "dashboard"
 _OBJECT_TYPE_QUERY = "query"
@@ -640,7 +546,7 @@ _OBJECT_TYPE_DATASET = "dataset"
 
 
 def _get_or_create_tag(session: Any, name: str, type_value: Any) -> Any:
-    """Get a Tag by name or create it.  Mirrors ``tags/models.get_tag``."""
+    """Get a Tag by name or create it."""
     from superset.models.tags import Tag
 
     tag = session.query(Tag).filter_by(name=name.strip(), type=type_value).one_or_none()
@@ -782,10 +688,6 @@ def _query_owners_ids(target: "Query") -> list[int]:
     return [cast("int", target.user_id)] if target.user_id is not None else []
 
 
-# Wrappers that match SQLA's listener signature
-# (mapper, connection, target).
-
-
 def _chart_tag_after_insert(_m: Mapper[Any], c: Connection, t: "Slice") -> None:
     _object_after_insert(_OBJECT_TYPE_CHART, t, c, _slice_owners_ids(t))
 
@@ -834,7 +736,6 @@ def _query_tag_after_delete(_m: Mapper[Any], c: Connection, t: "Query") -> None:
     _object_after_delete(_OBJECT_TYPE_QUERY, t, c)
 
 
-# FavStar updaters: implicit ``favorited_by:<user>`` tags
 def _favstar_after_insert(
     _mapper: Mapper[Any], connection: Connection, target: "FavStar"
 ) -> None:
@@ -887,17 +788,8 @@ def _favstar_after_delete(
         session.commit()
 
 
-# ---------------------------------------------------------------------------
-# Raw-SQL PVM helpers (used by Database / SqlaTable listeners)
-# ---------------------------------------------------------------------------
-
-
 def _ensure_pvm(connection: Connection, perm_name: str, view_menu_name: str) -> None:
-    """Create a Permission/ViewMenu/PermissionView triple if missing.
-
-    Idempotent — matches the original
-    ``security_manager.add_permission_view_menu`` semantics.
-    """
+    """Create a Permission/ViewMenu/PermissionView triple if missing (idempotent)."""
     perm_id = _ensure_permission(connection, perm_name)
     vm_id = _ensure_view_menu(connection, view_menu_name)
     existing = connection.execute(
@@ -1002,11 +894,6 @@ def _rename_view_menu(connection: Connection, old_name: str, new_name: str) -> N
     )
 
 
-# ---------------------------------------------------------------------------
-# Registration
-# ---------------------------------------------------------------------------
-
-
 _REGISTERED = False
 
 
@@ -1031,7 +918,6 @@ def register() -> None:
     from superset.models.security import User
     from superset.models.slice import Slice
 
-    # Slice perm propagation + thumbnail invalidation
     event.listen(Slice, "before_insert", _slice_set_related_perm)
     event.listen(Slice, "before_update", _slice_set_related_perm)
     if _is_thumbnails_listeners_enabled():
@@ -1040,23 +926,20 @@ def register() -> None:
         event.listen(Dashboard, "after_insert", _dashboard_after_changed)
         event.listen(Dashboard, "after_update", _dashboard_after_changed)
 
-    # Database perm-sync
     event.listen(Database, "after_insert", _database_after_insert)
     event.listen(Database, "after_update", _database_after_update)
     event.listen(Database, "after_delete", _database_after_delete)
 
-    # SqlaTable perm-sync
     event.listen(SqlaTable, "before_update", _sqlatable_before_update)
     event.listen(SqlaTable, "after_insert", _sqlatable_after_insert)
     event.listen(SqlaTable, "after_delete", _sqlatable_after_delete)
 
-    # User welcome-dashboard clone
     event.listen(User, "after_insert", _user_copy_dashboard)
 
     # Tag updaters — registered ONLY when the TAGGING_SYSTEM feature flag is
-    # enabled, 1:1 with upstream which calls ``register_sqla_event_listeners()``
-    # exclusively under ``if is_feature_enabled("TAGGING_SYSTEM")``
-    # (superset_old/app.py:158-161).  The perm/thumbnail/welcome listeners
+    # enabled, which calls ``register_sqla_event_listeners()``
+    # exclusively under ``if is_feature_enabled("TAGGING_SYSTEM")``.
+    # The perm/thumbnail/welcome listeners
     # above stay unconditional (they are not tag-related and upstream wires
     # them at model-class definition time).  Without this gate the implicit
     # ``owner:``/``type:``/``favorited_by:`` tags were created on every sync
@@ -1071,11 +954,10 @@ def _register_tag_listeners() -> None:
     """Wire the implicit-tag SQLA event listeners.
 
     Split out of :func:`register` so it can be gated on ``TAGGING_SYSTEM`` and
-    exercised in isolation by tests.  1:1 with upstream's
-    ``register_sqla_event_listeners`` (superset_old/tags/core.py:20-53): the
-    query updater targets ``SavedQuery`` (user-saved queries), NOT ``Query``
-    (every SQL Lab execution) — tagging the latter would create an implicit
-    ``type:query`` + ``owner:`` tag on every single query run.
+    exercised in isolation by tests.  The query updater targets ``SavedQuery``
+    (user-saved queries), NOT ``Query`` (every SQL Lab execution) — tagging the
+    latter would create an implicit ``type:query`` + ``owner:`` tag on every
+    single query run.
     """
     from superset.models.connectors import SqlaTable
     from superset.models.core import FavStar
@@ -1104,12 +986,7 @@ def _register_tag_listeners() -> None:
 
 
 def _is_thumbnails_listeners_enabled() -> bool:
-    """Mirror the original ``is_feature_enabled('THUMBNAILS_SQLA_LISTENERS')``.
-
-    Reads the boolean off
-    :class:`~superset.config.SupersetSettings.feature_flags` (the
-    Liteset equivalent of ``FEATURE_FLAGS``).
-    """
+    """Return whether the ``THUMBNAILS_SQLA_LISTENERS`` feature flag is enabled."""
     try:
         from superset.utils.feature_flags import feature_flag_manager
     except ImportError:
@@ -1124,7 +1001,4 @@ def _is_thumbnails_listeners_enabled() -> bool:
 
 __all__ = ["register", "Session"]
 
-
-# Quiet ``json`` imported but unused — used by callers via
-# ``superset.models._listeners`` re-export only when needed.
 _ = json  # noqa: F841

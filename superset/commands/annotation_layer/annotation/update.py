@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/annotation_layer/annotation/update.py``."""
+"""Command for updating an existing annotation."""
 
 from __future__ import annotations
 
@@ -43,15 +43,11 @@ class UpdateAnnotationCommand(AsyncBaseCommand["Annotation"]):
         if not self._annotation:
             raise ObjectNotFoundError("Annotation", self._pk)
 
-        # Short-descr uniqueness within the layer (excluding self) — 1:1 with
-        # upstream update.py. The model has only a non-unique index, so the
-        # check must be explicit.
-        # Original: short_descr defaults to "" when absent from the payload
-        # (superset_old/commands/annotation_layer/annotation/update.py:56:
-        # ``self._properties.get('short_descr', '')``).
-        # The upstream controller always sets item["layer"] = pk before
-        # calling the command, so layer_id is always present and the
-        # uniqueness check always fires — gated only on layer_id, NOT on
+        # Short description uniqueness within the layer (excluding self).
+        # The model has only a non-unique index, so the check must be explicit.
+        # short_descr defaults to "" when absent from the payload.
+        # The controller always sets layer_id before calling the command, so
+        # the uniqueness check always fires — gated on layer_id, NOT on
         # short_descr being truthy.
         short_descr: str = self._data.get("short_descr", "")
         layer_id = self._data.get("layer_id") or getattr(
@@ -67,21 +63,16 @@ class UpdateAnnotationCommand(AsyncBaseCommand["Annotation"]):
 
                 raise AnnotationUniquenessValidationError()
 
-        # Mirror upstream date-sanity check (superset_old/commands/annotation_
-        # layer/annotation/update.py:80-83). Both default to None when the
-        # incoming payload omits one side of the range, making the check a
-        # no-op unless BOTH fields are present in the request — 1:1 with
-        # original ``self._properties.get("start_dttm")`` / ``get("end_dttm")``.
+        # Date-sanity check: both default to None when the payload omits one
+        # side of the range, making the check a no-op unless BOTH fields are
+        # present in the request.
         start_dttm = self._data.get("start_dttm")
         end_dttm = self._data.get("end_dttm")
         if start_dttm and end_dttm and end_dttm < start_dttm:
             raise CommandInvalidError("end_dttm must be greater or equal to start_dttm")
 
-        # Validate json_metadata is valid JSON — 1:1 with upstream
-        # ``AnnotationPutSchema.json_metadata`` which carries
-        # ``validate=validate_json`` (superset_old/annotation_layers/
-        # annotations/schemas.py:98-103). The port's msgspec struct has no
-        # inline validator, so we check here instead.
+        # Validate json_metadata is valid JSON; the msgspec struct has no
+        # inline validator so we check here instead.
         json_metadata = self._data.get("json_metadata")
         if json_metadata not in (None, "", msgspec.UNSET):
             import json as _json

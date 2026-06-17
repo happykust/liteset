@@ -14,12 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""SQLite engine spec -- synchronous.
-
-Ported 1:1 from ``superset_old/db_engine_specs/sqlite.py`` with the legacy
-WSGI-stack imports removed.  Only overridden methods and attributes are
-included.
-"""
+"""SQLite database engine spec."""
 
 from __future__ import annotations
 
@@ -102,7 +97,6 @@ class SqliteEngineSpec(BaseEngineSpec):
             "((strftime('%w', {col}) + 6) % 7) || ' days')"
         ),
     }
-    # aliases
     _time_grain_expressions[TimeGrain.HALF_HOUR] = _time_grain_expressions[
         TimeGrain.THIRTY_MINUTES
     ]
@@ -141,7 +135,7 @@ class SqliteEngineSpec(BaseEngineSpec):
         inspector: Inspector,
         schema: str | None,
     ) -> set[str]:
-        """Need to disregard the schema for Sqlite."""
+        # SQLite has no schema concept; ignore the schema argument entirely.
         return set(inspector.get_table_names())
 
     @classmethod
@@ -149,7 +143,6 @@ class SqliteEngineSpec(BaseEngineSpec):
         cls,
         database: Database,
     ) -> list[str]:
-        """Return built-in SQLite function names."""
         return [
             "abs",
             "acos",

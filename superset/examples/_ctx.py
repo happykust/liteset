@@ -255,7 +255,7 @@ def fetch_table_metadata(tbl: Any, eng: Engine) -> None:
             )
             tbl.columns.append(tc)
 
-    # Add 'count' metric if not present (same as original fetch_metadata)
+    # Add 'count' metric if not present
     metric_names = {m.metric_name for m in (tbl.metrics or [])}
     if "count" not in metric_names:
         tbl.metrics.append(

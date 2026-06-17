@@ -16,9 +16,9 @@
 # under the License.
 """Security table models (pure SQLAlchemy).
 
-These mirror the upstream ab_user, ab_role, ab_permission,
-ab_view_menu, ab_permission_view tables so superset can query them
-without importing the upstream auth library.
+Declares the ab_user, ab_role, ab_permission, ab_view_menu, and
+ab_permission_view tables so superset can query them without importing
+the upstream auth library.
 """
 
 from __future__ import annotations
@@ -27,10 +27,6 @@ from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, T
 from sqlalchemy.orm import relationship
 
 from superset.models.helpers import Base, metadata
-
-# ---------------------------------------------------------------------------
-# Association tables
-# ---------------------------------------------------------------------------
 
 ab_user_role = Table(
     "ab_user_role",
@@ -67,11 +63,6 @@ ab_group_role = Table(
     Column("group_id", Integer, ForeignKey("ab_group.id", ondelete="CASCADE")),
     Column("role_id", Integer, ForeignKey("ab_role.id", ondelete="CASCADE")),
 )
-
-
-# ---------------------------------------------------------------------------
-# Models
-# ---------------------------------------------------------------------------
 
 
 class User(Base):

@@ -14,9 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Ported from ``tests/integration_tests/utils/core_tests.py``.
-
-Pure-logic checks for the adhoc-filter helpers in
+"""Pure-logic checks for the adhoc-filter helpers in
 :mod:`superset.utils.core` (``simple_filter_to_adhoc`` and
 ``form_data_to_adhoc``). No Flask / DB scaffolding is required.
 """
@@ -35,7 +33,6 @@ def test_simple_filter_to_adhoc_generates_deterministic_values():
 
     input_2 = {**input_1, "col": "LONGITUDE"}
 
-    # The result is the same when given the same input
     assert simple_filter_to_adhoc(input_1) == simple_filter_to_adhoc(input_1)
     assert simple_filter_to_adhoc(input_1) == {
         "clause": "WHERE",
@@ -46,7 +43,6 @@ def test_simple_filter_to_adhoc_generates_deterministic_values():
         "filterOptionName": "6ac89d498115da22396f80a765cffc70",
     }
 
-    # The result is different when given different input
     assert simple_filter_to_adhoc(input_1) != simple_filter_to_adhoc(input_2)
     assert simple_filter_to_adhoc(input_2) == {
         "clause": "WHERE",
@@ -61,7 +57,6 @@ def test_simple_filter_to_adhoc_generates_deterministic_values():
 def test_form_data_to_adhoc_generates_deterministic_values():
     form_data = {"where": "1 = 1", "having": "count(*) > 1"}
 
-    # The result is the same when given the same input
     assert form_data_to_adhoc(form_data, "where") == form_data_to_adhoc(
         form_data, "where"
     )
@@ -72,7 +67,6 @@ def test_form_data_to_adhoc_generates_deterministic_values():
         "filterOptionName": "99fe79985afbddea4492626dc6a87b74",
     }
 
-    # The result is different when given different input
     assert form_data_to_adhoc(form_data, "having") == form_data_to_adhoc(
         form_data, "having"
     )

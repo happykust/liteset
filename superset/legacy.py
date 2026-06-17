@@ -54,7 +54,6 @@ CONTAINER_TYPES = ["COLUMN", "GRID", "TABS", "TAB", "ROW"]
 def is_slice_in_container(
     layout: dict[str, dict[str, Any]], container_id: str, slice_id: int
 ) -> bool:
-    """1:1 with ``superset_old/views/utils.py:is_slice_in_container``."""
     if container_id == "ROOT_ID":
         return True
 
@@ -79,9 +78,7 @@ def build_extra_filters(  # noqa: C901
     slice_id: int,
     filter_params_by_id: dict[str, str | None] | None = None,
 ) -> list[dict[str, Any]]:
-    """1:1 with ``superset_old/views/utils.py:build_extra_filters``.
-
-    The original reads each filter-box Slice's ``params`` off the sync
+    """The original reads each filter-box Slice's ``params`` off the sync
     ``db.session`` inline; in the async port the caller pre-fetches them and
     passes ``filter_params_by_id`` (keyed by the stringified slice id) so
     this stays a pure function.

@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dashboard/unfave.py``."""
+"""Remove-favorite command for dashboards."""
 
 from __future__ import annotations
 
@@ -32,9 +32,7 @@ if TYPE_CHECKING:
 class RemoveFavoriteDashboardCommand(AsyncBaseCommand[None]):
     """Remove a dashboard from a user's favorites.
 
-    Ported 1:1 from superset_old/commands/dashboard/unfave.py: the original
-    loads via the access-aware ``DashboardDAO.get_by_id_or_slug``. The async
-    port reproduces that access check explicitly via ``can_access_dashboard``.
+    Access is enforced explicitly; the DAO lookup does not enforce access on its own.
     """
 
     def __init__(

@@ -16,8 +16,6 @@
 # under the License.
 """``GET /api/v1/sqllab/export/<client_id>/`` command.
 
-Direct port of
-``superset_old/commands/sql_lab/export.py::SqlResultExportCommand``.
 Streams the result-set as CSV — re-decompresses the results-backend blob
 when present, otherwise re-runs the query via ``database.get_df`` (sync,
 wrapped in :func:`asyncio.to_thread`). All data goes through
@@ -64,8 +62,6 @@ class SqlResultExportCommand(AsyncBaseCommand[SqlExportResult]):
         self._client_id = client_id
         self._security_manager = security_manager
         self._current_user = current_user
-        # ``validate()`` raises when the query is missing, so post-validate
-        # access is non-None; typed Any to avoid per-line union narrowing.
         self._query: Any = None
 
     async def validate(self) -> None:
@@ -103,9 +99,6 @@ class SqlResultExportCommand(AsyncBaseCommand[SqlExportResult]):
             # path will surface a clearer error than a refresh failure.
             logger.debug("Could not eager-load query.database", exc_info=True)
 
-        # Permission gate — security manager based, mirroring the original
-        # ``query.raise_for_access()`` which delegates to
-        # ``security_manager.raise_for_access(query=...)``.
         if self._security_manager is not None and self._current_user is not None:
             try:
                 await self._security_manager.raise_for_access(
@@ -136,16 +129,10 @@ class SqlResultExportCommand(AsyncBaseCommand[SqlExportResult]):
             "data": csv_bytes,
         }
 
-    # ------------------------------------------------------------------
-    # internal helpers
-    # ------------------------------------------------------------------
-
     async def _build_dataframe(self) -> Any:
-        """Return a pandas DataFrame for the export.
-
-        Tries the results-backend cached blob first (matches original
-        order). Falls back to re-executing the query via
-        ``database.get_df`` (sync) wrapped in ``asyncio.to_thread``.
+        """
+        Try the results-backend cache first; fall back to re-executing
+        via database.get_df.
         """
         import pandas as pd
 
@@ -170,18 +157,13 @@ class SqlResultExportCommand(AsyncBaseCommand[SqlExportResult]):
                     columns=[c["name"] for c in obj.get("columns", [])],
                 )
 
-        # ------------------------------------------------------------------
-        # Re-run the query — same fallback as the original.
-        # ------------------------------------------------------------------
         return await asyncio.to_thread(self._fetch_dataframe_via_get_df)
 
     def _fetch_dataframe_via_get_df(self) -> Any:
-        """Synchronously execute the original SQL via ``database.get_df``.
+        """Synchronously execute the query via ``database.get_df``.
 
-        Mirrors the exact branching from the original ``run`` method:
-        if ``select_sql`` was populated by a CTAS execution we read from
-        the materialised ``select_sql``; otherwise we re-execute the
-        ``executed_sql`` while honouring the original ``LimitingFactor``
+        Uses ``select_sql`` when populated by a CTAS execution; otherwise
+        re-executes ``executed_sql`` while honouring ``LimitingFactor``
         adjustments.
         """
         from superset.commands.sqllab._shared import get_engine_name

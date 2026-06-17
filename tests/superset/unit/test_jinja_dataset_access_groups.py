@@ -16,11 +16,10 @@
 # under the License.
 """``_sync_user_can_access_dataset`` must honour FAB *group* membership.
 
-Upstream ``user_view_menu_names`` (superset_old/security/manager.py:841-880)
-joins ``assoc_user_group``/``assoc_group_role``, and FAB base
-``get_user_roles`` returns ``user.roles + [role for group in user.groups for
-role in group.roles]`` — a user whose only grants come from a group must NOT
-be denied dataset/metric macros.
+``user_view_menu_names`` joins ``assoc_user_group``/``assoc_group_role``,
+and ``get_user_roles`` returns ``user.roles + [role for group in user.groups
+for role in group.roles]`` — a user whose only grants come from a group must
+NOT be denied dataset/metric macros.
 """
 
 from __future__ import annotations
@@ -55,7 +54,6 @@ def test_group_role_grants_dataset_access():
         ) as collect,
     ):
         assert jc._sync_user_can_access_dataset(_dataset(), _user()) is True
-    # The group role id must be part of the permission lookup.
     collect.assert_called_once_with([5])
 
 

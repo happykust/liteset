@@ -14,9 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Ported from ``tests/integration_tests/utils/encrypt.py``.
-
-Exercises the encrypted-field plumbing in :mod:`superset.utils.encrypt`:
+"""Exercises the encrypted-field plumbing in :mod:`superset.utils.encrypt`:
 the :class:`EncryptedFieldFactory` adapter mechanism and the
 :class:`SecretsMigrator` discovery sweep that guarantees every encrypted
 column in the metadata was created via the factory.
@@ -88,10 +86,6 @@ def test_custom_adapter():
 
 
 def test_ensure_encrypted_field_factory_is_used():
-    """
-    Ensure that the EncryptedFieldFactory is used everywhere
-    that an encrypted field is needed.
-    """
     from superset.extensions import encrypted_field_factory
 
     migrator = SecretsMigrator("")

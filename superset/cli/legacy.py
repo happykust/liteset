@@ -14,27 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async ports of the five ``legacy_*`` CLI commands from
-``superset_old/cli/importexport.py``.
+"""Legacy V0 JSON/YAML dashboard and datasource import/export commands.
 
-These commands operate on the deprecated V0 JSON / YAML dashboard /
-datasource formats.  Apache Superset has long shipped V1 zip-based
-import/export as the canonical pipeline (see ``importexport.py``), but
-the legacy variants are kept in upstream so that automation written
-against pre-V1 Superset releases keeps working.
-
-Each command is a 1:1 port of its upstream counterpart with the
-following adaptations:
-
-* the request-scoped current user is replaced by an explicit
-  ``override_user`` context
-  obtained from :func:`superset.utils.core.override_user` (already
-  ported to the AsyncSession surface).
-* ``security_manager.find_user`` is invoked through the async
-  :class:`AsyncSecurityManager` from :mod:`superset.security.manager`.
-* The command bodies that don't actually need an event-loop run
-  synchronously (matching the original CLI) and read the metadata DB
-  via the sync session helper :func:`superset.db.session.get_sync_session`.
+Kept for backward compatibility with automation written against pre-V1 Superset.
+Prefer the V1 zip-based commands in ``importexport.py`` for new workflows.
 """
 
 from __future__ import annotations

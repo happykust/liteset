@@ -15,8 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Pluggable logging configurator — port of
-``superset_old/utils/logging_configurator.py`` to Liteset.
+"""Pluggable logging configurator.
 
 Liteset's primary logging entry point is
 :func:`superset.logging.configure_logging` (structlog-based, called
@@ -60,8 +59,6 @@ def _read(config: Any, key: str, default: Any = None) -> Any:
     so a downstream subclass that still does ``cfg["LOG_FORMAT"]``
     keeps working.
     """
-    # Mapping-style access (dict, or any subclass) — try original
-    # UPPER_CASE first, then snake_case.
     if isinstance(config, Mapping):
         if key in config:
             return config[key]
@@ -69,7 +66,6 @@ def _read(config: Any, key: str, default: Any = None) -> Any:
         if snake in config:
             return config[snake]
         return default
-    # Settings-style access (Pydantic).
     snake = key.lower()
     if hasattr(config, snake):
         return getattr(config, snake)
@@ -101,13 +97,9 @@ class DefaultLoggingConfigurator(  # pylint: disable=too-few-public-methods
 ):
     """Stock logging configurator — installs a stderr ``StreamHandler``
     plus an optional :class:`TimedRotatingFileHandler`.
-
-    Mirrors the original implementation byte-for-byte except for the
-    upstream logger silencing (no longer applicable).
     """
 
     def configure_logging(self, app_config: Any, debug_mode: bool) -> None:
-        # ``basicConfig()`` will set up a default StreamHandler on stderr.
         logging.basicConfig(format=_read(app_config, "LOG_FORMAT"))
         logging.getLogger().setLevel(_read(app_config, "LOG_LEVEL"))
 

@@ -23,9 +23,8 @@ Specifically covers the ``is_anonymous`` default fix:
 default is ``False`` (not anonymous), consistent with every other
 callsite in the codebase (``security/manager.py``, ``utils/rls.py``).
 
-See: ``superset_old/tasks/utils.py::get_current_user`` — the original
-reads ``g.user.is_anonymous`` directly; FAB always defines that
-property returning ``False`` for normal users, so the default only
+The original reads ``g.user.is_anonymous`` directly; FAB always defines
+that property returning ``False`` for normal users, so the default only
 matters in Liteset where the user may be a ``CachedUser``.
 """
 
@@ -33,10 +32,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_slice(slice_id: int = 1) -> MagicMock:
@@ -52,11 +47,6 @@ def _make_dashboard(dashboard_id: int = 2) -> MagicMock:
 
 
 def _run_slice_listener(user_obj: object) -> MagicMock:
-    """Call ``_slice_after_changed`` with the given user in context.
-
-    Returns the mock ``cache_chart_thumbnail`` so callers can assert on
-    ``.delay.call_args``.
-    """
     from superset.models._listeners import _slice_after_changed
 
     mock_task = MagicMock()
@@ -80,7 +70,6 @@ def _run_slice_listener(user_obj: object) -> MagicMock:
 
 
 def _run_dashboard_listener(user_obj: object) -> MagicMock:
-    """Call ``_dashboard_after_changed`` with the given user in context."""
     from superset.models._listeners import _dashboard_after_changed
 
     mock_task = MagicMock()
@@ -101,11 +90,6 @@ def _run_dashboard_listener(user_obj: object) -> MagicMock:
     ):
         _dashboard_after_changed(MagicMock(), MagicMock(), _make_dashboard())
     return mock_task
-
-
-# ---------------------------------------------------------------------------
-# _slice_after_changed — is_anonymous default
-# ---------------------------------------------------------------------------
 
 
 def test_slice_thumbnail_authenticated_fab_user_passes_username():
@@ -133,7 +117,6 @@ def test_slice_thumbnail_cached_user_no_is_anonymous_passes_username():
     would silently drop the username.  With ``False`` as the default,
     the authenticated CachedUser's username is forwarded correctly.
     """
-    # Simulate CachedUser: has is_authenticated but NOT is_anonymous
     user = SimpleNamespace(username="bob", is_authenticated=True)
     assert not hasattr(user, "is_anonymous"), "precondition: no is_anonymous"
     task = _run_slice_listener(user)
@@ -148,11 +131,6 @@ def test_slice_thumbnail_none_user_passes_none():
     task.delay.assert_called_once()
     _, kwargs = task.delay.call_args
     assert kwargs["current_user"] is None
-
-
-# ---------------------------------------------------------------------------
-# _dashboard_after_changed — same is_anonymous default guarantee
-# ---------------------------------------------------------------------------
 
 
 def test_dashboard_thumbnail_authenticated_fab_user_passes_username():

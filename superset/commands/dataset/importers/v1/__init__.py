@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dataset/importers/v1/__init__.py``."""
+"""Command and helpers for importing datasets from a v1 ZIP bundle."""
 
 from __future__ import annotations
 
@@ -46,7 +46,6 @@ CHUNKSIZE = 512
 VARCHAR = re.compile(r"VARCHAR\((\d+)\)", re.IGNORECASE)
 JSON_KEYS = {"params", "template_params", "extra"}
 
-# Column type mapping for CSV data loading
 _TYPE_MAP: dict[str, Any] = {
     "BOOLEAN": Boolean(),
     "VARCHAR": String(255),
@@ -86,7 +85,6 @@ def _get_dtype(
 
 
 class ImportDatasetsCommand(AsyncImportModelsCommand):
-    # 1:1 with upstream metadata-type validation (``SqlaTable``).
     _expected_type = "SqlaTable"
 
     def __init__(
@@ -116,7 +114,7 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                 raise CommandInvalidError(f"Missing table_name in {name}")
 
     async def run(self) -> None:
-        """Override to ensure dependency order: databases -> datasets."""
+        """Import in dependency order: databases then datasets."""
         if self._configs is None:
             raise CommandInvalidError("validate() must be called before run()")
         configs = self._configs
@@ -136,7 +134,7 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
             await self._import_single(file_name, content)
 
     async def _check_existing(self, uuid_val: str) -> bool:
-        """Check if a dataset with this UUID already exists."""
+        """Return True if a dataset with this UUID already exists."""
         from uuid import UUID as _UUID
 
         if self._dao is None:
@@ -149,10 +147,7 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         file_name: str,
         content: dict[str, Any],
     ) -> None:
-        """Import a single file from the bundle.
-
-        Handles both databases/ and datasets/ prefixed files.
-        """
+        """Import a single file (databases/ or datasets/ prefix) from the bundle."""
         if file_name.startswith("databases/"):
             await self._import_database(file_name, content)
             return
@@ -168,19 +163,7 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         file_name: str,
         content: dict[str, Any],
     ) -> None:
-        """Import a dependent database from the bundle.
-
-        Delegates to the shared full ``_import_database`` port (the same
-        function the chart/assets importers use) — 1:1 with upstream where
-        the dataset importer calls the common
-        ``commands.database.importers.v1.utils.import_database``.  That
-        covers everything the previous inline copy dropped: ``extra``
-        JSON-serialisation, the ``PREVENT_UNSAFE_DB_CONNECTIONS`` URI check,
-        ``set_sqlalchemy_uri`` password masking, SSH-tunnel rows and
-        catalog/schema ``add_permissions``.  ``overwrite=False`` is
-        hardcoded upstream (``import_database(config, overwrite=False)``) —
-        dependency databases are never overwritten on dataset import.
-        """
+        """Import a dependency database; never overwritten on dataset import."""
         if self._dao is None:
             return
 
@@ -192,8 +175,8 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
             self._dao.session,
             dict(content),
             overwrite=False,
-            # Without a security manager the permission gate lives on the
-            # controller guard (can_write Dataset) — don't deny creation.
+            # Without a security manager the gate lives on the controller guard
+            # (can_write Dataset) — don't deny creation here.
             ignore_permissions=(
                 self._ignore_permissions or self._security_manager is None
             ),
@@ -204,14 +187,9 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         self,
         content: dict[str, Any],
     ) -> None:
-        """Import a single dataset — 1:1 port of import_dataset().
-
-        Logic ported from superset_old/commands/dataset/importers/v1/utils.py:
-        1. UUID-based dedup with MultipleResultsFound handling
-        2. All dataset fields
-        3. Recursive column and metric import with sync
-        4. Data loading from CSV URI
-        5. Owner management
+        """
+        Import a single dataset (UUID dedup, columns/metrics sync,
+        CSV data load, owners).
         """
         assert self._dao is not None
 
@@ -228,11 +206,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
 
         user = get_current_user()
 
-        # --- Permission check ---
-        # ``AsyncSecurityManager.can_access`` takes the user explicitly
-        # (keyword-only) — the upstream manager reads the request-scoped
-        # current user inside ``can_access`` instead. No user in context →
-        # deny, like upstream.
         can_write = self._ignore_permissions
         if not can_write and self._security_manager is not None:
             if hasattr(self._security_manager, "can_access"):
@@ -246,14 +219,10 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         elif self._security_manager is None:
             can_write = True
 
-        # --- UUID-based dedup ---
         uuid_str = config.get("uuid")
         existing: SqlaTable | None = None
         if uuid_str:
             existing = await self._dao.find_one_or_none(uuid=_UUID(uuid_str))
-
-        # 1:1 port of import_dataset(): the importing user must own the
-        # existing dataset (or be an admin) before they may overwrite it.
 
         if existing:
             if self._overwrite and can_write and user:
@@ -277,7 +246,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                 "to create datasets"
             )
 
-        # --- Resolve database by UUID if database_id not present ---
         database_id = config.get("database_id")
         db_uuid = config.get("database_uuid")
         if not database_id and db_uuid:
@@ -294,7 +262,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                 "(provide database_id or database_uuid in export)"
             )
 
-        # --- Serialize JSON fields ---
         for key in JSON_KEYS:
             if config.get(key) is not None and isinstance(config[key], dict):
                 try:
@@ -302,7 +269,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                 except TypeError:
                     logger.info("Unable to encode `%s` field: %s", key, config[key])
 
-        # Serialize extra fields in columns and metrics
         for key in ("metrics", "columns"):
             for attributes in config.get(key, []):
                 if (
@@ -319,23 +285,18 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                         )
                         attributes["extra"] = None
 
-        # Should we delete columns and metrics not present in import?
         sync_columns = self._sync_columns and self._overwrite
         sync_metrics = self._sync_metrics and self._overwrite
 
-        # Data URI for loading CSV data
         data_uri = config.get("data")
 
-        # --- Remove non-model fields ---
         config.pop("version", None)
         config.pop("database_uuid", None)
         config.pop("data", None)
 
-        # --- Extract columns and metrics for separate handling ---
         columns_config = config.pop("columns", []) or []
         metrics_config = config.pop("metrics", []) or []
 
-        # --- Dataset attribute mapping ---
         dataset_attrs = {
             "table_name",
             "main_dttm_col",
@@ -357,27 +318,17 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
             "database_id",
             "perm",
             "schema_perm",
-            # extra_import_fields upstream (connectors/sqla/models.py:212) —
-            # R11-11.
             "is_managed_externally",
             "external_url",
-            # export_fields includes folders (models.py:1171) — R11-12.
             "folders",
         }
 
         collision = False
         if existing:
-            # Historical two-row guard — 1:1 with upstream's
-            # ``except MultipleResultsFound`` fallback (utils.py:161-170):
-            # datasets were once imported without a schema (``db.NULL.tbl``)
-            # and later fixed to the default schema (``db.public.tbl``); a
-            # user-created row may already occupy the incoming name. If
-            # ANOTHER row (different id) holds the incoming (database_id,
-            # catalog, schema, table_name), applying the update would violate
-            # ``uq_tables_database_catalog_schema_table`` (IntegrityError →
-            # 500). Upstream returned the UUID-matched row unmodified — do
-            # the same: keep ``existing`` as-is and skip attrs/columns/
-            # metrics, but still flow into the data-loading step below.
+            # Guard against historical schema-NULL → schema-default two-row
+            # situations: if another row (different id) already occupies the
+            # incoming (database_id, catalog, schema, table_name), skip
+            # attrs/columns/metrics but still flow into the data-loading step.
             conflict_id = (
                 (
                     await self._dao.session.execute(
@@ -395,7 +346,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
             )
             collision = conflict_id is not None
             if not collision:
-                # Update existing dataset
                 for key in dataset_attrs:
                     if key in config:
                         setattr(existing, key, config[key])
@@ -403,12 +353,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                     existing.uuid = _UUID(uuid_str)  # type: ignore[assignment]
             dataset = existing
         else:
-            # Create new dataset. NOTE: upstream wrapped this in
-            # ``except MultipleResultsFound`` because it called
-            # ``SqlaTable.import_from_dict`` (an ORM dedup query that can raise
-            # it); the async port does its own UUID dedup above and constructs
-            # the model directly, which cannot raise MultipleResultsFound — so
-            # the handler is omitted rather than kept as dead code.
             filtered_attrs = {k: v for k, v in config.items() if k in dataset_attrs}
             dataset = SqlaTable(**filtered_attrs)
             if uuid_str:
@@ -418,18 +362,11 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         if not collision:
             await self._dao.session.flush()
 
-            # --- Import columns ---
             await self._import_columns(dataset, columns_config, sync=sync_columns)
-
-            # --- Import metrics ---
             await self._import_metrics(dataset, metrics_config, sync=sync_metrics)
 
             await self._dao.session.flush()
 
-        # --- Load data from URI if needed ---
-        # 1:1 port of import_dataset(): data is loaded when a ``data`` URI is
-        # present AND either the target table does not yet exist OR the caller
-        # forced a reload (``force_data``).
         if data_uri:
             try:
                 table_exists = await self._table_exists(dataset)
@@ -443,33 +380,19 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
 
             if not table_exists or self._force_data:
                 if collision:
-                    # The collision branch skips ``_import_columns`` (which
-                    # refreshes ``columns``), so ``_get_dtype`` would trip a
-                    # sync lazy-load (MissingGreenlet). Load the relationship
-                    # first — upstream's sync session lazy-loaded it on
-                    # demand here.
+                    # The collision branch skips _import_columns (which refreshes
+                    # ``columns``), so _get_dtype would trip a sync lazy-load
+                    # (MissingGreenlet). Load the relationship first.
                     await self._dao.session.refresh(dataset, ["columns"])  # type: ignore[union-attr]
-                # NO try/except — upstream ``load_data`` failures (incl.
-                # DatasetForbiddenDataURI and download/engine errors)
-                # propagate and fail the whole import (R11-10: a swallow-all
-                # used to turn them into a silently "successful" import
-                # without data).
                 await self._load_data(data_uri, dataset)
 
-        # --- Owner management ---
-        # Add the importing user as owner — 1:1 with upstream utils.py:189
-        # ``if (user := get_user()) and user not in dataset.owners: ...``.
-        # Resolve via the request-scoped ContextVar (the async equivalent of
-        # the request-scoped current user); the previous gate on
-        # ``hasattr(security_manager, "get_current_user")`` was ALWAYS False
-        # (AsyncSecurityManager has no such method), so the owner was never set.
         from superset.utils.core import get_current_user as _get_current_user
 
         owner = _get_current_user()
         if owner is not None:
-            # Refresh ``owners`` FIRST — reading the relationship (even via
-            # ``hasattr``) before it's loaded triggers a sync lazy-load on the
-            # async session → MissingGreenlet. The dataset was flushed above.
+            # Refresh ``owners`` before reading the relationship — accessing it
+            # before load triggers a sync lazy-load on the async session
+            # → MissingGreenlet.
             await self._dao.session.refresh(dataset, ["owners"])  # type: ignore[union-attr]
             if owner not in dataset.owners:
                 dataset.owners.append(owner)
@@ -480,7 +403,10 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         columns_config: list[dict[str, Any]],
         sync: bool = False,
     ) -> None:
-        """Import columns into a dataset, optionally syncing (deleting absent ones)."""
+        """
+        Import columns into a dataset, optionally deleting absent ones
+        when sync=True.
+        """
         from uuid import UUID as _UUID
 
         from superset.models.connectors import TableColumn
@@ -488,7 +414,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         if not columns_config and not sync:
             return
 
-        # Refresh relationship to get current DB state
         await self._dao.session.refresh(dataset, ["columns"])  # type: ignore[union-attr]
         existing_by_uuid: dict[str, TableColumn] = {}
         existing_by_name: dict[str, TableColumn] = {}
@@ -521,7 +446,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
             col_uuid = col_data.get("uuid")
             col_name = col_data.get("column_name", "")
 
-            # Try to find existing column by UUID, then by name
             existing_col = None
             if col_uuid:
                 existing_col = existing_by_uuid.get(col_uuid)
@@ -529,7 +453,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                 existing_col = existing_by_name.get(col_name)
 
             if existing_col:
-                # Update existing column
                 for key in col_attrs:
                     if key in col_data:
                         setattr(existing_col, key, col_data[key])
@@ -537,7 +460,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                     existing_col.uuid = _UUID(col_uuid)  # type: ignore[assignment]
                 seen_ids.add(existing_col.id)
             else:
-                # Create new column
                 filtered = {k: v for k, v in col_data.items() if k in col_attrs}
                 filtered["table_id"] = dataset.id
                 new_col = TableColumn(**filtered)
@@ -545,7 +467,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
                     new_col.uuid = _UUID(col_uuid)  # type: ignore[assignment]
                 dataset.columns.append(new_col)
 
-        # Sync: delete columns not present in the import
         if sync:
             ids_to_delete = existing_ids - seen_ids
             for cid in ids_to_delete:
@@ -560,7 +481,10 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         metrics_config: list[dict[str, Any]],
         sync: bool = False,
     ) -> None:
-        """Import metrics into a dataset, optionally syncing."""
+        """
+        Import metrics into a dataset, optionally deleting absent ones
+        when sync=True.
+        """
         from uuid import UUID as _UUID
 
         from superset.models.connectors import SqlMetric
@@ -568,7 +492,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         if not metrics_config and not sync:
             return
 
-        # Refresh relationship to get current DB state
         await self._dao.session.refresh(dataset, ["metrics"])  # type: ignore[union-attr]
         existing_by_uuid: dict[str, SqlMetric] = {}
         existing_by_name: dict[str, SqlMetric] = {}
@@ -629,11 +552,7 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
 
     @staticmethod
     def _normalize_example_data_url(data_uri: str) -> str:
-        """Convert ``examples://`` URLs to the configured CDN URL.
-
-        Port of ``normalize_example_data_url`` usage in the original
-        ``load_data`` — leaves non-example URLs untouched.
-        """
+        """Convert ``examples://`` scheme URLs to the configured CDN URL."""
         try:
             from superset.examples.helpers import normalize_example_data_url
         except ImportError:
@@ -642,11 +561,9 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
 
     @staticmethod
     def _validate_data_uri(data_uri: str) -> None:
-        """Validate ``data_uri`` against ``DATASET_IMPORT_ALLOWED_DATA_URLS``.
-
-        1:1 port of ``superset_old/commands/dataset/importers/v1/utils.py``
-        ``validate_data_uri``: any allow-list regex matching the URI passes;
-        otherwise the original raised ``DatasetForbiddenDataURI`` (HTTP 500).
+        """
+        Validate ``data_uri`` against ``DATASET_IMPORT_ALLOWED_DATA_URLS``;
+        raises DatasetForbiddenDataURI on mismatch.
         """
         try:
             from superset.config import SupersetSettings
@@ -670,13 +587,9 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         raise DatasetForbiddenDataURI()
 
     async def _table_exists(self, dataset: "SqlaTable") -> bool:
-        """1:1 port of ``Database.has_table`` used by ``import_dataset``.
-
-        Inspects the dataset's physical table on its backing database via a
-        sync engine (run in a worker thread). Mirrors the original
-        ``engine.has_table(table, schema)`` with the lowercase fallback.
-        Raises on connection/inspection failure so the caller can apply the
-        original "assume it exists" behaviour.
+        """
+        Return True if the dataset's physical table exists;
+        raises on connection failure.
         """
         import asyncio
 
@@ -684,7 +597,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
 
         database = await self._get_dataset_database(dataset)
         if database is None:
-            # No database -> treat as not existing so example data can load.
             return False
 
         if not getattr(database, "sqlalchemy_uri", ""):
@@ -694,10 +606,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         schema = getattr(dataset, "schema", None) or None
 
         def _check_sync() -> bool:
-            # ``get_sqla_engine`` (not a bare ``create_engine`` on the stored
-            # URI) — the stored URI carries PASSWORD_MASK; the engine factory
-            # restores the real password (sqlalchemy_uri_decrypted), 1:1 with
-            # upstream ``database.has_table`` going through ``get_sqla_engine``.
             with database.get_sqla_engine() as engine:
                 inspector = sa.inspect(engine)
                 if inspector.has_table(table_name, schema):
@@ -707,13 +615,9 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         return await asyncio.to_thread(_check_sync)
 
     async def _get_dataset_database(self, dataset: "SqlaTable") -> Any:
-        """Resolve ``dataset.database`` without tripping MissingGreenlet.
-
-        ``getattr(dataset, "database", None)`` does NOT suppress
-        ``MissingGreenlet`` (it only suppresses ``AttributeError``) — an
-        unloaded lazy relationship fires a sync SELECT on the async session.
-        Check the loaded-state via the inspector first and fall back to an
-        explicit async DAO fetch.
+        """
+        Resolve dataset.database without a sync lazy-load
+        (checks inspector state first).
         """
         import sqlalchemy as sa
 
@@ -727,20 +631,14 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         data_uri: str,
         dataset: "SqlaTable",
     ) -> None:
-        """Load data from a URI into the dataset's table.
+        """Download data from ``data_uri`` and load it into the dataset's table.
 
-        Port of superset_old/commands/dataset/importers/v1/utils.py load_data().
-
-        Restores the original SSRF protection: example URLs are first
-        normalised (``examples://`` -> configured CDN) and then validated
-        against ``DATASET_IMPORT_ALLOWED_DATA_URLS`` before any ``urlopen``.
+        URLs are normalised (``examples://`` → CDN) then validated against
+        ``DATASET_IMPORT_ALLOWED_DATA_URLS`` before any network request (SSRF guard).
         """
         import asyncio
 
-        # Convert example URLs to align with configuration.
         data_uri = self._normalize_example_data_url(data_uri)
-
-        # Validate against the allow-list (raises DatasetForbiddenDataURI).
         self._validate_data_uri(data_uri)
 
         logger.info("Downloading data from %s", data_uri)
@@ -753,12 +651,10 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
         df = await asyncio.to_thread(pd.read_csv, data, encoding="utf-8")
         dtype = _get_dtype(df, dataset)
 
-        # Convert temporal columns
         for column_name, sqla_type in dtype.items():
             if isinstance(sqla_type, (Date, DateTime)):
                 df[column_name] = pd.to_datetime(df[column_name])
 
-        # Load data using the database engine
         database = await self._get_dataset_database(dataset)
         if database is None:
             logger.warning(
@@ -776,9 +672,6 @@ class ImportDatasetsCommand(AsyncImportModelsCommand):
             return
 
         def _load_sync() -> None:
-            # ``get_sqla_engine`` restores the masked password — 1:1 with
-            # upstream ``load_data``'s
-            # ``database.get_sqla_engine(catalog=..., schema=...)``.
             with database.get_sqla_engine(catalog=catalog, schema=schema) as engine:
                 df.to_sql(
                     table_name,

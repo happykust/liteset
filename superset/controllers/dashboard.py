@@ -52,8 +52,6 @@ from superset.commands.dashboard.update import (
     UpdateDashboardFiltersCommand,
 )
 from superset.commands.importers.exceptions import NoValidFilesFoundError
-
-# DAO imports moved to provider functions (avoid the legacy import chain)
 from superset.controllers.base import (
     build_rison_query_params,
     extract_ids,
@@ -113,11 +111,10 @@ logger = logging.getLogger(__name__)
 def _parse_import_upload(filename: str, contents: bytes) -> tuple[dict[str, str], bool]:
     """Split an uploaded import payload into ``({filename: text}, is_zip)``.
 
-    Mirrors ``superset_old/dashboards/api.py:1587-1595``: ZIP bundles are
-    decoded with ``get_contents_from_bundle`` (``remove_root`` + YAML-only
-    filtering), while a non-ZIP upload is treated as a single legacy (v0)
+    ZIP bundles are decoded with ``get_contents_from_bundle`` (``remove_root``
+    + YAML-only filtering); a non-ZIP upload is treated as a single legacy (v0)
     JSON document keyed by its filename. Empty contents raise
-    :class:`NoValidFilesFoundError`, matching the original.
+    :class:`NoValidFilesFoundError`.
     """
     import zipfile
 
@@ -138,9 +135,6 @@ def _parse_import_upload(filename: str, contents: bytes) -> tuple[dict[str, str]
     return parsed, is_zip
 
 
-# ---------------------------------------------------------------------------
-# Custom RISON filters for dashboards
-# ---------------------------------------------------------------------------
 def _dashboard_custom_filters(current_user: Any) -> dict[str, Any]:  # noqa: C901
     def _dashboard_is_favorite(model_cls: Any, value: Any) -> Any:
         from sqlalchemy import select as sa_select
@@ -163,10 +157,6 @@ def _dashboard_custom_filters(current_user: Any) -> dict[str, Any]:  # noqa: C90
             return model_cls.certified_by.isnot(None)
         return model_cls.certified_by.is_(None)
 
-    # ------------------------------------------------------------------
-    # Ports of the dashboard list filters from
-    # ``superset_old/dashboards/filters.py``.
-    # ------------------------------------------------------------------
     def _title_or_slug(model_cls: Any, value: Any) -> Any:
         """``DashboardTitleOrSlugFilter`` (arg ``title_or_slug``)."""
         from sqlalchemy import or_
@@ -257,8 +247,7 @@ def _dashboard_custom_filters(current_user: Any) -> dict[str, Any]:  # noqa: C90
 def _get_time_grain_sqla(database: Any) -> list[list[Any]]:
     """Return ``[(duration, label), ...]`` for the time-grain control.
 
-    1:1 with ``superset_old/connectors/sqla/models.py::SqlaTable.time_grain_sqla``
-    which calls ``self.database.grains()`` → ``db_engine_spec.get_time_grains()``.
+    Calls ``database.grains()`` → ``db_engine_spec.get_time_grains()``.
     The frontend's dashboard filter expects this format to hydrate the
     granularity SelectControl correctly.
     """
@@ -284,9 +273,6 @@ class DashboardController(Controller):
         "rison_params": Provide(provide_rison_query),
     }
 
-    # ------------------------------------------------------------------
-    # GET — list dashboards
-    # ------------------------------------------------------------------
     @get(
         "/",
         guards=[require_permission("can_read", "Dashboard")],
@@ -298,7 +284,6 @@ class DashboardController(Controller):
         current_user: UserProtocol,
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """GET /api/v1/dashboard/ — list dashboards with filtering/pagination."""
         from sqlalchemy.orm import selectinload
 
         from superset.db.filters import dashboard_access_filters
@@ -388,9 +373,6 @@ class DashboardController(Controller):
             ],
         )
 
-    # ------------------------------------------------------------------
-    # GET — API metadata
-    # ------------------------------------------------------------------
     @get(
         "/_info",
         guards=[require_permission("can_read", "Dashboard")],
@@ -401,13 +383,9 @@ class DashboardController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        """GET /api/v1/dashboard/_info — API metadata for frontend."""
         return await get_info_payload(
             dao=dao,
             model_name="Dashboard",
-            # Mirrors the original upstream-generated permission list exposed
-            # by ``/api/v1/dashboard/_info``; the list order is preserved to
-            # match what Cypress snapshots assume.
             permissions=[
                 "can_read",
                 "can_get_embedded",
@@ -422,9 +400,6 @@ class DashboardController(Controller):
             class_permission_name="Dashboard",
         )
 
-    # ------------------------------------------------------------------
-    # GET — related values for dropdowns
-    # ------------------------------------------------------------------
     @get(
         "/related/{column_name:str}",
         guards=[require_permission("can_read", "Dashboard")],
@@ -437,7 +412,6 @@ class DashboardController(Controller):
         current_user: UserProtocol,
         rison_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """GET /api/v1/dashboard/related/{column_name}"""
         from superset.db.filters import dashboard_access_filters
 
         base_filters = await dashboard_access_filters(security_manager, current_user)
@@ -449,9 +423,6 @@ class DashboardController(Controller):
             base_filters=base_filters or None,
         )
 
-    # ------------------------------------------------------------------
-    # GET — distinct values for filters
-    # ------------------------------------------------------------------
     @get(
         "/distinct/{column_name:str}",
         guards=[require_permission("can_read", "Dashboard")],
@@ -483,9 +454,6 @@ class DashboardController(Controller):
             base_filters=base_filters or None,
         )
 
-    # ------------------------------------------------------------------
-    # GET — single dashboard
-    # ------------------------------------------------------------------
     @get(
         "/{id_or_slug:str}",
         guards=[require_permission("can_read", "Dashboard")],
@@ -507,10 +475,7 @@ class DashboardController(Controller):
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", id_or_slug)
 
-        # 1:1 with superset_old/daos/dashboard.py:71-75 — after the access
-        # filter, the original performs a secondary ``dashboard.raise_for_access()``
-        # which maps a ``SupersetSecurityException`` to ``DashboardAccessDeniedError``
-        # → HTTP 403 (vs. the 404 returned by the filter miss above). The async
+        # Secondary 403 gate after the 404 access-filter miss above:
         # ``raise_for_access`` raises ``SupersetSecurityException`` (403) directly.
         await security_manager.raise_for_access(dashboard=dashboard, user=current_user)
 
@@ -520,10 +485,8 @@ class DashboardController(Controller):
 
         result = DashboardDetailResult.from_model(dashboard)
 
-        # Scrub owner and editor identity for guest (embedded Superset) users.
-        # 1:1 with superset_old/dashboards/schemas.py::DashboardGetResponseSchema
-        # @post_dump hook (lines 244-249): strip ``owners``, ``changed_by``, and
-        # ``changed_by_name`` from the response when the current user is a guest.
+        # Scrub owner and editor identity for guest (embedded Superset) users:
+        # strip ``owners``, ``changed_by``, and ``changed_by_name`` from the response.
         is_guest = security_manager.is_guest_user(current_user)
         if is_guest:
             result.owners = []
@@ -535,9 +498,6 @@ class DashboardController(Controller):
             result=result,
         )
 
-    # ------------------------------------------------------------------
-    # GET — related datasets
-    # ------------------------------------------------------------------
     @get(
         "/{id_or_slug:str}/datasets",
         guards=[require_permission("can_read", "Dashboard")],
@@ -570,10 +530,9 @@ class DashboardController(Controller):
 
         def _resolve_generic_type(sqla_type: Any, is_dttm: bool) -> int | None:
             """Map SQLAlchemy column type → utils.GenericDataType int.
-            0=NUMERIC, 1=STRING, 2=TEMPORAL, 3=BOOLEAN.  Matches
-            ``TableColumn.type_generic`` in superset_old without
-            requiring a live db_engine_spec lookup (which needs a
-            database connection in async context).
+            0=NUMERIC, 1=STRING, 2=TEMPORAL, 3=BOOLEAN.  Does not require
+            a live db_engine_spec lookup (which needs a database connection
+            in async context).
             """
             if is_dttm:
                 return 2  # TEMPORAL
@@ -614,8 +573,6 @@ class DashboardController(Controller):
             column_names = [
                 c.column_name for c in columns if getattr(c, "column_name", None)
             ]
-            # Unique set of generic column types (matches
-            # ``superset_old/connectors/sqla/models.py:482``)
             column_types: list[int] = []
             seen_types: set[int] = set()
             for c in columns:
@@ -653,10 +610,8 @@ class DashboardController(Controller):
                 for m in metrics
                 if getattr(m, "metric_name", None)
             ]
-            # ``choicify(self.dttm_cols)`` upstream → ``[[value, label], …]``
-            # pairs (superset_old/connectors/sqla/models.py:1346 +
-            # DashboardDatasetSchema's ``fields.List(fields.List(...))``); a
-            # flat list of names breaks the time-column filter control.
+            # ``granularity_sqla`` must be ``[[value, label], …]`` pairs;
+            # a flat list of names breaks the time-column filter control.
             granularity_sqla = [
                 [c.column_name, c.column_name]
                 for c in columns
@@ -734,16 +689,14 @@ class DashboardController(Controller):
                 "order_by_choices": order_by_choices,
                 "owners": owners_list,
                 "select_star": None,
-                # ``filter_select`` is a legacy alias kept for frontend
-                # compatibility (TODO deprecate — see superset_old
-                # connectors/sqla/models.py:375).
+                # ``filter_select`` is a legacy alias for ``filter_select_enabled``,
+                # kept for frontend compatibility (TODO deprecate).
                 "filter_select": getattr(ds, "filter_select_enabled", False),
                 "health_check_message": getattr(ds, "health_check_message", None),
             }
 
-        # 1:1 with original DashboardDatasetSchema.post_dump:
-        # strip ``owners`` and ``database`` from dataset dicts when the
-        # current user is a guest (embedded Superset).
+        # Strip ``owners`` and ``database`` from dataset dicts for guest users
+        # (embedded Superset).
         def _scrub_for_guest(d: dict[str, Any]) -> dict[str, Any]:
             if is_guest:
                 d.pop("owners", None)
@@ -754,9 +707,6 @@ class DashboardController(Controller):
             "result": [_scrub_for_guest(_build_dataset_dict(ds)) for ds in datasets]
         }
 
-    # ------------------------------------------------------------------
-    # GET — tab structure
-    # ------------------------------------------------------------------
     @get(
         "/{id_or_slug:str}/tabs",
         guards=[require_permission("can_read", "Dashboard")],
@@ -771,11 +721,8 @@ class DashboardController(Controller):
         import json as _json
         from collections import deque
 
-        # Access-scope like the full GET: ``dashboard_access_filters`` → 404
-        # for an unseeable dashboard, ``raise_for_access`` the 403 gate; full
-        # loader avoids a MissingGreenlet on owners/roles. Guards the tab
-        # structure of an inaccessible dashboard against coarse-``can_read``
-        # enumeration.
+        # Access gate (see get_datasets): 404 for unseeable dashboard, 403 via
+        # raise_for_access; full loader avoids MissingGreenlet on owners/roles.
         from superset.db.filters import dashboard_access_filters
 
         access_filters = await dashboard_access_filters(security_manager, current_user)
@@ -795,8 +742,7 @@ class DashboardController(Controller):
 
             from superset.i18n import gettext as _
 
-            # 1:1 with ``except (TypeError, ValueError) → response_400``
-            # (superset_old/dashboards/api.py:484-489) — HTTP 400, not 422.
+            # HTTP 400, not 422.
             raise ClientException(
                 status_code=400,
                 detail=_(
@@ -806,21 +752,17 @@ class DashboardController(Controller):
             ) from err
 
         if position == {}:
-            # 1:1 with ``Dashboard.tabs`` (superset_old/models/dashboard.py:
-            # 307-309): ``if self.position == {}: return {}`` — covers NULL,
-            # "" AND the JSON-empty ``"{}"`` string; the dumped result is an
-            # EMPTY object (no all_tabs/tab_tree keys).
+            # Covers NULL, "" AND the JSON-empty ``"{}"`` string;
+            # the dumped result is an EMPTY object (no all_tabs/tab_tree keys).
             return {"result": {}}
 
         all_tabs: dict[str, str] = {}
         tab_tree: list[dict[str, Any]] = []
 
-        # Direct dict indexing throughout — 1:1 with ``Dashboard.tabs``
-        # (superset_old/models/dashboard.py:311-342): a position_json that is
-        # valid JSON but lacks ROOT_ID / a node "type" / "meta"."text" raises
-        # KeyError, which the original API's ``except (TypeError, ValueError)``
-        # does NOT catch -> @safe -> HTTP 500. Defensive ``.get`` fallbacks
-        # here turned those into silent 200s.
+        # Direct dict indexing: a position_json that is valid JSON but lacks
+        # ROOT_ID / a node "type" / "meta"."text" raises KeyError. Defensive
+        # ``.get`` fallbacks would silently turn those into 200s — keep direct
+        # indexing so they propagate as 500 (matching the upstream behaviour).
         def get_node(node_id: str) -> dict[str, Any]:
             return position[node_id]
 
@@ -853,9 +795,6 @@ class DashboardController(Controller):
 
         return {"result": {"all_tabs": all_tabs, "tab_tree": tab_tree}}
 
-    # ------------------------------------------------------------------
-    # GET — related charts
-    # ------------------------------------------------------------------
     @get(
         "/{id_or_slug:str}/charts",
         guards=[require_permission("can_read", "Dashboard")],
@@ -867,12 +806,9 @@ class DashboardController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        # Access-scope like the full GET: ``dashboard_access_filters`` → 404
-        # for an unseeable dashboard, ``raise_for_access`` the 403 gate; full
-        # loader avoids a MissingGreenlet on owners/roles. Without this, any
-        # user with the coarse ``can_read Dashboard`` perm could enumerate the
-        # chart definitions (form_data incl. metrics/SQL) of a dashboard they
-        # cannot access.
+        # Access gate (see get_datasets): prevents coarse can_read users from
+        # enumerating chart definitions (form_data incl. metrics/SQL) of a
+        # dashboard they cannot access.
         from superset.db.filters import dashboard_access_filters
 
         access_filters = await dashboard_access_filters(security_manager, current_user)
@@ -904,8 +840,6 @@ class DashboardController(Controller):
                         else None
                     ),
                     "description": desc or None,
-                    # 1:1 with Slice.description_markeddown
-                    # (superset_old/models/slice.py:215-216).
                     "description_markeddown": _markdown(desc),
                     "form_data": fd,
                     "slice_url": getattr(chart, "slice_url", None),
@@ -917,9 +851,6 @@ class DashboardController(Controller):
             )
         return {"result": result}
 
-    # ------------------------------------------------------------------
-    # POST — create
-    # ------------------------------------------------------------------
     @post(
         "/",
         guards=[require_permission("can_write", "Dashboard")],
@@ -968,9 +899,6 @@ class DashboardController(Controller):
             result=DashboardDetailResult.from_model_brief(dashboard),
         )
 
-    # ------------------------------------------------------------------
-    # PUT — update
-    # ------------------------------------------------------------------
     @put(
         "/{pk:int}",
         guards=[require_permission("can_write", "Dashboard")],
@@ -1046,9 +974,6 @@ class DashboardController(Controller):
             last_modified_time=last_modified_time,
         )
 
-    # ------------------------------------------------------------------
-    # PUT — update filters
-    # ------------------------------------------------------------------
     @put(
         "/{pk:int}/filters",
         guards=[require_permission("can_write", "Dashboard")],
@@ -1080,9 +1005,6 @@ class DashboardController(Controller):
         )
         return {"result": updated_configuration}
 
-    # ------------------------------------------------------------------
-    # PUT — update colors
-    # ------------------------------------------------------------------
     @put(
         "/{pk:int}/colors",
         guards=[require_permission("can_write", "Dashboard")],
@@ -1118,9 +1040,6 @@ class DashboardController(Controller):
         )
         return Response(content=None, status_code=200)
 
-    # ------------------------------------------------------------------
-    # DELETE — single
-    # ------------------------------------------------------------------
     @delete(
         "/{pk:int}",
         guards=[require_permission("can_write", "Dashboard")],
@@ -1147,9 +1066,6 @@ class DashboardController(Controller):
         )
         return {"message": "OK"}
 
-    # ------------------------------------------------------------------
-    # DELETE — bulk
-    # ------------------------------------------------------------------
     @delete(
         "/",
         guards=[require_permission("can_write", "Dashboard")],
@@ -1179,9 +1095,6 @@ class DashboardController(Controller):
         msg = f"Deleted {num} dashboard" if num == 1 else f"Deleted {num} dashboards"
         return {"message": msg}
 
-    # ------------------------------------------------------------------
-    # GET — export (ZIP)
-    # ------------------------------------------------------------------
     @get(
         "/export/",
         guards=[require_permission("can_export", "Dashboard")],
@@ -1198,13 +1111,9 @@ class DashboardController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             raise CommandInvalidError("At least one ID is required for export")
-        # 1:1 with ``superset_old/dashboards/api.py:1008-1031``: the ZIP is named
-        # ``dashboard_export_{YYYYMMDDTHHMMSS}.zip`` AND every entry inside is
-        # nested under that same ``dashboard_export_{ts}/`` folder — so the v1
-        # importer's ``remove_root`` (parts[1:]) strips it back off and the
-        # re-import round-trip works. The root-folder wrapping was missing →
-        # ``remove_root("metadata.yaml")`` returned ``"."`` → "Missing
-        # metadata.yaml" on re-import.
+        # ZIP is named ``dashboard_export_{YYYYMMDDTHHMMSS}.zip`` AND every entry
+        # inside is nested under that same ``dashboard_export_{ts}/`` folder so the
+        # v1 importer's ``remove_root`` (parts[1:]) strips it back off correctly.
         from datetime import datetime as _datetime
 
         timestamp = _datetime.now().strftime("%Y%m%dT%H%M%S")
@@ -1239,14 +1148,8 @@ class DashboardController(Controller):
             headers=headers,
         )
 
-    # ------------------------------------------------------------------
-    # POST — trigger screenshot
-    # ------------------------------------------------------------------
     @post(
         "/{pk:int}/cache_dashboard_screenshot/",
-        # 1:1 with original ``superset_old/dashboards/api.py:1034`` which
-        # gates this endpoint on the granular ``can_cache_dashboard_screenshot``
-        # permission via ``method_permission_name`` mapping.
         guards=[require_permission("can_cache_dashboard_screenshot", "Dashboard")],
     )
     async def cache_dashboard_screenshot(
@@ -1262,7 +1165,6 @@ class DashboardController(Controller):
     ) -> Response[Any]:
         """Compute and cache a dashboard screenshot.
 
-        1:1 port of ``superset_old/dashboards/api.py:cache_dashboard_screenshot``.
         Mints or reuses a permalink key, computes the canonical cache key
         (including the permalink) and dispatches the Celery screenshot task.
         Returns 200 on cache hit, 202 when a new task is queued.
@@ -1287,14 +1189,13 @@ class DashboardController(Controller):
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", pk)
 
-        # Extract rison query params (window_size, thumb_size, force)
         rison_dict: dict[str, Any] = rison_params or {}
         force: bool = bool(rison_dict.get("force", False))
         window_size = rison_dict.get("window_size") or (1600, 1200)
         # Don't shrink the image if thumb_size is not specified
         thumb_size = rison_dict.get("thumb_size") or window_size
 
-        # Build dashboard_state from POST body (camelCase / snake_case dual support)
+        # camelCase / snake_case dual support (msgspec rename="camel")
         dashboard_state: dict[str, Any] = {
             "dataMask": (
                 getattr(data, "data_mask", None)
@@ -1320,7 +1221,6 @@ class DashboardController(Controller):
             data, "permalinkKey", None
         )
         if not permalink_key:
-            # kv_dao is an AsyncKeyValueDAO instance wired via provider
             _kv = cast("AsyncKeyValueDAO", kv_dao)
             permalink_key = await CreateDashboardPermalinkCommand(
                 dao=_kv,
@@ -1371,7 +1271,6 @@ class DashboardController(Controller):
                 cache_dashboard_screenshot as _cache_dashboard_screenshot_task,
             )
 
-            # Extract guest_token for embedded (guest user) flow
             guest_token: dict[str, Any] | None = None
             from superset.security.guest import GuestUser
 
@@ -1391,9 +1290,6 @@ class DashboardController(Controller):
             return _build_response(202)
         return _build_response(200)
 
-    # ------------------------------------------------------------------
-    # GET — screenshot
-    # ------------------------------------------------------------------
     @get(
         "/{pk:int}/screenshot/{digest:str}/",
         guards=[require_permission("can_read", "Dashboard")],
@@ -1430,9 +1326,8 @@ class DashboardController(Controller):
         ):
             raise ObjectNotFoundError("Dashboard screenshot", pk)
 
-        # Access-scoped lookup (1:1 upstream ``datamodel.get(pk, base_filters)``
-        # → 404) — without it any holder of the coarse perm could serve/trigger
-        # a screenshot or thumbnail of a dashboard they cannot access.
+        # Access-scoped lookup (→ 404): prevents coarse-perm holders from
+        # serving a screenshot of a dashboard they cannot access.
         from superset.db.filters import dashboard_access_filters
         from superset.utils.screenshots import (
             DashboardScreenshot,
@@ -1455,9 +1350,8 @@ class DashboardController(Controller):
             try:
                 image = cache_payload.get_image()
             except ScreenshotImageNotAvailableException:
-                # JSON (not empty image/png) on miss — 1:1 with the original
-                # ``response_404()``; see the ImageLoader note on the thumbnail
-                # endpoint below.
+                # Return JSON (not empty image/png) on miss so the frontend
+                # ImageLoader sees a non-image content type and shows the fallback.
                 return Response(
                     content={"message": "Not found"},
                     status_code=404,
@@ -1488,9 +1382,6 @@ class DashboardController(Controller):
             media_type="application/json",
         )
 
-    # ------------------------------------------------------------------
-    # GET — thumbnail
-    # ------------------------------------------------------------------
     @get(
         "/{pk:int}/thumbnail/{digest:str}/",
         guards=[require_permission("can_read", "Dashboard")],
@@ -1524,9 +1415,8 @@ class DashboardController(Controller):
         if not flags.get("THUMBNAILS", False):
             raise ObjectNotFoundError("Dashboard thumbnail", pk)
 
-        # Access-scoped lookup (1:1 upstream ``datamodel.get(pk, base_filters)``
-        # → 404) — without it any holder of the coarse perm could serve/trigger
-        # a screenshot or thumbnail of a dashboard they cannot access.
+        # Access-scoped lookup (→ 404): prevents coarse-perm holders from
+        # serving a thumbnail of a dashboard they cannot access.
         from superset.db.filters import dashboard_access_filters
         from superset.utils.screenshots import (
             DashboardScreenshot,
@@ -1541,14 +1431,12 @@ class DashboardController(Controller):
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", pk)
 
-        # Redirect to canonical digest URL if stale
         dashboard_digest = getattr(dashboard, "digest", None)
         if dashboard_digest and dashboard_digest != digest:
             return Redirect(
                 path=f"/api/v1/dashboard/{pk}/thumbnail/{dashboard_digest}/",
             )
 
-        # Build screenshot object and compute cache key
         dashboard_url = f"/superset/dashboard/{pk}/"
         screenshot_obj = DashboardScreenshot(dashboard_url, dashboard_digest or digest)
         cache_key = await asyncio.to_thread(screenshot_obj.get_cache_key)
@@ -1558,12 +1446,10 @@ class DashboardController(Controller):
         )
 
         # NB: every non-image response below returns JSON (``image/png`` ONLY on
-        # a real image) — 1:1 with the original (``response(202, ...)`` /
-        # ``response_404()``). The frontend ``ImageLoader`` fetches this URL and
-        # tests ``/image/.test(blob.type)``; an empty ``image/png`` body would
-        # pass that test and render a blank tile instead of the fallback.
+        # a real image). The frontend ``ImageLoader`` fetches this URL and tests
+        # ``/image/.test(blob.type)``; an empty ``image/png`` body would pass
+        # that test and render a blank tile instead of the fallback.
         if cache_payload.should_trigger_task():
-            # Mark as pending in cache and dispatch Celery task
             await asyncio.to_thread(
                 screenshot_obj.cache.set,
                 cache_key,
@@ -1577,9 +1463,6 @@ class DashboardController(Controller):
                 force=False,
                 cache_key=cache_key,
             )
-            # 1:1 with the original ``response(202, cache_key=..., dashboard_url=
-            # ..., image_url=..., task_updated_at=..., task_status=...)``
-            # (dashboards/api.py:1320).
             return Response(
                 content={
                     "cache_key": cache_key,
@@ -1592,10 +1475,8 @@ class DashboardController(Controller):
                 media_type="application/json",
             )
 
-        # Serve from cache
         try:
             image = cache_payload.get_image()
-            # Validate the BytesIO object
             if not image or not hasattr(image, "read"):
                 return Response(
                     content={"message": "Not found"},
@@ -1616,9 +1497,7 @@ class DashboardController(Controller):
                 media_type="application/json",
             )
         except Exception:  # noqa: BLE001
-            # 1:1 with the original's broad catch
-            # (superset_old/dashboards/api.py:1350-1357): any unexpected
-            # error retrieving the cached image → clean 404, not a 500.
+            # Any unexpected error retrieving the cached image → clean 404, not a 500.
             logger.error("Error fetching dashboard thumbnail", exc_info=True)
             return Response(
                 content={"message": "Not found"},
@@ -1631,9 +1510,6 @@ class DashboardController(Controller):
             media_type="image/png",
         )
 
-    # ------------------------------------------------------------------
-    # GET — favorite status
-    # ------------------------------------------------------------------
     @get(
         "/favorite_status/",
         guards=[require_permission("can_read", "Dashboard")],
@@ -1647,8 +1523,6 @@ class DashboardController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             return FavoriteStatusResponse()
-        # 1:1 with superset_old/dashboards/api.py:1404-1406 — resolve the
-        # requested ids first and 404 when none of them exist.
         dashboards = await dao.find_by_ids(ids)
         if not dashboards:
             raise ObjectNotFoundError("Dashboard")
@@ -1657,9 +1531,6 @@ class DashboardController(Controller):
             result=[FavoriteStatusItem(id=i, value=i in fav_ids) for i in ids],
         )
 
-    # ------------------------------------------------------------------
-    # POST — add favorite
-    # ------------------------------------------------------------------
     @post(
         "/{pk:int}/favorites/",
         guards=[require_permission("can_read", "Dashboard")],
@@ -1672,9 +1543,8 @@ class DashboardController(Controller):
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
-        # 1:1 with original: AddFavoriteDashboardCommand loads via the
-        # access-aware path and denies (403) when the user cannot access the
-        # dashboard — enforced here via ``can_access_dashboard``.
+        # AddFavoriteDashboardCommand loads via the access-aware path and
+        # denies (403) when the user cannot access the dashboard.
         cmd = AddFavoriteDashboardCommand(
             dao=cast("AsyncDashboardDAO", dao),
             dashboard_id=pk,
@@ -1690,9 +1560,6 @@ class DashboardController(Controller):
         )
         return {"result": "OK"}
 
-    # ------------------------------------------------------------------
-    # DELETE — remove favorite
-    # ------------------------------------------------------------------
     @delete(
         "/{pk:int}/favorites/",
         guards=[require_permission("can_read", "Dashboard")],
@@ -1705,8 +1572,8 @@ class DashboardController(Controller):
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
-        # 1:1 with original: RemoveFavoriteDashboardCommand enforces dashboard
-        # access (403) before unfavoriting via ``can_access_dashboard``.
+        # RemoveFavoriteDashboardCommand enforces dashboard access (403) before
+        # unfavoriting.
         cmd = RemoveFavoriteDashboardCommand(
             dao=cast("AsyncDashboardDAO", dao),
             dashboard_id=pk,
@@ -1722,9 +1589,6 @@ class DashboardController(Controller):
         )
         return {"result": "OK"}
 
-    # ------------------------------------------------------------------
-    # POST — import
-    # ------------------------------------------------------------------
     @post(
         "/import/",
         guards=[require_permission("can_write", "Dashboard")],
@@ -1739,9 +1603,9 @@ class DashboardController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, str]:
-        # Read the multipart body manually (see parse_import_request): the
-        # ``data: UploadFile = Body(MULTI_PART)`` injection 500'd when no file
-        # field was present (Litestar StopIteration). Missing upload -> 4xx.
+        # Read the multipart body manually (see parse_import_request): Litestar
+        # StopIteration on missing file field → 500; parse_import_request
+        # converts that to 4xx.
         (
             _buf,
             filename,
@@ -1753,13 +1617,8 @@ class DashboardController(Controller):
         ) = await parse_import_request(request)
         contents = _buf.getvalue()
 
-        # Mirror ``superset_old/dashboards/api.py:1587-1628``: a ZIP bundle is
-        # parsed (remove_root + YAML filter) and dispatched v1-then-v0; a
-        # non-ZIP upload is a single legacy (v0) JSON document. The dispatcher
-        # (``superset/importexport/legacy/dispatcher.py``) tries the async v1
-        # command first and falls back to the sync v0 command on
-        # ``IncorrectVersionError`` — matching the original
-        # ``commands/dashboard/importers/dispatcher.py``.
+        # A ZIP bundle is dispatched v1-then-v0 (falls back on IncorrectVersionError);
+        # a non-ZIP upload is a single legacy (v0) JSON document.
         parsed, is_zip = _parse_import_upload(filename, contents)
         if is_zip:
             dispatcher = LegacyImportDashboardsDispatcher(
@@ -1770,21 +1629,17 @@ class DashboardController(Controller):
                 ssh_tunnel_private_keys=ssh_private_keys_dict,
                 ssh_tunnel_private_key_passwords=ssh_private_key_passwords_dict,
                 # Thread the importing user into the v1 command so imported
-                # dashboards get an owner (``get_user()`` upstream) and the
-                # overwrite-access check runs — 1:1 with upstream's
-                # ``v1/utils.py`` which resolves ``user`` internally. Without
-                # this, imports were ownerless and overwrite bypassed access.
-                # (v0 ignores extra kwargs.)
+                # dashboards get an owner and the overwrite-access check runs.
+                # Without this, imports were ownerless and overwrite bypassed
+                # access. (v0 ignores extra kwargs.)
                 security_manager=security_manager,
                 current_user=current_user,
             )
             await dispatcher.run_async(dao=cast("AsyncDashboardDAO", dao))
         else:
-            # A single JSON document is unversioned (v0). The modern v1
-            # importer always requires a ZIP with ``metadata.yaml``, so route
-            # straight to the sync v0 legacy command (run in a worker thread
-            # because it uses a sync ``Session``), matching the v0 fallback the
-            # original dispatcher reaches in this path.
+            # A single JSON document is unversioned (v0). The modern v1 importer
+            # requires a ZIP with ``metadata.yaml``; route straight to sync v0
+            # legacy command in a worker thread (uses a sync Session).
             import asyncio as _asyncio
 
             from superset.importexport.legacy.dashboard_v0 import (
@@ -1797,9 +1652,6 @@ class DashboardController(Controller):
         await event_logger.alog_with_context("dashboard.import")
         return {"message": "OK"}
 
-    # ------------------------------------------------------------------
-    # GET — embedded config
-    # ------------------------------------------------------------------
     @get(
         "/{id_or_slug:str}/embedded",
         guards=[
@@ -1815,9 +1667,9 @@ class DashboardController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        # Access gate — 1:1 with upstream ``@with_dashboard`` (403/404). Without
-        # it any ``can_read Dashboard`` user could read the embedded config
-        # (uuid + allowed_domains) of a dashboard they cannot access.
+        # Access gate (403/404): without it any ``can_read Dashboard`` user could
+        # read the embedded config (uuid + allowed_domains) of a dashboard they
+        # cannot access.
         from superset.db.filters import dashboard_access_filters
 
         access_filters = await dashboard_access_filters(security_manager, current_user)
@@ -1829,8 +1681,6 @@ class DashboardController(Controller):
         await security_manager.raise_for_access(dashboard=dashboard, user=current_user)
         embedded = await embedded_dao.find_by_dashboard_id(dashboard.id)
         if not embedded:
-            # 1:1 with ``superset_old/dashboards/api.py:1667-1668``:
-            # ``if not dashboard.embedded: return self.response(404)``
             raise ObjectNotFoundError("EmbeddedDashboard", dashboard.id)
         return {
             "result": EmbeddedDashboardResponse(
@@ -1841,13 +1691,8 @@ class DashboardController(Controller):
             )
         }
 
-    # ------------------------------------------------------------------
-    # POST — create/update embedded
-    # ------------------------------------------------------------------
     @post(
         "/{id_or_slug:str}/embedded",
-        # 1:1 with original ``superset_old/dashboards/api.py:1678`` — gated
-        # on the granular ``can_set_embedded`` permission.
         guards=[require_permission("can_set_embedded", "Dashboard")],
         status_code=200,
     )
@@ -1860,11 +1705,8 @@ class DashboardController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        # Per-object access check — 1:1 with upstream ``@with_dashboard``
-        # (set_embedded → get_by_id_or_slug → access filter + raise_for_access).
-        # ``can_set_embedded`` alone gates the route, but the dashboard itself
-        # must still be accessible (defense-in-depth if the perm is ever granted
-        # to a non-admin role).
+        # Per-object access check: ``can_set_embedded`` alone gates the route, but
+        # the dashboard itself must still be accessible (defense-in-depth).
         from superset.db.filters import dashboard_access_filters
 
         access_filters = await dashboard_access_filters(security_manager, current_user)
@@ -1895,13 +1737,8 @@ class DashboardController(Controller):
             )
         }
 
-    # ------------------------------------------------------------------
-    # PUT — update embedded (idempotent)
-    # ------------------------------------------------------------------
     @put(
         "/{id_or_slug:str}/embedded",
-        # 1:1 with original ``superset_old/dashboards/api.py:1678`` — gated
-        # on the granular ``can_set_embedded`` permission.
         guards=[require_permission("can_set_embedded", "Dashboard")],
         status_code=200,
     )
@@ -1914,7 +1751,7 @@ class DashboardController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        # Per-object access check — see create_embedded note (1:1 @with_dashboard).
+        # Per-object access check (see create_embedded).
         from superset.db.filters import dashboard_access_filters
 
         access_filters = await dashboard_access_filters(security_manager, current_user)
@@ -1945,14 +1782,9 @@ class DashboardController(Controller):
             )
         }
 
-    # ------------------------------------------------------------------
-    # DELETE — embedded
-    # ------------------------------------------------------------------
     @delete(
         "/{id_or_slug:str}/embedded",
-        # 1:1 with original ``superset_old/dashboards/api.py:1761`` —
-        # ``@permission_name("set_embedded")`` gates this on the granular
-        # ``can_set_embedded`` permission (not ``can_write``).
+        # Gated on can_set_embedded (not can_write) — matches upstream @permission_name.
         guards=[require_permission("can_set_embedded", "Dashboard")],
         status_code=200,
     )
@@ -1964,7 +1796,7 @@ class DashboardController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, str]:
-        # Per-object access check — see create_embedded note (1:1 @with_dashboard).
+        # Per-object access check (see create_embedded).
         from superset.db.filters import dashboard_access_filters
 
         access_filters = await dashboard_access_filters(security_manager, current_user)
@@ -1986,9 +1818,6 @@ class DashboardController(Controller):
         )
         return {"message": "OK"}
 
-    # ------------------------------------------------------------------
-    # POST — deep copy
-    # ------------------------------------------------------------------
     @post(
         "/{id_or_slug:str}/copy/",
         guards=[require_permission("can_write", "Dashboard")],
@@ -2002,10 +1831,8 @@ class DashboardController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        # Source-dashboard access gate — 1:1 with upstream ``copy_dash``
-        # (``@with_dashboard`` → ``DashboardDAO.get_by_id_or_slug`` raises
-        # 403/404). The port's plain ``get_by_id_or_slug`` skips it, so without
-        # this any ``can_write Dashboard`` user (e.g. Gamma) could COPY — i.e.
+        # Source-dashboard access gate (403/404): without it any
+        # ``can_write Dashboard`` user (e.g. Gamma) could COPY — i.e.
         # exfiltrate the full definition of — a dashboard they cannot access.
         from superset.db.filters import dashboard_access_filters
 
@@ -2046,10 +1873,6 @@ class DashboardController(Controller):
             }
         }
 
-    # ------------------------------------------------------------------
-    # Permalink endpoints (merged from DashboardPermalinkController)
-    # ------------------------------------------------------------------
-
     @post(
         "/{pk:int}/permalink",
         guards=[
@@ -2067,10 +1890,8 @@ class DashboardController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, str]:
-        # Access gate — 1:1 with upstream ``CreateDashboardPermalinkCommand``
-        # which resolves the dashboard via ``get_by_id_or_slug`` (403/404). The
-        # port's plain ``find_by_id`` skips it, letting a user create a permalink
-        # for a dashboard they cannot access.
+        # Access gate (403/404): prevents creating a permalink for a dashboard
+        # the user cannot access.
         from superset.db.filters import dashboard_access_filters
 
         access_filters = await dashboard_access_filters(security_manager, current_user)
@@ -2098,10 +1919,7 @@ class DashboardController(Controller):
         await event_logger.alog_with_context(
             "dashboard.create_permalink", object_ref=f"dashboard:{pk}"
         )
-        # 1:1 with superset_old/dashboards/permalink/api.py:170:
-        # ``url_for("Superset.dashboard_permalink", key=key, _external=True)``
-        # resolves to ``/superset/dashboard/p/{key}/`` (the SPA route the
-        # frontend redirects to / copies). Do NOT hand back the API endpoint.
+        # Return the SPA route (``/superset/dashboard/p/{key}/``), not the API endpoint.
         return {"key": key, "url": f"/superset/dashboard/p/{key}/"}
 
     @get(
@@ -2121,11 +1939,9 @@ class DashboardController(Controller):
         )
         state = await cmd.execute()
 
-        # 1:1 with superset_old/commands/dashboard/permalink/get.py:47-48 — after
-        # the stored value is read, the original re-resolves the dashboard via
-        # ``DashboardDAO.get_by_id_or_slug(value["dashboardId"])`` so that a
-        # permalink pointing at a deleted dashboard 404s and one pointing at a
-        # now-inaccessible dashboard 403s, instead of leaking the saved state.
+        # Re-resolve the dashboard so that a permalink pointing at a deleted
+        # dashboard 404s and one pointing at a now-inaccessible dashboard 403s,
+        # instead of leaking the saved state.
         dashboard_id = state.get("dashboardId") if isinstance(state, dict) else None
         if dashboard_id is not None:
             from superset.db.filters import dashboard_access_filters

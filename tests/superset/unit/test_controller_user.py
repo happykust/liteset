@@ -75,9 +75,8 @@ async def test_get_me(mock_user: MagicMock) -> None:
 
 
 async def test_get_me_excludes_id_and_roles(mock_user: MagicMock) -> None:
-    # ``get_me`` mirrors ``UserResponseSchema``
-    # (superset_old/views/users/schemas.py:30-38).
-    # That schema includes ``id`` but does NOT include ``roles``
+    # ``get_me`` mirrors ``UserResponseSchema``:
+    # that schema includes ``id`` but does NOT include ``roles``
     # (roles are served from ``/me/roles/``).
     role = MagicMock()
     role.id = 1
@@ -120,7 +119,7 @@ async def test_get_my_roles(mock_user: MagicMock) -> None:
     result = await _get_my_roles(None, current_user=mock_user, user_dao=MagicMock())
     assert "Admin" in result["result"]["roles"]
     assert result["result"]["roles"]["Admin"] == [("can_read", "Dashboard")]
-    # ``permissions`` mirrors get_permissions() (superset_old/views/utils.py:143-151):
+    # ``permissions`` mirrors get_permissions():
     # only ``datasource_access`` and ``database_access`` entries are included.
     # "can_read" is neither, so permissions is empty.
     assert result["result"]["permissions"] == {}
@@ -189,7 +188,7 @@ async def test_update_me_empty(mock_user: MagicMock) -> None:
 
 
 # ---------------------------------------------------------------------------
-# update_me — name Length validation (1:1 with upstream Length(1, 64))
+# update_me — name Length validation (min_length=1, max_length=64)
 # These constraints are applied at decode time by msgspec; we test that the
 # schema rejects invalid names before the handler even runs.
 # ---------------------------------------------------------------------------
@@ -261,7 +260,7 @@ def test_update_request_omitted_names_ok() -> None:
 
 
 # ---------------------------------------------------------------------------
-# update_me — password complexity (1:1 with upstream PasswordComplexityValidator)
+# update_me — password complexity (PasswordComplexityValidator)
 # The check only fires when FAB_PASSWORD_COMPLEXITY_ENABLED=True.
 # ---------------------------------------------------------------------------
 
@@ -289,8 +288,7 @@ async def test_update_me_password_complexity_disabled(mock_user: MagicMock) -> N
 async def test_update_me_weak_password_complexity_enabled(mock_user: MagicMock) -> None:
     """Weak password raises 400 when complexity is enabled.
 
-    Mirrors original Superset: ``UserRestApi`` password-complexity failures
-    surface as HTTP 400 (not 422).
+    ``UserRestApi`` password-complexity failures surface as HTTP 400 (not 422).
     """
     from litestar.exceptions import HTTPException
 
@@ -339,7 +337,7 @@ async def test_update_me_strong_password_complexity_enabled(
 async def test_update_me_omitted_password_complexity_not_checked(
     mock_user: MagicMock,
 ) -> None:
-    """Omitting password entirely skips complexity check (1:1 with upstream)."""
+    """Omitting password entirely skips complexity check."""
     data = CurrentUserUpdateRequest(first_name="Alice")
     user_dao = AsyncMock()
     user_dao.get_by_id.return_value = _fresh_user(first_name="Alice")
@@ -391,10 +389,10 @@ async def test_update_me_custom_complexity_validator_fires(
 # ---------------------------------------------------------------------------
 # UserPublicController — avatar
 #
-# Ported 1:1 from ``UserRestApi.avatar``: loads via ``user_dao.get_by_id``,
-# reads ``extra_attributes[0].avatar_url``, optionally falls back to Slack
-# (no Gravatar fallback). Returns a 301 ``Redirect`` to the avatar URL, a 204
-# ``Response`` when none is found, or a 404 ``Response`` for a missing user.
+# Loads via ``user_dao.get_by_id``, reads ``extra_attributes[0].avatar_url``,
+# optionally falls back to Slack (no Gravatar fallback). Returns a 301
+# ``Redirect`` to the avatar URL, a 204 ``Response`` when none is found, or
+# a 404 ``Response`` for a missing user.
 # ---------------------------------------------------------------------------
 
 

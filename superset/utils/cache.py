@@ -14,16 +14,16 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async cache utilities — port of ``superset_old/utils/cache.py``.
+"""Async cache utilities.
 
-Replaces the upstream caching primitives with async, cache-agnostic helpers:
+Async, cache-agnostic helpers:
 
-* :func:`generate_cache_key` — deterministic ``md5`` hashing (unchanged).
+* :func:`generate_cache_key` — deterministic ``md5`` hashing.
 * :func:`set_and_log_cache` — write to cache + optional ``CacheKey`` row
-  in the metadata DB (now async, uses an :class:`AsyncSession`).
+  in the metadata DB (async, uses an :class:`AsyncSession`).
 * :func:`memoized_func` — **async-only** decorator that caches coroutine
-  results by formatted-key (mirrors the original signature, including
-  the ``cache=False`` / ``force=True`` / ``cache_timeout=`` kwargs).
+  results by formatted-key (``cache=False`` / ``force=True`` /
+  ``cache_timeout=`` kwargs).
   Sync callers should use :attr:`CacheManager.sync_cache` (or one of
   the named sibling slots) directly — the previous sync path went
   through ``run_async`` which created a fresh asyncio loop on the
@@ -33,10 +33,9 @@ Replaces the upstream caching primitives with async, cache-agnostic helpers:
   independent Redis clients (both pointed at the same cluster — see
   :class:`CacheManager`) cleanly removes that whole class of bug.
 * :func:`etag_cache` — *removed*.  Litestar provides native ``Cache``
-  config and ``ETag`` middleware; the original response-cache
-  decorator is no longer used anywhere in the Liteset code base
-  (verified by grep).  The placeholder remains commented in
-  documentation.
+  config and ``ETag`` middleware; the response-cache decorator is no
+  longer used anywhere in the Liteset code base (verified by grep).
+  The placeholder remains commented in documentation.
 
 The legacy WSGI caching stack is no longer imported.
 """
@@ -63,26 +62,12 @@ logger = logging.getLogger(__name__)
 ONE_YEAR = 365 * 24 * 60 * 60  # 1 year in seconds
 
 
-# ---------------------------------------------------------------------------
-# generate_cache_key — pure function, ported 1:1
-# ---------------------------------------------------------------------------
-
-
 def generate_cache_key(values_dict: dict[str, Any], key_prefix: str = "") -> str:
     """Return a deterministic md5 hash of ``values_dict`` prefixed by
     ``key_prefix``.
-
-    Identical to the original implementation; the only dependency change
-    is that ``md5_sha_from_dict`` and ``json_int_dttm_ser`` now live
-    under ``superset.utils.*`` (already async-friendly).
     """
     hash_str = md5_sha_from_dict(values_dict, default=json_int_dttm_ser)
     return f"{key_prefix}{hash_str}"
-
-
-# ---------------------------------------------------------------------------
-# set_and_log_cache — async port
-# ---------------------------------------------------------------------------
 
 
 def _resolve_cache_default_timeout() -> int:
@@ -122,19 +107,15 @@ async def set_and_log_cache(
     """Write ``cache_value`` to ``cache`` and (optionally) record the key
     in the ``cache_keys`` metadata table.
 
-    Mirrors the original :func:`superset_old.utils.cache.set_and_log_cache`:
-    short-circuits when the cache is a no-op backend, respects
+    Short-circuits when the cache is a no-op backend, respects
     ``CACHE_DISABLED_TIMEOUT``, decorates ``cache_value`` with a ``dttm``
     field, increments the ``set_cache_key`` stats counter and writes a
     ``CacheKey`` row when both ``datasource_uid`` and the
     ``store_cache_keys_in_metadata_db`` setting are truthy.
 
-    Differences from the original:
-
-    * ``cache`` is an :class:`AsyncCacheProtocol` rather than the upstream
-      ``Cache``; the no-op detection now checks the imported
-      :class:`NullAsyncCacheManager` class instead of ``NullCache``.
-    * Persistence of ``CacheKey`` rows is performed via the supplied
+    * ``cache`` is an :class:`AsyncCacheProtocol`; no-op detection checks
+      :class:`NullAsyncCacheManager`.
+    * ``CacheKey`` rows are persisted via the supplied
       :class:`AsyncSession` (callers that don't pass a session simply
       skip the metadata-DB write).
     """
@@ -150,7 +131,6 @@ async def set_and_log_cache(
         cache_timeout if cache_timeout is not None else _resolve_cache_default_timeout()
     )
 
-    # Skip caching if timeout is CACHE_DISABLED_TIMEOUT (no caching requested)
     if timeout == CACHE_DISABLED_TIMEOUT:
         return
     try:
@@ -175,10 +155,8 @@ async def set_and_log_cache(
                 session.add(ck)
             else:
                 # No session passed in -- fall back to a short-lived
-                # *sync* metadata session.  Mirrors the original
-                # behaviour where ``db.session`` was a process-wide
-                # implicit handle: missing one would silently drop the
-                # audit trail, which is exactly what we want to avoid.
+                # *sync* metadata session; skipping the write would
+                # silently drop the audit trail.
                 from sqlalchemy.orm import Session
 
                 from superset.utils.rls import _metadata_sync_engine
@@ -204,18 +182,13 @@ async def set_and_log_cache(
         logger.exception(ex)
 
 
-# ---------------------------------------------------------------------------
-# memoized_func — sync- and async-aware decorator
-# ---------------------------------------------------------------------------
-
-
 def memoized_func(  # noqa: C901  # complex business logic
     key: str,
     cache: AsyncCacheProtocol | None = None,
 ) -> Callable[..., Any]:
     """Async-only memoization decorator with configurable key and backend.
 
-    Same calling convention as the upstream caching helper::
+    Usage::
 
         @memoized_func(key="{a}+{b}", cache=cache_manager.data_cache)
         async def my_sum(a: int, b: int) -> int:
@@ -245,8 +218,7 @@ def memoized_func(  # noqa: C901  # complex business logic
     of the named sibling slots: ``sync_data_cache`` /
     ``sync_thumbnail_cache`` / etc.) directly.  Both the sync and
     async slots point at the same Redis cluster, so the keyspace
-    stays unified — exactly the behaviour the original Superset
-    relied on, just with the loop topology made explicit.
+    stays unified, with the sync/async separation made explicit.
     """
 
     def wrap(f: Callable[..., Any]) -> Callable[..., Any]:

@@ -15,25 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Presto engine spec -- synchronous.
-
-Ported 1:1 from ``superset_old/db_engine_specs/presto.py`` with the legacy
-WSGI-stack imports removed.  The abstract ``PrestoBaseEngineSpec`` (shared
-with Trino) lives in ``superset/db_engine_specs/trino.py``; the concrete
-``PrestoEngineSpec`` lives here and carries the Presto-only partition /
-column-introspection / expand-data behaviour that ``HiveEngineSpec`` also
-relies on (Hive subclasses ``PrestoEngineSpec``).
-
-The upstream request-scoped current user and app config are replaced with
-the port's established equivalents:
-
-* feature flags -> ``feature_flag_manager.is_feature_enabled``
-* ``database.get_raw_connection`` (not ported as a ``Database`` method) ->
-  a local ``_raw_connection`` helper built on ``get_sync_engine`` that
-  mirrors the original (prequeries + ``engine.raw_connection()``).
-* ``cache_manager.data_cache.memoize`` -> ``cache_manager.sync_cache``
-  manual get/set, matching the ClickHouse port's ``get_function_names``.
-"""
+"""Presto database engine spec."""
 
 from __future__ import annotations
 
@@ -84,13 +66,8 @@ logger = logging.getLogger(__name__)
 
 
 def is_feature_enabled(feature: str) -> bool:
-    """Port shim for upstream's ``superset.is_feature_enabled``."""
     return feature_flag_manager.is_feature_enabled(feature)
 
-
-# ---------------------------------------------------------------------------
-# Error regexes (Presto-only; the connection regexes are shared with Trino)
-# ---------------------------------------------------------------------------
 
 COLUMN_DOES_NOT_EXIST_REGEX = re.compile(
     "line (?P<location>.+?): .*Column '(?P<column_name>.+?)' cannot be resolved"
@@ -106,9 +83,7 @@ def split(
 ) -> Iterator[str]:
     """A split function that is aware of quotes and parentheses.
 
-    Ported locally from ``superset_old/utils/core.py:split`` — the port's
-    ``superset.utils.core`` does not expose ``split``; ``get_children``
-    (Presto ROW parsing) is its only caller.
+    Used by ``get_children`` for Presto ROW-type parsing.
 
     :param string: string to split
     :param delimiter: string defining where to split, usually a comma or space
@@ -278,10 +253,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
         ),
     }
 
-    # ------------------------------------------------------------------
-    # Partition introspection (originally on ``PrestoBaseEngineSpec``)
-    # ------------------------------------------------------------------
-
     @classmethod
     def _partition_query(  # pylint: disable=too-many-arguments,too-many-locals,unused-argument
         cls,
@@ -292,21 +263,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
         order_by: list[tuple[str, bool]] | None = None,
         filters: dict[Any, Any] | None = None,
     ) -> str:
-        """
-        Return a partition query.
-
-        Note the unused arguments are exposed for sub-classing purposes where custom
-        integrations may require the schema, indexes, etc. to build the partition query.
-
-        :param table: the table instance
-        :param indexes: the indexes associated with the table
-        :param database: the database the query will be run against
-        :param limit: the number of partitions to be returned
-        :param order_by: a list of tuples of field name and a boolean
-            that determines if that field should be sorted in descending
-            order
-        :param filters: dict of field name and filter value combinations
-        """
         limit_clause = f"LIMIT {limit}" if limit else ""
         order_by_clause = ""
         if order_by:
@@ -322,8 +278,8 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
                 l.append(f"{field} = '{value}'")
             where_clause = "WHERE " + " AND ".join(l)
 
-        # Partition select syntax changed in v0.199, so check here.
-        # Default to the new syntax if version is unset.
+        # Partition select syntax changed in v0.199; default to new
+        # syntax if version unset.
         presto_version = database.get_extra().get("version")
 
         if presto_version and Version(presto_version) < Version("0.199"):
@@ -364,19 +320,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
         show_first: bool = False,
         indexes: list[dict[str, Any]] | None = None,
     ) -> tuple[list[str], list[str] | None]:
-        """Returns col name and the latest (max) partition value for a table
-
-        :param table: the table instance
-        :param database: database query will be run against
-        :type database: models.Database
-        :param show_first: displays the value for the first partitioning key
-          if there are many partitioning keys
-        :param indexes: indexes from the database
-        :type show_first: bool
-
-        >>> latest_partition('foo_table')
-        (['ds'], ('2018-01-01',))
-        """
         if indexes is None:
             with database.get_inspector(
                 catalog=table.catalog,
@@ -425,28 +368,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
         table: Table,
         **kwargs: Any,
     ) -> Any:
-        """Returns the latest (max) partition value for a table
-
-        A filtering criteria should be passed for all fields that are
-        partitioned except for the field to be returned. For example,
-        if a table is partitioned by (``ds``, ``event_type`` and
-        ``event_category``) and you want the latest ``ds``, you'll want
-        to provide a filter as keyword arguments for both
-        ``event_type`` and ``event_category`` as in
-        ``latest_sub_partition('my_table',
-            event_category='page', event_type='click')``
-
-        :param database: database query will be run against
-        :param table: the table instance
-        :type table: Table
-        :type database: models.Database
-
-        :param kwargs: keyword arguments define the filtering criteria
-            on the partition list. There can be many of these.
-        :type kwargs: str
-        >>> latest_sub_partition('sub_partition_table', event_type='click')
-        '2018-01-01'
-        """
         with database.get_inspector(
             catalog=table.catalog,
             schema=table.schema,
@@ -481,22 +402,12 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
             return ""
         return df.to_dict()[field_to_return][0]
 
-    # ------------------------------------------------------------------
-    # Column introspection (originally on ``PrestoBaseEngineSpec``)
-    # ------------------------------------------------------------------
-
     @classmethod
     def _show_columns(
         cls,
         inspector: Inspector,
         table: Table,
     ) -> list[ResultRow]:
-        """
-        Show presto column names
-        :param inspector: object that performs database schema inspection
-        :param table: table instance
-        :return: list of column objects
-        """
         full_table_name = cls.quote_table(table, inspector.engine.dialect)
         return inspector.bind.execute(f"SHOW COLUMNS FROM {full_table_name}").fetchall()
 
@@ -506,12 +417,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
         name: str,
         data_type: types.TypeEngine,
     ) -> ResultSetColumnType:
-        """
-        Create column info object
-        :param name: column name
-        :param data_type: column data type
-        :return: column info object
-        """
         return {
             "column_name": name,
             "name": name,
@@ -527,19 +432,10 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
         table: Table,
         options: dict[str, Any] | None = None,
     ) -> list[ResultSetColumnType]:
-        """
-        Get columns from a Presto data source. This includes handling row and
-        array data types
-        :param inspector: object that performs database schema inspection
-        :param table: table instance
-        :param options: Extra configuration options, not used by this backend
-        :return: a list of results that contain column info
-                (i.e. column name and data type)
-        """
+        """Handle row/array structural columns via ``_parse_structural_column``."""
         columns = cls._show_columns(inspector, table)
         result: list[ResultSetColumnType] = []
         for column in columns:
-            # parse column if it is a row or array
             if is_feature_enabled("PRESTO_EXPAND_DATA") and (
                 "array" in column.Type or "row" in column.Type
             ):
@@ -551,7 +447,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
                 result[structural_column_index]["default"] = None
                 continue
 
-            # otherwise column is a basic data type
             column_spec = cls.get_column_spec(column.Type)
             column_type = column_spec.sqla_type if column_spec else None
             if column_type is None:
@@ -576,18 +471,11 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
         parent_data_type: str,
         result: list[ResultSetColumnType],
     ) -> None:
-        """
-        Parse a row or array column
-        :param result: list tracking the results
-        """
         formatted_parent_column_name = parent_column_name
-        # Quote the column name if there is a space
         if " " in parent_column_name:
             formatted_parent_column_name = f'"{parent_column_name}"'
         full_data_type = f"{formatted_parent_column_name} {parent_data_type}"
         original_result_len = len(result)
-        # split on open parenthesis ( to get the structural
-        # data type and its component types
         data_types = cls._split_data_type(full_data_type, r"\(")
         stack: list[tuple[str, str]] = []
         for data_type in data_types:
@@ -595,22 +483,15 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
             # types belong to what structural data type
             inner_types = cls._split_data_type(data_type, r"\)")
             for inner_type in inner_types:
-                # We have finished parsing multiple structural data types
                 if not inner_type and stack:
                     stack.pop()
                 elif cls._has_nested_data_types(inner_type):
-                    # split on comma , to get individual data types
                     single_fields = cls._split_data_type(inner_type, ",")
                     for single_field in single_fields:
                         single_field = single_field.strip()
-                        # If component type starts with a comma, the first single field
-                        # will be an empty string. Disregard this empty string.
                         if not single_field:
                             continue
-                        # split on whitespace to get field name and data type
                         field_info = cls._split_data_type(single_field, r"\s")
-                        # check if there is a structural data type within
-                        # overall structural data type
                         column_spec = cls.get_column_spec(field_info[1])
                         column_type = column_spec.sqla_type if column_spec else None
                         if column_type is None:
@@ -626,28 +507,18 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
                             result.append(
                                 cls._create_column_info(full_parent_path, column_type)
                             )
-                        else:  # otherwise this field is a basic data type
+                        else:
                             full_parent_path = cls._get_full_name(stack)
                             column_name = f"{full_parent_path}.{field_info[0]}"
                             result.append(
                                 cls._create_column_info(column_name, column_type)
                             )
-                    # If the component type ends with a structural data type, do not pop
-                    # the stack. We have run across a structural data type within the
-                    # overall structural data type. Otherwise, we have completely parsed
-                    # through the entire structural data type and can move on.
                     if not (inner_type.endswith("array") or inner_type.endswith("row")):
                         stack.pop()
-                # We have an array of row objects (i.e. array(row(...)))
                 elif inner_type in ("array", "row"):
-                    # Push a dummy object to represent the structural data type
                     stack.append(("", inner_type))
-                # We have an array of a basic data types(i.e. array(varchar)).
                 elif stack:
-                    # Because it is an array of a basic data type. We have finished
-                    # parsing the structural data type and can move on.
                     stack.pop()
-        # Unquote the column name if necessary
         if formatted_parent_column_name != parent_column_name:
             for index in range(original_result_len, len(result)):
                 result[index]["column_name"] = result[index]["column_name"].replace(
@@ -656,24 +527,13 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
 
     @classmethod
     def _split_data_type(cls, data_type: str, delimiter: str) -> list[str]:
-        """
-        Split data type based on given delimiter. Do not split the string if the
-        delimiter is enclosed in quotes
-        :param data_type: data type
-        :param delimiter: string separator (i.e. open parenthesis, closed parenthesis,
-               comma, whitespace)
-        :return: list of strings after breaking it by the delimiter
-        """
+        """Split on delimiter, skipping occurrences inside double-quoted identifiers."""
         return re.split(rf"{delimiter}(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", data_type)
 
     @classmethod
     def _has_nested_data_types(cls, component_type: str) -> bool:
-        """
-        Check if string contains a data type. We determine if there is a data type by
-        whitespace or multiple data types by commas
-        :param component_type: data type
-        :return: boolean
-        """
+        """Detect presence of multiple types (commas) or field names
+        (whitespace), ignoring quoted strings."""
         comma_regex = r",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)"
         white_space_regex = r"\s(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)"
         return (
@@ -683,20 +543,7 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
 
     @classmethod
     def _get_full_name(cls, names: list[tuple[str, str]]) -> str:
-        """
-        Get the full column name
-        :param names: list of all individual column names
-        :return: full column name
-        """
         return ".".join(column[0] for column in names if column[0])
-
-    # ------------------------------------------------------------------
-    # Cost estimation + function names (originally on ``PrestoBaseEngineSpec``)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Presto-only overrides
-    # ------------------------------------------------------------------
 
     @classmethod
     def get_allow_cost_estimate(cls, extra: dict[str, Any]) -> bool:
@@ -731,23 +578,7 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
         inspector: Inspector,
         schema: str | None,
     ) -> set[str]:
-        """
-        Get all the real table names within the specified schema.
-
-        Per the SQLAlchemy definition if the schema is omitted the database’s default
-        schema is used, however some dialects infer the request as schema agnostic.
-
-        Note that PyHive's Hive and Presto SQLAlchemy dialects do not adhere to the
-        specification where the `get_table_names` method returns both real tables and
-        views. Futhermore the dialects wrongfully infer the request as schema agnostic
-        when the schema is omitted.
-
-        :param database: The database to inspect
-        :param inspector: The SQLAlchemy inspector
-        :param schema: The schema to inspect
-        :returns: The physical table names
-        """
-
+        # PyHive Presto dialect’s get_table_names also returns views; subtract them.
         return super().get_table_names(
             database, inspector, schema
         ) - cls.get_view_names(database, inspector, schema)
@@ -759,23 +590,8 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
         inspector: Inspector,
         schema: str | None,
     ) -> set[str]:
-        """
-        Get all the view names within the specified schema.
-
-        Per the SQLAlchemy definition if the schema is omitted the database’s default
-        schema is used, however some dialects infer the request as schema agnostic.
-
-        Note that PyHive's Presto SQLAlchemy dialect does not adhere to the
-        specification as the `get_view_names` method is not defined. Futhermore the
-        dialect wrongfully infers the request as schema agnostic when the schema is
-        omitted.
-
-        :param database: The database to inspect
-        :param inspector: The SQLAlchemy inspector
-        :param schema: The schema to inspect
-        :returns: The view names
-        """
-
+        # PyHive Presto dialect doesn’t implement get_view_names;
+        # query information_schema directly.
         if schema:
             sql = dedent(
                 """
@@ -802,24 +618,12 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
 
     @classmethod
     def _is_column_name_quoted(cls, column_name: str) -> bool:
-        """
-        Check if column name is in quotes
-        :param column_name: column name
-        :return: boolean
-        """
         return column_name.startswith('"') and column_name.endswith('"')
 
     @classmethod
     def _get_fields(cls, cols: list[ResultSetColumnType]) -> list[ColumnClause]:
-        """
-        Format column clauses where names are in quotes and labels are specified
-        :param cols: columns
-        :return: column clauses
-        """
         column_clauses = []
-        # Column names are separated by periods. This regex will find periods in a
-        # string if they are not enclosed in quotes because if a period is enclosed in
-        # quotes, then that period is part of a column name.
+        # Split on unquoted periods; periods inside quotes are part of the column name.
         dot_pattern = r"""\.                # split on period
                           (?=               # look ahead
                           (?:               # create non-capture group
@@ -827,9 +631,7 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
                           )*[^\"]*$)        # end regex"""
         dot_regex = re.compile(dot_pattern, re.VERBOSE)
         for col in cols:
-            # get individual column names
             col_names = re.split(dot_regex, col["column_name"])
-            # quote each column name if it is not already quoted
             for index, col_name in enumerate(col_names):
                 if not cls._is_column_name_quoted(col_name):
                     col_names[index] = f'"{col_name}"'
@@ -837,7 +639,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
                 col_name if cls._is_column_name_quoted(col_name) else f'"{col_name}"'
                 for col_name in col_names
             )
-            # create column clause in the format "name"."name" AS "name.name"
             column_clause = literal_column(quoted_col_name).label(col["column_name"])
             column_clauses.append(column_clause)
         return column_clauses
@@ -909,8 +710,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
         if not is_feature_enabled("PRESTO_EXPAND_DATA"):
             return columns, data, []
 
-        # process each column, unnesting ARRAY types and
-        # expanding ROW types into new columns
         to_process = deque((column, 0) for column in columns)
         all_columns: list[ResultSetColumnType] = []
         expanded_columns = []
@@ -922,11 +721,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
             ]:
                 all_columns.append(column)
 
-            # When unnesting arrays we need to keep track of how many extra rows
-            # were added, for each original row. This is necessary when we expand
-            # multiple arrays, so that the arrays after the first reuse the rows
-            # added by the first. every time we change a level in the nested arrays
-            # we reinitialize this.
             if level != current_array_level:
                 unnested_rows: dict[int, int] = defaultdict(int)
                 current_array_level = level
@@ -935,8 +729,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
             values: str | list[Any] | None
 
             if column["type"] and column["type"].startswith("ARRAY("):
-                # keep processing array children; we append to the right so that
-                # multiple nested arrays are processed breadth-first
                 to_process.append((get_children(column)[0], level + 1))
 
                 # unnest array objects data into new rows
@@ -947,30 +739,21 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
                     if isinstance(values, str):
                         row[name] = values = destringify(values)
                     if values:
-                        # how many extra rows we need to unnest the data?
                         extra_rows = len(values) - 1
-
-                        # how many rows were already added for this row?
                         current_unnested_rows = unnested_rows[i]
-
-                        # add any necessary rows
                         missing = extra_rows - current_unnested_rows
                         for _ in range(missing):
                             data.insert(i + current_unnested_rows + 1, {})
                             unnested_rows[i] += 1
 
-                        # unnest array into rows
                         for j, value in enumerate(values):
                             data[i + j][name] = value
 
-                        # skip newly unnested rows
                         i += unnested_rows[i]
 
                     i += 1
 
             if column["type"] and column["type"].startswith("ROW("):
-                # expand columns; we append them to the left so they are added
-                # immediately after the parent
                 expanded = get_children(column)
                 to_process.extendleft((column, level) for column in expanded[::-1])
                 expanded_columns.extend(expanded)
@@ -1045,13 +828,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
     def get_create_view(
         cls, database: Database, schema: str | None, table: str
     ) -> str | None:
-        """
-        Return a CREATE VIEW statement, or `None` if not a view.
-
-        :param database: Database instance
-        :param schema: Schema name
-        :param table: Table (view) name
-        """
         # pylint: disable=import-outside-toplevel
         from pyhive.exc import DatabaseError
 
@@ -1076,7 +852,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
 
     @classmethod
     def handle_cursor(cls, cursor: Cursor, query: Query) -> None:
-        """Updates progress information"""
         from sqlalchemy.orm import object_session
 
         from superset.config import SupersetSettings
@@ -1093,12 +868,7 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
         )
         logger.info("Query %i: Polling the cursor for progress", query_id)
         polled = cursor.poll()
-        # poll returns dict -- JSON status information or ``None``
-        # if the query is done
-        # https://github.com/dropbox/PyHive/blob/
-        # b34bdbf51378b3979eaf5eca9e956f06ddc36ca0/pyhive/presto.py#L178
         while polled:
-            # Update the object and wait for the kill signal.
             stats = polled.get("stats", {})
 
             session = object_session(query)
@@ -1111,7 +881,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
             if stats:
                 state = stats.get("state")
 
-                # if already finished, then stop polling
                 if state == "FINISHED":
                     break
 
@@ -1153,14 +922,6 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
 
     @classmethod
     def has_implicit_cancel(cls) -> bool:
-        """
-        Return True if the live cursor handles the implicit cancelation of the query,
-        False otherwise.
-
-        :return: Whether the live cursor implicitly cancels the query
-        :see: handle_cursor
-        """
-
         return True
 
 

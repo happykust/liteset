@@ -14,10 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Utilities for resolving classes from fully-qualified names.
-
-Ported 1:1 from ``superset_old/utils/class_utils.py``.
-"""
+"""Utilities for resolving classes from fully-qualified names."""
 
 from __future__ import annotations
 

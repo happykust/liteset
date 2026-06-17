@@ -16,12 +16,6 @@
 # under the License.
 """REMOTE_USER authentication backend.
 
-1:1 port of the upstream
-``BaseSecurityManager.auth_user_remote_user``
-(upstream ``security/manager.py:1407-1435``)
-plus the corresponding view
-(upstream ``security/views.py:978-996``).
-
 The web tier (Apache, nginx, oauth2-proxy, …) is expected to populate a
 trusted request header — by default ``REMOTE_USER`` — with the
 authenticated principal's identity.  Liteset reads that header, finds

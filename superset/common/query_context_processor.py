@@ -16,7 +16,6 @@
 # under the License.
 """Async QueryContextProcessor — processes QueryContext payloads asynchronously.
 
-Mirrors superset.common.query_context_processor.QueryContextProcessor.
 All request-scoped globals (current_app.config, security_manager,
 cache_manager, AnnotationLayerDAO) are replaced by constructor-injected
 dependencies.
@@ -51,7 +50,7 @@ R_SUFFIX = "__right_suffix"
 DTTM_ALIAS = "__timestamp"
 _MAX_RECURSION_DEPTH = 2
 
-# CSV formula injection prevention (matches superset_old/utils/csv.py)
+# CSV formula injection prevention
 _NEGATIVE_NUMBER_RE = re.compile(r"^-[0-9.]+$")
 _PROBLEMATIC_CHARS_RE = re.compile(r'^(?:"{2}|\s{1,})(?=[\-@+|=%])|^[\-@+|=%]')
 
@@ -88,11 +87,7 @@ class CachedTimeOffset(TypedDict):
 
 
 def _generate_cache_key(cache_dict: dict[str, Any], prefix: str = "") -> str:
-    """Generate a deterministic cache key from a dict.
-
-    Uses md5_sha_from_dict with json_int_dttm_ser (matches Superset's
-    cache key generation).
-    """
+    """Generate a deterministic cache key from a dict."""
     from superset.utils.hashing import md5_sha_from_dict
     from superset.utils.json import json_int_dttm_ser
 
@@ -109,12 +104,6 @@ async def load_cached_query_context_form(
     Inverse of :meth:`AsyncQueryContextProcessor._cache_set` for the
     query-context form written by :meth:`AsyncQueryContextProcessor.get_payload`
     (``{"data": form_data}``, pickle-serialized).
-
-    1:1 port of ``superset_old/charts/data/query_context_cache_loader.py``
-    (``QueryContextCacheLoader.load``), which read
-    ``cache.get(cache_key)["data"]`` and raised ``ChartDataCacheLoadError``
-    on a miss. Here we return ``None`` on a miss so the caller can raise
-    the project's 404; the un-nested ``form_data`` dict is returned on a hit.
 
     :param cache_manager: an async cache manager (e.g.
         ``app.state.cache_manager.cache``) exposing ``async get(key)`` that
@@ -178,10 +167,7 @@ async def load_cached_explore_form(
     (``AsyncCacheManager.get``) issues an unprefixed ``redis.get`` — so we try
     the prefixed key first and fall back to the bare key.
 
-    1:1 with the original ``Superset.explore_json_data`` which read
-    ``cache_manager.cache.get(cache_key)`` and raised ``CacheLoadError`` on a
-    miss; here we return ``None`` on a miss so the caller can raise the
-    project's 404.
+    On a miss we return ``None`` so the caller can raise the project's 404.
 
     :param cache_manager: an async/sync cache slot exposing ``get(key)``
         (e.g. ``superset.extensions.cache_manager.cache``).
@@ -219,7 +205,6 @@ async def load_cached_explore_form(
 class AsyncQueryContextProcessor:
     """Processes QueryContext payloads asynchronously.
 
-    Replaces superset.common.query_context_processor.QueryContextProcessor.
     All request-scoped globals are replaced by constructor-injected
     dependencies:
       - current_app.config["ROW_LIMIT"] -> self._settings.row_limit
@@ -260,11 +245,10 @@ class AsyncQueryContextProcessor:
     ) -> None:
         """Find the totals query and inject computed totals into contribution ops.
 
-        Matches Superset's _ensure_totals_available: finds the totals query
-        (no columns, has metrics, no post-processing), executes it, and injects
-        the totals dict into contribution operations' options.
+        Finds the totals query (no columns, has metrics, no post-processing),
+        executes it, and injects the totals dict into contribution operations'
+        options.
         """
-        # Find contribution operations that need totals
         contribution_ops: list[dict[str, Any]] = []
         for qo in query_objects:
             for pp in qo.post_processing:
@@ -274,7 +258,6 @@ class AsyncQueryContextProcessor:
         if not contribution_ops:
             return
 
-        # Find the totals query (no columns, has metrics, no post-processing)
         totals_query: AsyncQueryObject | None = None
         for qo in query_objects:
             if not qo.columns and qo.metrics and not qo.post_processing:
@@ -284,18 +267,14 @@ class AsyncQueryContextProcessor:
         if totals_query is None:
             return
 
-        # Remove row_limit on the totals query to get full sums
         totals_query.row_limit = None
 
-        # Execute totals query to get actual column sums
         from superset.exceptions import QueryObjectValidationError
 
         try:
             result = await self._get_query_result(totals_query)
             # Surface a failed totals query instead of silently using empty
-            # totals (→ wrong contribution %). 1:1 with the original
-            # ``ensure_totals_available``, which has no try/except and lets
-            # ``get_query_result`` propagate the error.
+            # totals (→ wrong contribution %).
             if result.get("status") in ("error", "failed") or result.get(
                 "error_message"
             ):
@@ -327,9 +306,7 @@ class AsyncQueryContextProcessor:
     ) -> dict[str, Any]:
         """Main entry point — processes all query objects, returns payload.
 
-        Dispatches based on each query_object's result_type. Mirrors the
-        original ``superset_old/common/query_actions.py::_result_type_functions``
-        table:
+        Dispatches based on each query_object's result_type:
           - "columns"        — datasource column metadata, no query executed
           - "timegrains"     — available time grains, no query executed
           - "query"          — build SQL but don't execute
@@ -342,9 +319,8 @@ class AsyncQueryContextProcessor:
           - "full" (default) — execute, normalize, and post-process
         """
         await self._ensure_totals_available(query_objects)
-        # Mirrors original ``QueryContextProcessor.get_payload``: ``result_type``
-        # lives on the query context, not on the query object. Fall back to the
-        # context value when the per-query override is unset.
+        # ``result_type`` lives on the query context, not on the query object.
+        # Fall back to the context value when the per-query override is unset.
         ctx_result_type = (
             getattr(self._query_context, "result_type", None)
             if self._query_context is not None
@@ -376,20 +352,13 @@ class AsyncQueryContextProcessor:
                     skip_post_processing=True,
                 )
             elif result_type in ("full", "post_processed"):
-                # "full" / "post_processed" — default behavior. For
-                # ``post_processed`` the original returns the full results and
-                # leaves chart-specific post-processing to the viz layer, so it
-                # maps to the same path as ``full`` (see original
-                # ``_result_type_functions[POST_PROCESSED] = _get_full``).
                 result = await self.get_df_payload(
                     qo,
                     force=force,
                     force_cached=force_cached,
                 )
             else:
-                # 1:1 with original ``get_query_results``
-                # (``superset_old/common/query_actions.py:231-235``):
-                # unrecognized result types raise a validation error.
+                # Unrecognized result types raise a validation error.
                 from superset.exceptions import QueryObjectValidationError
                 from superset.i18n import _
 
@@ -405,17 +374,6 @@ class AsyncQueryContextProcessor:
 
         if cache_query_context and self._cache_manager is not None:
             cache_key = self._generate_context_cache_key()
-            # Store the query-context *form* under ``cache_key`` so the
-            # ``GET /api/v1/chart/data/<cache_key>`` endpoint
-            # (``data_from_cache``) can reconstruct the query context and
-            # re-run it (the per-query result is already cached, so it is a
-            # cache hit). 1:1 with the original
-            # ``superset_old/common/query_context_processor.py:1074-1090``
-            # which wrote ``{"data": {"form_data": ..., **cache_values}}``
-            # via ``set_and_log_cache``. Here ``{"data": form_data}`` is
-            # sufficient: the new ``_create_query_context_from_form`` reads
-            # the form_data dict (datasource / queries / result_type /
-            # format) directly.
             await self._cache_set(
                 cache_key,
                 {"data": self._query_context.form_data},  # type: ignore[union-attr]
@@ -426,13 +384,7 @@ class AsyncQueryContextProcessor:
         return return_value
 
     def _get_columns(self) -> dict[str, Any]:
-        """Return datasource column metadata without executing a query.
-
-        1:1 port of ``superset_old/common/query_actions.py:_get_columns``.
-        ``extract_column_dtype`` is inlined here (it has no new-tree home)
-        and mirrors ``superset_old/utils/core.py:extract_column_dtype``:
-        temporal columns -> TEMPORAL, numeric -> NUMERIC, else STRING.
-        """
+        """Return datasource column metadata without executing a query."""
         from superset.typing import GenericDataType
 
         def _column_dtype(col: Any) -> int:
@@ -455,10 +407,7 @@ class AsyncQueryContextProcessor:
         }
 
     def _get_timegrains(self) -> dict[str, Any]:
-        """Return the datasource's available time grains, no query executed.
-
-        1:1 port of ``superset_old/common/query_actions.py:_get_timegrains``.
-        """
+        """Return the datasource's available time grains, no query executed."""
         return {
             "data": [
                 {
@@ -473,15 +422,14 @@ class AsyncQueryContextProcessor:
     async def _get_query_only(self, query_object: AsyncQueryObject) -> dict[str, Any]:
         """Build SQL without executing — returns the query string only.
 
-        1:1 with ``superset_old/common/query_actions.py::_get_query``:
+        Behavior:
           - the payload carries the datasource ``language`` (engine dialect,
             e.g. ``"sql"``) alongside ``query``, so the SQL-preview pane knows
             how to syntax-highlight it;
           - a build/validation error is surfaced *in the payload*
-            (``error`` field) rather than raised — the original catches
-            ``QueryObjectValidationError`` (no SQL → just ``error``) and
-            ``SupersetParseError`` (SQL generated but un-optimizable → both
-            ``query`` and ``error``).
+            (``error`` field) rather than raised — ``QueryObjectValidationError``
+            (no SQL → just ``error``) and ``SupersetParseError`` (SQL generated
+            but un-optimizable → both ``query`` and ``error``) are caught.
         """
         from superset.exceptions import (
             QueryObjectValidationError,
@@ -491,8 +439,7 @@ class AsyncQueryContextProcessor:
         datasource = self._datasource
         query_dict = query_object.to_dict()
 
-        # 1:1 with ``superset_old/common/query_actions.py::_get_query``: the
-        # payload carries only the engine ``language`` and the generated
+        # The payload carries only the engine ``language`` and the generated
         # ``query`` (plus an ``error`` field on failure). It deliberately does
         # NOT include the full-result keys (``status``, ``df``, ``data`` …) —
         # no query is executed for ``result_type=query``.
@@ -547,8 +494,7 @@ class AsyncQueryContextProcessor:
     ) -> dict[str, Any]:
         """Execute a simplified query for raw sample rows.
 
-        1:1 port of ``superset_old/common/query_actions.py:_get_samples``:
-        clear metrics/post-processing/orderby, populate ``columns`` with
+        Clear metrics/post-processing/orderby, populate ``columns`` with
         every physical column from the datasource, and drop the time
         window. Without populating ``columns`` the resulting query has no
         metrics and no columns, and ``get_sqla_query`` raises
@@ -588,7 +534,6 @@ class AsyncQueryContextProcessor:
     ) -> dict[str, Any]:
         """Execute a drill-to-detail query.
 
-        1:1 port of ``superset_old/common/query_actions.py:_get_drill_detail``.
         Differs from ``_get_samples`` in two ways:
           - the time filter is preserved (``from_dttm`` / ``to_dttm`` are NOT
             cleared), and
@@ -632,20 +577,9 @@ class AsyncQueryContextProcessor:
             QueryObjectValidationError,
         )
 
-        # A SQL Lab ``Query`` datasource (``datasource_type="query"``) now
-        # implements the full ``ExploreMixin`` / ``AsyncQueryExecutionMixin``
-        # interface (``columns``/``data``/``async_query``/``get_sqla_query`` +
-        # the datasource properties), so it flows through this path like any
-        # other datasource. The defensive raise in :meth:`_get_query_result`
-        # remains as a fallback for any datasource that still lacks the async
-        # query interface.
-
         # Validate query object (sanitize filters, check duplicates, etc.)
         # Pass the resolved ORM datasource so _sanitize_filters can render
-        # Jinja templates in extras.where/having and sanitize the SQL clause —
-        # matching the original superset_old/common/query_context_processor.py
-        # behaviour where self.datasource on the QueryObject was always the ORM
-        # model (set at construction time via query_object_factory.py:83).
+        # Jinja templates in extras.where/having and sanitize the SQL clause.
         query_object.validate(datasource=self._datasource)
 
         # Validate columns exist in datasource (skip if no column metadata)
@@ -666,9 +600,6 @@ class AsyncQueryContextProcessor:
             if invalid:
                 from superset.i18n import _
 
-                # 1:1 with the original message
-                # (``superset_old/.../query_context_processor.py:158-163``):
-                # "dataset" (not "datasource") and i18n-wrapped.
                 raise QueryObjectValidationError(
                     _(
                         "Columns missing in dataset: %(invalid_columns)s",
@@ -679,16 +610,12 @@ class AsyncQueryContextProcessor:
         cache_key = await self._get_cache_key(query_object)
         timeout = self._get_cache_timeout()
 
-        # 1:1 with the original ``get_df_payload`` (line 139):
-        # ``force_query = self._query_context.force
-        #     or timeout == CACHE_DISABLED_TIMEOUT``
         # When the cache timeout chain returns -1 (CACHE_DISABLED_TIMEOUT),
         # the cache is bypassed entirely — both reads and writes.
         from superset.constants import CACHE_DISABLED_TIMEOUT
 
         force_query = force or timeout == CACHE_DISABLED_TIMEOUT
 
-        # Check cache
         cached_df: pd.DataFrame | None = None
         cached_annotation_data: dict[str, Any] = {}
         cached_applied_filter_columns: list[Any] = []
@@ -701,9 +628,6 @@ class AsyncQueryContextProcessor:
                 if isinstance(cached_result, dict) and "df" in cached_result:
                     cached_df = cached_result["df"]
                     cached_annotation_data = cached_result.get("annotation_data", {})
-                    # Surfaced filter / template metadata stored alongside
-                    # the DataFrame so cache hits expose the same shape
-                    # as cache misses (delta #19).
                     cached_applied_filter_columns = list(
                         cached_result.get("applied_filter_columns") or []
                     )
@@ -738,12 +662,6 @@ class AsyncQueryContextProcessor:
         status = "success"
         df: pd.DataFrame
 
-        # ``result`` is the freshly-computed dict from
-        # :meth:`_get_query_result` on a cache miss. Initialised to
-        # ``None`` so we can branch deterministically below
-        # (``if result is not None``) instead of relying on the brittle
-        # ``"result" in locals()`` introspection that previous revisions
-        # used and that mypy/pyflakes both complain about.
         result: dict[str, Any] | None = None
         annotation_data: dict[str, Any] = cached_annotation_data
         if cached_df is not None:
@@ -765,9 +683,8 @@ class AsyncQueryContextProcessor:
 
                 # Surface a failed query (SQL error, "Empty query?", etc.) as a
                 # failed payload — caught below → status="failed" + error, which
-                # the command turns into a 400. 1:1 with the original where a
-                # ``QueryStatus.FAILED`` result propagates the error_message
-                # (otherwise an errored query silently returned 200 + empty df).
+                # the command turns into a 400. Otherwise an errored query would
+                # silently return 200 + empty df.
                 if result.get("status") in ("error", "failed") or result.get(
                     "error_message"
                 ):
@@ -775,24 +692,11 @@ class AsyncQueryContextProcessor:
                         result.get("error_message") or "Query failed"
                     )
 
-                # Process time comparison offsets before post-processing so
-                # that shifted metric columns (e.g. ``Births__28 days ago``)
-                # exist when post-processing operations like ``pivot`` look
-                # them up. Mirrors the original order in
-                # ``superset_old/common/query_context_processor.py:292-302``.
                 if query_object.time_offsets:
                     time_offset_result = await self.processing_time_offsets(
                         df, query_object
                     )
                     df = time_offset_result["df"]
-                    # Append the offset subquery SQL to the main query so the
-                    # response ``query`` field splits into ``[main, offset_1,
-                    # ...]`` on ``;`` (1:1 with
-                    # ``superset_old/common/query_context_processor.py``: the
-                    # main ``query`` gets a trailing ``;\n\n`` separator
-                    # (line 281: ``query = result.query + ";\n\n"``) before the
-                    # offset queries are joined and appended with the same
-                    # separator (lines 295-298)).
                     offset_queries = time_offset_result["queries"]
                     if offset_queries:
                         query_str += ";\n\n"
@@ -808,24 +712,14 @@ class AsyncQueryContextProcessor:
                             self._exec_post_processing, df, query_object
                         )
                     except InvalidPostProcessingError as ex:
-                        # 1:1 with the original ``get_query_result``
-                        # (``superset_old/.../query_context_processor.py:300-304``):
-                        # a bad post-processing op surfaces as a
+                        # A bad post-processing op surfaces as a
                         # ``QueryObjectValidationError`` (caught below → a
                         # status=failed payload carrying the validation
                         # message), not a generic execution error.
                         raise QueryObjectValidationError(ex.message) from ex
 
-                # Fetch annotation data only on cache miss
                 annotation_data = await self.get_annotation_data(query_object)
 
-                # Store df + annotation_data + surfaced metadata in
-                # cache together. Persisting the applied/rejected
-                # filter columns and applied template filters means a
-                # subsequent cache hit can expose the same chart-data
-                # response shape as a fresh execution (delta #19) —
-                # otherwise cache hits would silently drop the
-                # surfaced filter telemetry.
                 if self._cache_manager is not None and cache_key:
                     cache_payload = {
                         "df": df,
@@ -843,7 +737,7 @@ class AsyncQueryContextProcessor:
                     await self._cache_set(cache_key, cache_payload, timeout)
             except (TimeDeltaAmbiguousError, TimeRangeAmbiguousError):
                 # Ambiguous time-offset/range input is a user validation error;
-                # propagate it (1:1 upstream) instead of swallowing it into a
+                # propagate it instead of swallowing it into a
                 # status=failed payload.
                 raise
             except Exception as ex:
@@ -860,8 +754,6 @@ class AsyncQueryContextProcessor:
                 error_message = _re.sub(r"<class '[^']+'>:\s*", "", _raw)
                 status = "failed"
 
-        # Build the label_map (delta D3 — 1:1 with
-        # ``superset_old/common/query_context_processor.py:180-225``).
         # The N-dimensional DataFrame has been flattened by the ``flatten``
         # operator, escaping commas inside column names via
         # ``escape_separator``; the result columns must be unescaped and each
@@ -934,10 +826,6 @@ class AsyncQueryContextProcessor:
         # Compute coltypes from DataFrame dtypes + datasource column metadata
         coltypes = self._extract_coltypes(df, self._datasource)
 
-        # Surfaced filter metadata from the SQL build pipeline. Two sources:
-        # - Cache hit: stored in the payload alongside the DataFrame.
-        # - Cache miss: ``result`` is the freshly-computed dict from
-        #   :meth:`_get_query_result`.
         applied_filter_columns_meta: list[Any] = list(cached_applied_filter_columns)
         rejected_filter_columns_meta: list[Any] = list(cached_rejected_filter_columns)
         applied_template_filters_meta: list[str] = list(cached_applied_template_filters)
@@ -952,13 +840,6 @@ class AsyncQueryContextProcessor:
                 result.get("applied_template_filters") or []
             )
 
-        # Build ``applied_filters`` / ``rejected_filters`` (delta D1/D2 — 1:1
-        # with ``superset_old/common/query_actions.py:_get_full`` lines
-        # 119-136): combine the dataset-applied / dataset-rejected filter
-        # columns with the time-extra filter status. The raw
-        # ``applied_filter_columns`` / ``rejected_filter_columns`` lists are
-        # consumed here and NOT surfaced in the response (the original deletes
-        # them from the payload).
         applied_time_columns, rejected_time_columns = get_time_filter_status(
             self._datasource, dict(query_object.applied_time_extras or {})
         )
@@ -993,8 +874,6 @@ class AsyncQueryContextProcessor:
             "coltypes": coltypes,
             "applied_filters": applied_filters,
             "rejected_filters": rejected_filters,
-            # Match original Superset chart/data response shape
-            # (superset_old/common/query_context_processor.py).
             "result_format": getattr(query_object, "result_format", None) or "json",
         }
 
@@ -1005,11 +884,10 @@ class AsyncQueryContextProcessor:
     ) -> str:
         """Generate cache key from datasource.uid + RLS + query params.
 
-        ``time_offset`` is folded into the key (1:1 with upstream
-        ``query_cache_key(..., time_offset=..., time_grain=...)``) so each
-        time-comparison offset subquery caches under a DISTINCT key — without
-        it two offsets whose shifted clones happened to hash alike could
-        collide and serve stale comparison data.
+        ``time_offset`` is folded into the key so each time-comparison offset
+        subquery caches under a DISTINCT key — without it two offsets whose
+        shifted clones happened to hash alike could collide and serve stale
+        comparison data.
         """
         datasource = self._datasource
         extra_cache_keys = (
@@ -1032,13 +910,10 @@ class AsyncQueryContextProcessor:
                 "changed_on": getattr(datasource, "changed_on", None),
             }
         )
-        # Add an impersonation key to cache if impersonation is enabled on the
-        # db or if the CACHE_QUERY_BY_USER flag is on — 1:1 with the original
-        # ``QueryObject.cache_key`` (``superset_old/common/query_object.py:456-474``).
-        # The CACHE_IMPERSONATION branch additionally requires the database to
-        # actually impersonate users, and the value comes from the engine-spec
-        # ``get_impersonation_key`` (overridable per dialect) rather than a bare
-        # username, so the key matches upstream.
+        # CACHE_IMPERSONATION additionally requires the database to actually
+        # impersonate users, and the value comes from the engine-spec
+        # ``get_impersonation_key`` (overridable per dialect) rather than a
+        # bare username.
         if hasattr(self._settings, "feature_flags"):
             flags = self._settings.feature_flags or {}
             try:
@@ -1068,13 +943,8 @@ class AsyncQueryContextProcessor:
         datasource = self._datasource
         query_dict = query_object.to_dict()
 
-        # Gather RLS clauses with the original group_key OR/AND grouping
-        # and Jinja templating semantics — see
-        # ``BaseDatasource.get_sqla_row_level_filters`` in
-        # ``superset_old.connectors.sqla.models``.
-        # Returns ``list[ClauseElement]`` (TextClause / BooleanClauseList)
-        # — caller (``_build_sql``) compiles each one through the target
-        # dialect for proper quoting and dialect translation.
+        # Gather RLS clauses with group_key OR/AND grouping and Jinja
+        # templating semantics (see ``BaseDatasource.get_sqla_row_level_filters``).
         from sqlalchemy.sql.elements import ClauseElement
 
         from superset.utils.rls import compose_rls_where_clauses
@@ -1087,7 +957,6 @@ class AsyncQueryContextProcessor:
                 security_manager=self._security_manager,
             )
 
-        # Check if datasource supports async query
         if hasattr(datasource, "async_query"):
             if rls_clauses:
                 result = await datasource.async_query(
@@ -1116,19 +985,9 @@ class AsyncQueryContextProcessor:
                 "dataset (virtual dataset) to chart it."
             )
 
-        # Normalize result to dict.  Surface the SQL-build metadata
-        # (applied / rejected filter columns, applied template
-        # filters) so the caller can include them in the final
-        # payload — matches the original
-        # ``superset_old/common/query_context_processor.py`` chart-data
-        # response shape (delta #19).
         applied_filter_columns: list[Any] = []
         rejected_filter_columns: list[Any] = []
         applied_template_filters: list[str] = []
-        # Carry the query-execution status/error through so ``get_df_payload``
-        # can surface a failed query (e.g. SQL error, "Empty query?") instead
-        # of silently returning an empty success — 1:1 with the original where
-        # ``datasource.query`` returns ``QueryStatus.FAILED`` + error_message.
         query_status: Any = "success"
         query_error: str | None = None
 
@@ -1168,10 +1027,6 @@ class AsyncQueryContextProcessor:
             # Always only *normalize* here. Post-processing is applied by
             # ``get_df_payload`` AFTER ``processing_time_offsets`` has had a
             # chance to join the time-shifted columns onto the DataFrame.
-            # Mirrors the original
-            # ``superset_old/common/query_context_processor.py:get_query_result``
-            # which does ``normalize_df → processing_time_offsets →
-            # exec_post_processing`` in that order.
             df = await asyncio.to_thread(self._normalize_df, df, query_object)
 
         return {
@@ -1197,10 +1052,6 @@ class AsyncQueryContextProcessor:
         from superset.utils.dataframe import df_metrics_to_num, normalize_dttm_col
         from superset.utils.date import DateColumn
 
-        # 1:1 with upstream ``normalize_df``'s ``_get_timestamp_format``
-        # (``superset_old/.../query_context_processor.py:314-326``): read the
-        # column's ``python_date_format`` off a sqla column object. dict specs
-        # and the Query datasource have no such attribute → None.
         def _get_timestamp_format(column: str | None) -> str | None:
             if not hasattr(self._datasource, "get_column"):
                 return None
@@ -1216,8 +1067,7 @@ class AsyncQueryContextProcessor:
 
         date_columns: list[DateColumn] = []
 
-        # Handle DTTM_ALIAS (legacy time column). Upstream
-        # (``query_context_processor.py:352-361``) seeds the legacy column's
+        # Handle DTTM_ALIAS (legacy time column). Seed the legacy column's
         # ``timestamp_format`` from the *granularity* column's
         # ``python_date_format`` so epoch_s / epoch_ms / custom-strftime
         # temporal columns are converted correctly.
@@ -1230,12 +1080,6 @@ class AsyncQueryContextProcessor:
                 )
             )
 
-        # Build DateColumn list from base axis labels with proper metadata.
-        # The legacy ``granularity`` column is appended to the candidate list
-        # so a temporal column defined via ``granularity`` (not in ``columns``)
-        # is still normalized — 1:1 with the original ``normalize_df``
-        # (``superset_old/.../query_context_processor.py:329-341``) which built
-        # ``labels`` from ``get_base_axis_labels(columns) + granularity``.
         seen_labels = {DTTM_ALIAS}
         base_labels = [*get_base_axis_labels(query_object.columns)]
         if query_object.granularity:
@@ -1247,10 +1091,9 @@ class AsyncQueryContextProcessor:
                     if hasattr(self._datasource, "get_column")
                     else None
                 )
-                # 1:1 with upstream ``normalize_df`` (329-341): only normalize a
-                # base-axis label when its datasource column is temporal
-                # (``is_dttm``). Without this guard a categorical/numeric x-axis
-                # that happens to be in ``df.columns`` is fed to
+                # Only normalize a base-axis label when its datasource column
+                # is temporal (``is_dttm``). Without this guard a categorical/
+                # numeric x-axis that happens to be in ``df.columns`` is fed to
                 # ``pd.to_datetime(errors="coerce")`` and corrupted to NaT.
                 if not col_obj:
                     continue
@@ -1262,9 +1105,6 @@ class AsyncQueryContextProcessor:
                 if not is_dttm:
                     continue
                 seen_labels.add(label)
-                # Upstream's ``_get_timestamp_format`` only reads
-                # ``python_date_format`` off a sqla column object (dict specs
-                # have no such attribute → None).
                 date_columns.append(
                     DateColumn(
                         col_label=label,
@@ -1299,10 +1139,10 @@ class AsyncQueryContextProcessor:
             metric_names = get_metric_names(query_object.metrics)
             df_metrics_to_num(df, metric_names)
 
-        # Replace inf/-inf LAST — 1:1 with upstream ``normalize_df`` order
-        # (after normalize_dttm_col + df_metrics_to_num).  Doing it first would
-        # miss any inf produced by ``df_metrics_to_num`` (e.g. a ratio metric),
-        # leaving non-JSON-serialisable infinities in the result.
+        # Replace inf/-inf LAST, after normalize_dttm_col + df_metrics_to_num.
+        # Doing it first would miss any inf produced by ``df_metrics_to_num``
+        # (e.g. a ratio metric), leaving non-JSON-serialisable infinities in
+        # the result.
         df = df.replace([np.inf, -np.inf], np.nan)
 
         return df
@@ -1322,9 +1162,7 @@ class AsyncQueryContextProcessor:
     ) -> list[int]:
         """Map DataFrame column types to GenericDataType enum values.
 
-        1:1 port of ``superset_old/utils/core.py:extract_dataframe_dtypes``.
-
-        Three datasource-aware operations the original performs:
+        Three datasource-aware operations:
         1. Build ``columns_by_name`` from ``datasource.columns`` — each entry
            may be a dict or a column object with ``.column_name`` /
            ``.is_dttm`` attributes.
@@ -1340,7 +1178,6 @@ class AsyncQueryContextProcessor:
 
         from superset.typing import GenericDataType
 
-        # Map of pandas infer_dtype strings to GenericDataType
         inferred_type_map: dict[str, GenericDataType] = {
             "floating": GenericDataType.NUMERIC,
             "integer": GenericDataType.NUMERIC,
@@ -1404,10 +1241,7 @@ class AsyncQueryContextProcessor:
 
     @staticmethod
     def _map_sql_type_to_inferred_type(sql_type: str | None) -> str:
-        """Map a SQL type to a pandas inferred-type string.
-
-        1:1 port of ``superset_old/utils/core.py:map_sql_type_to_inferred_type``.
-        """
+        """Map a SQL type to a pandas inferred-type string."""
         if not sql_type:
             return "string"
         _type_mapping = {
@@ -1424,10 +1258,7 @@ class AsyncQueryContextProcessor:
 
     @staticmethod
     def _get_metric_type_from_column(column: Any, datasource: Any) -> str:
-        """Determine the metric type from a column name and datasource.
-
-        1:1 port of ``superset_old/utils/core.py:get_metric_type_from_column``.
-        """
+        """Determine the metric type from a column name and datasource."""
         _metric_map_type: dict[str, str] = {
             "SUM": "floating",
             "AVG": "floating",
@@ -1485,9 +1316,7 @@ class AsyncQueryContextProcessor:
         from superset.exceptions import InvalidPostProcessingError
         from superset.i18n import _
 
-        # 1:1 with the original ``QueryObject.exec_post_processing``
-        # (``superset_old/common/query_object.py:488-505``): a missing
-        # ``operation`` key or an unsupported operation raises
+        # A missing ``operation`` key or an unsupported operation raises
         # ``InvalidPostProcessingError`` with these exact messages, which the
         # caller re-raises as ``QueryObjectValidationError``.
         for operation in query_object.post_processing:
@@ -1522,7 +1351,7 @@ class AsyncQueryContextProcessor:
         return query_object.extras.get("time_grain_sqla")
 
     def _get_cache_timeout(self) -> int:
-        """Get cache timeout — priority chain matches Superset:
+        """Get cache timeout — priority chain:
 
         1. custom_cache_timeout (from query context)
         2. slice_.cache_timeout (chart-level)
@@ -1596,11 +1425,9 @@ class AsyncQueryContextProcessor:
         Serializes the value to bytes via pickle before passing to the cache
         manager, which expects ``bytes``.  Pickle is used here (rather than
         JSON) because the cached values may contain pandas DataFrames and
-        NumPy arrays — the same approach the original QueryContextProcessor
-        takes via ``superset.extensions.cache_manager``.
+        NumPy arrays.
 
-        1:1 with ``superset_old/utils/cache.py:set_and_log_cache`` lines 61-63:
-        skip the write when timeout == CACHE_DISABLED_TIMEOUT so that datasets
+        Skip the write when timeout == CACHE_DISABLED_TIMEOUT so that datasets
         with caching disabled never populate the cache store.
         """
         if self._cache_manager is None:
@@ -1625,7 +1452,6 @@ class AsyncQueryContextProcessor:
     async def get_annotation_data(
         self, query_object: AsyncQueryObject
     ) -> dict[str, Any]:
-        """Orchestrator — dispatches to native or viz annotation fetchers."""
         annotation_data: dict[str, Any] = await self.get_native_annotation_data(
             query_object
         )
@@ -1645,7 +1471,6 @@ class AsyncQueryContextProcessor:
     async def get_native_annotation_data(
         self, query_object: AsyncQueryObject
     ) -> dict[str, Any]:
-        """Fetch native annotations via AnnotationLayerDAO."""
         annotation_data: dict[str, Any] = {}
         annotation_layers = [
             layer
@@ -1688,7 +1513,7 @@ class AsyncQueryContextProcessor:
         """Fetch annotation data from another chart (recursive).
 
         Depth limit prevents infinite recursion when charts reference each other.
-        1:1 with ``superset_old/common/query_context_processor.py:1164-1232``:
+        This method:
         - raises QueryObjectValidationError (not ValueError) for user-visible
           errors (chart not found, missing datasource, missing query context)
         - wraps the entire execution in try/except SupersetException so
@@ -1726,20 +1551,17 @@ class AsyncQueryContextProcessor:
             )
 
         try:
-            # Mirror the original ``get_viz_annotation_data`` branch
-            # (superset_old/common/query_context_processor.py:1181-1202):
-            # legacy viz_type charts (e.g. "line", "area", "pie") are served via
+            # Legacy viz_type charts (e.g. "line", "area", "pie") are served via
             # ``BaseViz.get_payload()``; modern charts go through
             # ``chart.get_query_context()`` → ``AsyncQueryContextProcessor``.
-            # The original imported ``viz_types`` from ``superset.viz`` at module
-            # level; we do it lazily here to avoid a circular-import at load time.
+            # ``viz_types`` is imported lazily here to avoid a circular-import
+            # at load time.
             from superset.viz import get_active_viz_types  # noqa: PLC0415
 
             chart_viz_type = getattr(chart, "viz_type", None)
             # Denylist-filtered registry — a VIZ_TYPE_DENYLIST'd type must NOT
-            # be routed into the legacy BaseViz pipeline here (1:1 upstream).
+            # be routed into the legacy BaseViz pipeline here.
             if chart_viz_type in get_active_viz_types():
-                # Legacy chart — run through the async viz pipeline.
                 if not getattr(chart, "datasource", None):
                     raise QueryObjectValidationError(
                         _(
@@ -1805,8 +1627,8 @@ class AsyncQueryContextProcessor:
                         qo.from_dttm = from_dttm
                         qo.to_dttm = to_dttm
 
-            # Mirror original line 1226: set force on the annotation query_context
-            # so that processing_time_offsets() inside the annotation processor
+            # Set force on the annotation query_context so that
+            # processing_time_offsets() inside the annotation processor
             # reads self._query_context.force correctly when force=True.
             query_context.force = force
 
@@ -1826,17 +1648,14 @@ class AsyncQueryContextProcessor:
                 _recursion_depth=_depth + 1,
             )
 
-            # 1:1 with the original (line 1227-1228):
-            # ``command = ChartDataCommand(query_context)``
-            # ``command.validate()`` — which calls raise_for_access on the
-            # annotation chart's datasource. Without this, a user could
-            # access data from datasets they don't have permission for.
+            # ``raise_for_access`` is called on the annotation chart's
+            # datasource. Without this, a user could access data from
+            # datasets they don't have permission for.
             await annotation_processor.raise_for_access()
 
             payload = await annotation_processor.get_payload(
                 query_objects=query_context.queries, force=force
             )
-            # 1:1 with superset_old/common/query_actions.py:_get_full (line 115):
             # ``get_df_payload`` stores the result as ``{"df": df, ...}``; the
             # ``df -> data`` conversion normally happens in the chart controller
             # (_render_chart_data_payload), which is NOT invoked in this
@@ -1867,10 +1686,7 @@ class AsyncQueryContextProcessor:
         if not query_object.time_offsets:
             return CachedTimeOffset(df=df, queries=queries, cache_keys=cache_keys)
 
-        # Resolve outer time bounds from the query object.
-        #
-        # Mirrors ``get_since_until_from_query_object`` in
-        # ``superset_old/common/utils/time_range_utils.py``:
+        # Mirrors ``get_since_until_from_query_object``:
         # ``query_object.time_range`` takes precedence, otherwise fall back to
         # scanning ``query_object.filters`` for a ``TEMPORAL_RANGE`` entry.
         # The Explore UI emits time filters as adhoc TEMPORAL_RANGE entries
@@ -1883,8 +1699,7 @@ class AsyncQueryContextProcessor:
 
             resolved_time_range: str | None = query_object.time_range
             if not resolved_time_range:
-                # 1:1 with upstream ``get_since_until_from_query_object`` which
-                # iterates ALL filters and keeps the LAST TEMPORAL_RANGE match
+                # Iterates ALL filters and keeps the LAST TEMPORAL_RANGE match
                 # (no early break) — matters only when a query carries multiple
                 # TEMPORAL_RANGE filters.
                 for flt in query_object.filters or []:
@@ -1895,10 +1710,9 @@ class AsyncQueryContextProcessor:
                     ):
                         resolved_time_range = flt["val"]
 
-            # 1:1 with upstream ``get_since_until_from_query_object`` — pass
-            # ``extras`` so config relative-time anchors + per-request overrides
-            # are honored when resolving the offset outer bounds (bare
-            # ``get_since_until`` hardcoded ``today`` → wrong shifted window).
+            # Pass ``extras`` so config relative-time anchors + per-request
+            # overrides are honored when resolving the offset outer bounds
+            # (bare ``get_since_until`` hardcodes ``today`` → wrong shifted window).
             since, until = get_since_until_from_time_range(
                 resolved_time_range,
                 query_object.time_shift,
@@ -1915,19 +1729,11 @@ class AsyncQueryContextProcessor:
                 "when using a Time Comparison."
             )
 
-        # Determine metric names to identify which columns to rename
         from superset.utils.column import get_metric_names
 
         metric_names = get_metric_names(query_object.metrics)
-
-        # Non-metric columns serve as join keys
         join_keys = [col for col in df.columns if col not in metric_names]
-
-        # Time comparison separator (matches Superset's TIME_COMPARISON = "__")
         time_comparison_sep = "__"
-
-        # Resolve the time grain for the temporal join key (week/month/quarter/
-        # year buckets require a synthetic join column — see ``join_offset_dfs``).
         time_grain = self.get_time_grain(query_object)
 
         offset_dfs: dict[str, pd.DataFrame] = {}
@@ -1948,7 +1754,7 @@ class AsyncQueryContextProcessor:
 
             if is_date_range_offset:
                 # Absolute date-range offset ("2015-01-03 : 2015-01-04"); gated
-                # behind DATE_RANGE_TIMESHIFTS_ENABLED. 1:1 with the original.
+                # behind DATE_RANGE_TIMESHIFTS_ENABLED.
                 if not feature_flag_manager.is_feature_enabled(
                     "DATE_RANGE_TIMESHIFTS_ENABLED"
                 ):
@@ -1997,13 +1803,10 @@ class AsyncQueryContextProcessor:
             query_object_clone.post_processing = []
 
             # Adjust the temporal filter so the shifted query runs over the
-            # correct window — 1:1 with the original (the comparison may not be
-            # on a temporal column, so the TEMPORAL_RANGE filter must follow the
-            # shift). ``index`` is the base (x-axis) label or ``__timestamp``.
+            # correct window (the comparison may not be on a temporal column,
+            # so the TEMPORAL_RANGE filter must follow the shift).
             index = (get_base_axis_labels(query_object.columns) or [DTTM_ALIAS])[0]
             if is_date_range_offset:
-                # Replace any temporal filter with one bounding the explicit
-                # date range on the resolved temporal column.
                 new_filters = [
                     flt
                     for flt in copy.deepcopy(query_object_clone.filters)
@@ -2061,7 +1864,7 @@ class AsyncQueryContextProcessor:
                         )
                 query_object_clone.filters = new_filters
 
-            # Drop non-temporal x-axis filters (keep temporal ones), 1:1.
+            # Drop non-temporal x-axis filters (keep temporal ones).
             query_object_clone.filters = [
                 flt
                 for flt in query_object_clone.filters
@@ -2083,9 +1886,9 @@ class AsyncQueryContextProcessor:
                 )
                 query_object_clone.row_offset = 0
 
-            # Per-offset cache (1:1 upstream): look up this offset's result
-            # under an offset-distinct key before recomputing. The key folds in
-            # the RESOLVED+original offset and the time grain so distinct offsets
+            # Per-offset cache: look up this offset's result under an
+            # offset-distinct key before recomputing. The key folds in the
+            # RESOLVED+original offset and the time grain so distinct offsets
             # never collide. ``force`` bypasses the read (always recompute).
             cached_time_offset_key = (
                 offset if offset == original_offset else f"{offset}_{original_offset}"
@@ -2102,11 +1905,9 @@ class AsyncQueryContextProcessor:
                 cache_keys.append(offset_cache_key)
                 continue
 
-            # Execute the shifted query. A failed offset query propagates (1:1
-            # with the original, where ``datasource.query`` raises a build error
-            # out of ``processing_time_offsets`` → the main query fails) instead
-            # of silently producing NaN comparison columns. ``get_df_payload``'s
-            # ``except`` (the caller) turns it into a failed payload → 400.
+            # A failed offset query propagates (raises out of
+            # ``processing_time_offsets`` → main query fails) instead of
+            # silently producing NaN comparison columns.
             result = await self._get_query_result(query_object_clone)
             if result.get("status") in ("error", "failed") or result.get(
                 "error_message"
@@ -2145,9 +1946,6 @@ class AsyncQueryContextProcessor:
                 )
                 offset_metrics_df = offset_metrics_df.rename(columns=metrics_mapping)
 
-            # Cache the finalized (post-rename) offset df + query under the
-            # offset-distinct key so a force=False repeat is served from cache
-            # (1:1 upstream ``cache.set({"df": ..., "query": ...})``).
             await self._cache_set(
                 offset_cache_key,
                 {"df": offset_metrics_df, "query": result.get("query", "")},
@@ -2158,7 +1956,6 @@ class AsyncQueryContextProcessor:
             # column by the real time delta.
             offset_dfs[offset] = offset_metrics_df
 
-        # Time-grain-aware join (aligns each row with its shifted offset row).
         if offset_dfs:
             df = self.join_offset_dfs(df, offset_dfs, time_grain, join_keys)
 
@@ -2173,14 +1970,11 @@ class AsyncQueryContextProcessor:
     ) -> pd.DataFrame:
         """Join offset DataFrames with the main DataFrame.
 
-        1:1 with ``superset_old/common/query_context_processor.py::join_offset_dfs``.
         For a temporal time grain the offset result is joined on a *bucketed +
         offset-shifted* temporal key (:meth:`generate_join_column`) so each main
         row aligns with the corresponding shifted offset row (e.g. "today" with
         "today − 1 year"); a plain merge on the raw timestamp would mis-align
-        them. ``TIME_GRAIN_JOIN_COLUMN_PRODUCERS`` is an upstream-only extension
-        hook (normally empty), so we default to no custom producer and fall back
-        to ``generate_join_column``.
+        them.
         """
         from superset.utils.feature_flags import feature_flag_manager
 
@@ -2218,9 +2012,7 @@ class AsyncQueryContextProcessor:
         is_date_range_offset: bool,
         join_column_producer: Any,
     ) -> tuple[pd.DataFrame, list[str]]:
-        """1:1 with the original ``_determine_join_keys``.
-
-        For a temporal grain, add a synthetic offset-join column to both frames
+        """For a temporal grain, add a synthetic offset-join column to both frames
         (the main frame shifted by ``offset``, the offset frame unshifted) and
         join on it instead of the raw timestamp.
         """
@@ -2245,7 +2037,7 @@ class AsyncQueryContextProcessor:
         time_offset: str | None = None,
         join_column_producer: Any = None,
     ) -> None:
-        """Add an offset join column to ``df`` in place (1:1 with the original)."""
+        """Add an offset join column to ``df`` in place."""
         if join_column_producer:
             df[name] = df.apply(lambda row: join_column_producer(row, 0), axis=1)
         else:
@@ -2261,10 +2053,7 @@ class AsyncQueryContextProcessor:
         time_grain: str,
         time_offset: str | None = None,
     ) -> str:
-        """Bucket (and optionally offset-shift) a temporal value into a join key.
-
-        1:1 with the original ``generate_join_column``.
-        """
+        """Bucket (and optionally offset-shift) a temporal value into a join key."""
         from pandas import DateOffset
 
         from superset.utils.date import normalize_time_delta
@@ -2313,8 +2102,7 @@ class AsyncQueryContextProcessor:
         offset_df: pd.DataFrame,
         actual_join_keys: list[str],
     ) -> pd.DataFrame:
-        """Left-join ``offset_df`` onto ``df`` (1:1 with the original
-        ``_perform_join`` / ``dataframe_utils.left_join_df``)."""
+        """Left-join ``offset_df`` onto ``df``."""
         if actual_join_keys:
             return df.merge(
                 offset_df,
@@ -2346,7 +2134,7 @@ class AsyncQueryContextProcessor:
         is_date_range_offset: bool,
     ) -> pd.DataFrame:
         """Drop the synthetic join column + right-suffix columns and restore
-        column order (1:1 with the original ``_apply_cleanup_logic``)."""
+        column order."""
         if time_grain and not is_date_range_offset:
             if join_keys:
                 col = df.pop(join_keys[0])
@@ -2366,7 +2154,7 @@ class AsyncQueryContextProcessor:
 
     @staticmethod
     def _is_datetime_series(series: Any) -> bool:
-        """1:1 with ``superset_old.common.utils.dataframe_utils.is_datetime_series``."""
+        """Return True when the series contains datetime-like values."""
         import datetime as _dt
 
         if series is None or not isinstance(series, pd.Series):
@@ -2405,10 +2193,7 @@ class AsyncQueryContextProcessor:
         outer_from_dttm: Any,
         outer_to_dttm: Any,
     ) -> str:
-        """Resolve ``inherit`` / explicit-date offsets to a ``N days ago`` string.
-
-        1:1 with the original ``get_offset_custom_or_inherit``.
-        """
+        """Resolve ``inherit`` / explicit-date offsets to a ``N days ago`` string."""
         from datetime import datetime as _datetime
 
         if offset == "inherit":
@@ -2421,9 +2206,8 @@ class AsyncQueryContextProcessor:
     def _get_temporal_column_for_filter(
         self, query_object: AsyncQueryObject, x_axis_label: str | None
     ) -> str | None:
-        """Best-effort temporal column for date-range filtering (1:1 with the
-        original ``_get_temporal_column_for_filter``): explicit granularity →
-        x-axis label → first ``is_dttm`` datasource column."""
+        """Best-effort temporal column for date-range filtering: explicit
+        granularity → x-axis label → first ``is_dttm`` datasource column."""
         if query_object.granularity:
             return query_object.granularity
         if x_axis_label:
@@ -2440,8 +2224,7 @@ class AsyncQueryContextProcessor:
         offset_df: pd.DataFrame,
         join_keys: list[str],
     ) -> tuple[pd.DataFrame, list[str]]:
-        """Aggregate the date-range offset frame when only temporal join keys
-        remain (1:1 with the original ``_process_date_range_offset``)."""
+        """Aggregate the date-range offset frame when only temporal join keys remain."""
         temporal_cols = ["ds", "__timestamp", "dttm"]
         non_temporal_join_keys = [k for k in join_keys if k not in temporal_cols]
         if non_temporal_join_keys:
@@ -2486,18 +2269,15 @@ class AsyncQueryContextProcessor:
     ) -> Any:
         """Convert DataFrame to the requested result format.
 
-        1:1 with ``superset_old/common/query_context_processor.py::get_data``
-        for the table-like (CSV / XLSX) branches:
-
-          - The verbose column-name map (datasource ``data["verbose_map"]``)
-            renames physical column names to their human-readable label, so
-            the export uses the same headers the user sees in the chart.
-          - CSV is written via ``csv.df_to_escaped_csv(df, **CSV_EXPORT)`` —
-            the ``CSV_EXPORT`` config (default ``{"encoding": "utf-8-sig"}``)
-            sets the separator/encoding/etc. that pandas applies.
-          - XLSX runs ``excel.apply_column_types(df, coltypes)`` first (so
-            numerics export as numbers, tz-aware datetimes as strings) and is
-            then written via ``excel.df_to_excel(df, **EXCEL_EXPORT)``.
+        - The verbose column-name map (datasource ``data["verbose_map"]``)
+          renames physical column names to their human-readable label, so
+          the export uses the same headers the user sees in the chart.
+        - CSV is written via ``csv.df_to_escaped_csv(df, **CSV_EXPORT)`` —
+          the ``CSV_EXPORT`` config (default ``{"encoding": "utf-8-sig"}``)
+          sets the separator/encoding/etc. that pandas applies.
+        - XLSX runs ``excel.apply_column_types(df, coltypes)`` first (so
+          numerics export as numbers, tz-aware datetimes as strings) and is
+          then written via ``excel.df_to_excel(df, **EXCEL_EXPORT)``.
 
         ``coltypes`` are computed from the DataFrame dtypes when not supplied;
         ``verbose_map`` is applied when supplied (the export path threads it in
@@ -2507,20 +2287,13 @@ class AsyncQueryContextProcessor:
             from superset import config as _config
             from superset.utils import csv as _csv, excel as _excel
 
-            # 1:1 with the original ``get_data`` (line 994):
-            # ``include_index = not isinstance(df.index, pd.RangeIndex)``
             # DataFrames with custom indices (e.g., after pivot/groupby)
             # include the index as a column in the export.
             include_index = not isinstance(df.index, pd.RangeIndex)
 
-            # Rename columns to their verbose (human-readable) labels — 1:1
-            # with upstream ``get_data`` which reads
-            # ``datasource.data["verbose_map"]``.
             if verbose_map:
                 df.columns = [verbose_map.get(col, col) for col in df.columns]
 
-            # Read the CSV_EXPORT / EXCEL_EXPORT pandas kwargs from settings
-            # (the equivalent of the legacy ``current_app.config[...]``).
             try:
                 settings = _config.SupersetSettings()  # type: ignore[call-arg]
                 csv_export = dict(getattr(settings, "csv_export", {}) or {})
@@ -2538,9 +2311,7 @@ class AsyncQueryContextProcessor:
             _excel.apply_column_types(df, coltypes)  # type: ignore[arg-type]
             return _excel.df_to_excel(df, **excel_export)
 
-        # Serialize datetime columns as epoch milliseconds to match the
-        # original Superset chart data API, which uses ``json_int_dttm_ser``
-        # (see ``superset_old/charts/data/api.py``). Chart components on
+        # Serialize datetime columns as epoch milliseconds. Chart components on
         # the frontend expect numeric timestamps so they can format them
         # with ``smart_date`` / ``time_grain_sqla`` (e.g. "2008 Q1").
         if df.empty:

@@ -163,10 +163,6 @@ class AsyncPostgresEngineSpec(BaseAsyncEngineSpec):
         args.setdefault("prepared_statement_cache_size", 0)
         return uri, args
 
-    # ------------------------------------------------------------------
-    # epoch / datetime helpers
-    # ------------------------------------------------------------------
-
     @classmethod
     def epoch_to_dttm(cls) -> str:
         return "(timestamp 'epoch' + {col} * interval '1 second')"
@@ -189,11 +185,6 @@ class AsyncPostgresEngineSpec(BaseAsyncEngineSpec):
 
     @classmethod
     def _get_sqla_column_type(cls, native_type: str) -> Any:
-        """Resolve *native_type* string to a SQLAlchemy type instance.
-
-        Checks ``column_type_mappings`` first, then falls back to basic
-        heuristics for Date / DateTime.
-        """
         for regex, sqla_type, _generic in cls.column_type_mappings:
             if regex.match(native_type):
                 return sqla_type
@@ -211,10 +202,6 @@ class AsyncPostgresEngineSpec(BaseAsyncEngineSpec):
             return DateTime()
         return None
 
-    # ------------------------------------------------------------------
-    # table / schema helpers
-    # ------------------------------------------------------------------
-
     @classmethod
     async def get_catalog_names(
         cls,
@@ -222,9 +209,7 @@ class AsyncPostgresEngineSpec(BaseAsyncEngineSpec):
     ) -> set[str]:
         """Return all catalogs (databases) the user can connect to.
 
-        1:1 with upstream ``PostgresEngineSpec.get_catalog_names``
-        (``superset_old/db_engine_specs/postgres.py``): queries
-        ``pg_database WHERE datistemplate = false`` rather than the base
+        Queries ``pg_database WHERE datistemplate = false`` rather than the base
         class's ``information_schema.schemata`` query, which only returns
         schemas in the *current* database and therefore yields wrong / empty
         results for postgres-wire engines (Postgres, Redshift, StarRocks-over-pg).
@@ -258,12 +243,7 @@ class AsyncPostgresEngineSpec(BaseAsyncEngineSpec):
         cls,
         schema: str | None = None,
     ) -> list[str]:
-        """Set the search_path to *schema* so unqualified names resolve correctly."""
         return [f'set search_path = "{schema}"'] if schema else []
-
-    # ------------------------------------------------------------------
-    # cost estimation
-    # ------------------------------------------------------------------
 
     @classmethod
     async def estimate_statement_cost(
@@ -271,7 +251,6 @@ class AsyncPostgresEngineSpec(BaseAsyncEngineSpec):
         conn: AsyncConnection,
         statement: str,
     ) -> dict[str, Any]:
-        """Run ``EXPLAIN`` and extract start-up / total cost."""
         sql = f"EXPLAIN {statement}"
         result = await conn.execute(text(sql))
         row = result.fetchone()
@@ -291,16 +270,11 @@ class AsyncPostgresEngineSpec(BaseAsyncEngineSpec):
     ) -> list[dict[str, str]]:
         return [{k: str(v) for k, v in row.items()} for row in raw_cost]
 
-    # ------------------------------------------------------------------
-    # query cancellation
-    # ------------------------------------------------------------------
-
     @classmethod
     async def get_cancel_query_id(
         cls,
         conn: AsyncConnection,
     ) -> str | None:
-        """Return the PostgreSQL backend PID for the current session."""
         result = await conn.execute(text("SELECT pg_backend_pid()"))
         row = result.fetchone()
         return str(row[0]) if row else None
@@ -311,7 +285,6 @@ class AsyncPostgresEngineSpec(BaseAsyncEngineSpec):
         conn: AsyncConnection,
         cancel_query_id: str,
     ) -> bool:
-        """Terminate the backend identified by *cancel_query_id* (PID)."""
         try:
             await conn.execute(
                 text(
@@ -325,20 +298,12 @@ class AsyncPostgresEngineSpec(BaseAsyncEngineSpec):
             return False
         return True
 
-    # ------------------------------------------------------------------
-    # SSL / extra params
-    # ------------------------------------------------------------------
-
     @classmethod
     def get_extra_params(
         cls,
         extra: str | None = None,
         server_cert: str | None = None,
     ) -> dict[str, Any]:
-        """Return extra engine params, including SSL cert handling.
-
-        Parameters mirror the relevant fields on ``Database``.
-        """
         import json as _json
 
         try:
@@ -365,10 +330,6 @@ class AsyncPostgresEngineSpec(BaseAsyncEngineSpec):
             parsed["engine_params"] = engine_params
 
         return parsed
-
-    # ------------------------------------------------------------------
-    # datatype resolution
-    # ------------------------------------------------------------------
 
     @classmethod
     def get_datatype(cls, type_code: Any) -> str | None:

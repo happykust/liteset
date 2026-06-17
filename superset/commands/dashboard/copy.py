@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dashboard/copy.py``."""
+"""Dashboard copy command."""
 
 from __future__ import annotations
 
@@ -49,9 +49,8 @@ class CopyDashboardCommand(AsyncBaseCommand["Dashboard"]):
         self._dashboard: Any | None = None
 
     async def validate(self) -> None:
-        # Eager-load ``owners`` (via the full loader) so the DASHBOARD_RBAC
-        # ``is_owner`` check below reads the M2M without a sync lazy-load
-        # (MissingGreenlet) on the async session.
+        # Eager-load owners so DASHBOARD_RBAC is_owner check doesn't trigger
+        # a sync lazy-load (MissingGreenlet) on the async session.
         self._dashboard = await self._dao.get_full_by_id_or_slug(self._dashboard_id)
         if not self._dashboard:
             raise ObjectNotFoundError("Dashboard", self._dashboard_id)
@@ -59,10 +58,8 @@ class CopyDashboardCommand(AsyncBaseCommand["Dashboard"]):
             raise CommandInvalidError("dashboard_title is required for copy")
         if not self._data.get("json_metadata"):
             raise CommandInvalidError("json_metadata is required for copy")
-        # Validate ``json_metadata`` is parseable JSON now so the user gets a
-        # proper 422 — otherwise it bubbles all the way to
-        # ``AsyncDashboardDAO.copy_dashboard``'s ``loads(...)`` as an
-        # uncaught ``JSONDecodeError`` → 500.
+        # Validate now so the user gets a 422 rather than an uncaught
+        # JSONDecodeError inside copy_dashboard → 500.
         try:
             from superset.utils.json import loads as _json_loads
 
@@ -70,10 +67,8 @@ class CopyDashboardCommand(AsyncBaseCommand["Dashboard"]):
         except Exception as ex:  # noqa: BLE001
             raise CommandInvalidError(f"json_metadata is not valid JSON: {ex}") from ex
 
-        # 1:1 with original superset_old/commands/dashboard/copy.py:
-        # When DASHBOARD_RBAC is enabled, only owners of the original dashboard
-        # are allowed to create a copy.  Raises CommandInvalidError (→ 422) to
-        # match the original DashboardForbiddenError surface.
+        # When DASHBOARD_RBAC is enabled, only owners may copy. Raises
+        # CommandInvalidError (→ 422) to match the DashboardForbiddenError surface.
         try:
             from superset.utils.feature_flags import feature_flag_manager
 

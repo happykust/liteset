@@ -17,13 +17,11 @@
 # mypy: ignore-errors
 """Celery task for SQL Lab async query execution.
 
-Direct port of ``superset_old/sql_lab.py::get_sql_results`` —
-``execute_sql_statements`` rolled inline. Celery stays synchronous
-per the Liteset design doc, so this module imports the synchronous
-SQLAlchemy session via :func:`superset.db.session.get_sync_session`,
-talks to the analytical database through ``database.get_sqla_engine``
-(sync), and writes results to ``results_backend`` exactly as the
-original did (msgpack + zlib + Arrow IPC).
+Celery stays synchronous per the Liteset design doc, so this module
+imports the synchronous SQLAlchemy session via
+:func:`superset.db.session.get_sync_session`, talks to the analytical
+database through ``database.get_sqla_engine`` (sync), and writes results
+to ``results_backend`` (msgpack + zlib + Arrow IPC).
 """
 
 from __future__ import annotations
@@ -49,12 +47,6 @@ logger = logging.getLogger(__name__)
 BYTES_IN_MB = 1024 * 1024
 
 
-# ---------------------------------------------------------------------------
-# soft_time_limit resolution — matches superset_old/sql_lab.py defaults
-# (SQLLAB_ASYNC_TIME_LIMIT_SEC = 21600, SQLLAB_HARD_TIMEOUT = 21660).
-# ---------------------------------------------------------------------------
-
-
 def _resolve_timeouts() -> tuple[int, int]:
     try:
         from superset.config import SupersetSettings
@@ -70,22 +62,12 @@ def _resolve_timeouts() -> tuple[int, int]:
 _SOFT_TIME_LIMIT, _HARD_TIME_LIMIT = _resolve_timeouts()
 
 
-# ---------------------------------------------------------------------------
-# Custom exceptions matching the original
-# ---------------------------------------------------------------------------
-
-
 class SqlLabException(Exception):  # noqa: N818
-    """Base exception used by the original sql_lab module."""
+    pass
 
 
 class SqlLabQueryStoppedException(SqlLabException):
-    """Raised when the query was set to STOPPED while executing."""
-
-
-# ---------------------------------------------------------------------------
-# Public Celery task
-# ---------------------------------------------------------------------------
+    pass
 
 
 @celery_app.task(
@@ -103,10 +85,7 @@ def get_sql_results(  # pylint: disable=too-many-arguments
     expand_data: bool = False,
     log_params: Optional[dict[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
-    """Celery entrypoint for asynchronous SQL Lab execution.
-
-    1:1 with ``superset_old/sql_lab.py::get_sql_results``.
-    """
+    """Celery entrypoint for asynchronous SQL Lab execution."""
     try:
         return execute_sql_statements(
             query_id=query_id,
@@ -150,20 +129,7 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
     log_params: Optional[dict[str, Any]],
     username: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """Execute the SQL query — multi-statement aware, results-backend aware.
-
-    Restored 1:1 from ``superset_old/sql_lab.py::execute_sql_statements``.
-    The only mechanical adjustments are:
-
-    - Sessions: ``superset.db.session.get_sync_session()`` instead of
-      the legacy ``db.session``.
-    - Results backend / msgpack flag: read from
-      :class:`SupersetSettings` rather than module-level globals.
-    - User context: looked up via the sync session by ``username``
-      (the parameter is passed by ``ExecuteSQLCommand``).
-    - The ``override_user`` thread-local helper is replaced by
-      :func:`superset.utils.core.set_current_user`.
-    """
+    """Execute the SQL query — multi-statement aware, results-backend aware."""
     from superset.extensions import stats_logger_manager
 
     if store_results and start_time:
@@ -194,7 +160,6 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
 
             raise SupersetResultsBackendNotConfigureException()
 
-        # Bind the user context for RLS / auditing.
         if username:
             try:
                 from superset.utils.core import set_current_user
@@ -219,9 +184,6 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
 
         parsed_script = SQLScript(rendered_query, engine=get_engine_name(database))
 
-        # ------------------------------------------------------------------
-        # DISALLOWED_SQL_FUNCTIONS (security)
-        # ------------------------------------------------------------------
         disallowed_functions = _resolve_disallowed_functions(get_engine_name(database))
         if disallowed_functions and parsed_script.check_functions_present(
             disallowed_functions
@@ -230,36 +192,23 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
 
             raise SupersetDisallowedSQLFunctionException(disallowed_functions)
 
-        # ------------------------------------------------------------------
-        # DML allowance
-        # ------------------------------------------------------------------
         if parsed_script.has_mutation() and not getattr(database, "allow_dml", False):
             from superset.exceptions import SupersetDMLNotAllowedException
 
             raise SupersetDMLNotAllowedException()
 
-        # ------------------------------------------------------------------
-        # RLS_IN_SQLLAB
-        # ------------------------------------------------------------------
         if _is_feature_enabled("RLS_IN_SQLLAB"):
             from superset.utils.rls import apply_rls
 
-            # NB: pass the raw result through — ``get_default_schema_for_query``
-            # is ``str | None`` and may legitimately be ``None`` for engines
-            # without a default schema. Coercing ``None`` -> ``""`` would make
+            # NB: do NOT coerce None default_schema to "" — that would make
             # ``Table.qualify`` yield ``schema=""`` for unqualified tables, so
             # the dataset lookup (``SqlaTable.schema == ""``) misses a dataset
-            # stored with ``schema IS NULL`` and silently injects NO RLS
-            # predicate — an RLS bypass. 1:1 with
-            # ``superset_old/sql_lab.py``: ``apply_rls(..., default_schema, ...)``
-            # where ``default_schema`` is the unmodified (possibly-None) value.
+            # stored with ``schema IS NULL`` and silently injects no RLS
+            # predicate (RLS bypass).
             default_schema = database.get_default_schema_for_query(query)
             for statement in parsed_script.statements:
                 apply_rls(database, query.catalog, default_schema, statement)
 
-        # ------------------------------------------------------------------
-        # CTAS / CVAS
-        # ------------------------------------------------------------------
         if query.select_as_cta:
             from superset.exceptions import (
                 SupersetInvalidCTASException,
@@ -283,17 +232,11 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
             )
             query.select_as_cta_used = True
 
-        # ------------------------------------------------------------------
-        # apply_limit per statement
-        # ------------------------------------------------------------------
         sqllab_ctas_no_limit = _is_sqllab_ctas_no_limit()
         sql_max_row = _resolve_sql_max_row()
         for statement in parsed_script.statements:
             _apply_limit(query, statement, sqllab_ctas_no_limit, sql_max_row)
 
-        # ------------------------------------------------------------------
-        # Build blocks
-        # ------------------------------------------------------------------
         allows_comments = getattr(db_engine_spec, "allows_sql_comments", True)
         run_as_one = getattr(db_engine_spec, "run_multiple_statements_as_one", False)
         if run_as_one:
@@ -304,9 +247,6 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
                 for statement in parsed_script.statements
             ]
 
-        # ------------------------------------------------------------------
-        # Execute
-        # ------------------------------------------------------------------
         result_set = None
         from superset.constants import QUERY_CANCEL_KEY
         from superset.utils.core import QuerySource
@@ -320,10 +260,7 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
             _check_for_oauth2(database),
         ):
             with closing(engine.raw_connection()) as conn:
-                # pre-session queries are used to set the selected
-                # catalog/schema — 1:1 with ``Database.get_raw_connection``
-                # (superset_old/models/core.py:572), which runs them UNGUARDED:
-                # a prequery failure must propagate, not be swallowed.
+                # Prequery failures must propagate — they set catalog/schema.
                 for prequery in db_engine_spec.get_prequeries(
                     database=database,
                     catalog=query.catalog,
@@ -378,18 +315,12 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
                             session, ex, query, payload, prefix_message
                         )
 
-                # Commit the connection so CTA queries will create the table
-                # and any DML.  1:1 with the original
-                # (superset_old/sql_lab.py:510-511): conn.commit() is UNGUARDED
-                # -- a commit failure must propagate to handle_query_error which
-                # marks the query as FAILED.  Swallowing the error would report
-                # SUCCESS for a mutation that was never committed.
+                # Commit so CTAS queries create the table and DML takes effect.
+                # Failure must propagate — swallowing would report SUCCESS for a
+                # mutation that was never committed.
                 if parsed_script.has_mutation() or query.select_as_cta:
                     conn.commit()
 
-        # ------------------------------------------------------------------
-        # Success, updating the query entry in database
-        # ------------------------------------------------------------------
         query.rows = result_set.size
         query.progress = 100
         query.set_extra_json_key("progress", None)
@@ -426,12 +357,7 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
         if "query" in payload and payload["query"]:
             payload["query"]["state"] = QueryStatus.SUCCESS
 
-        # ------------------------------------------------------------------
-        # Persist to results backend (msgpack + zlib + payload size guard)
-        # ------------------------------------------------------------------
         if store_results and results_backend:
-            # key assignment and logger.info happen BEFORE the timing context,
-            # 1:1 with the original (superset_old/sql_lab.py:544-553).
             key = str(uuid.uuid4())
             payload["query"]["resultsKey"] = key
             logger.info(
@@ -538,7 +464,6 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
         session.commit()
 
         if return_results:
-            # Re-build non-Arrow data for the inline response.
             if (
                 store_results
                 and bool(results_backend_use_msgpack)
@@ -561,10 +486,6 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
                     }
                 )
 
-            # 1:1 with the original (superset_old/sql_lab.py:649-665):
-            # check SQLLAB_PAYLOAD_MAX_MB for the return_results path
-            # AFTER the store_results block, raising RESULT_TOO_LARGE_ERROR
-            # if the serialized payload exceeds the configured limit.
             sql_lab_payload_max_mb = _resolve_sqllab_payload_max_mb()
             if sql_lab_payload_max_mb:
                 serialized_payload = _serialize_payload(
@@ -599,11 +520,6 @@ def execute_sql_statements(  # noqa: C901, PLR0912, PLR0915
         return None
     finally:
         session.close()
-
-
-# ---------------------------------------------------------------------------
-# helpers — direct ports of the corresponding functions in superset_old
-# ---------------------------------------------------------------------------
 
 
 def _get_session() -> Any:
@@ -673,7 +589,6 @@ def _resolve_results_backend() -> tuple[Any | None, bool]:
 
 
 def _resolve_query_logger() -> Any | None:
-    """Return the configured ``QUERY_LOGGER`` callable (or ``None``)."""
     try:
         from superset.config import SupersetSettings
 
@@ -746,19 +661,15 @@ def _resolve_cache_default_timeout() -> int:
 
 
 def _apply_ctas(query: Any, statement: Any) -> Any:
-    """Port of ``superset_old/sql_lab.py::apply_ctas``."""
+    """Wrap ``statement`` as a CREATE TABLE/VIEW AS SELECT for CTAS/CVAS queries."""
     from superset.sql.parse import CTASMethod, Table
 
     if not query.tmp_table_name:
-        # ``start_time`` is stored in milliseconds (``now_as_float``), so divide
-        # by 1000 for the POSIX-seconds value ``fromtimestamp`` expects.  NOTE:
-        # the original ``apply_ctas`` omitted this division (a latent
-        # ms-as-seconds bug → far-future tmp-table name); the port corrects it.
-        # ``query.start_time`` is a ``Numeric`` column → SQLAlchemy returns a
-        # ``Decimal``, which ``fromtimestamp`` rejects ("'decimal.Decimal'
-        # object cannot be interpreted as an integer") — cast to ``float``.
-        # Without this, a CTAS with an empty ``tmp_table_name`` (server
-        # auto-generates the name) 500'd.
+        # ``start_time`` is in milliseconds (now_as_float); divide by 1000 for
+        # fromtimestamp.  The original apply_ctas omitted this division
+        # (latent ms-as-seconds bug → far-future tmp-table name).
+        # ``query.start_time`` is a Numeric column → Decimal; cast to float
+        # to avoid "cannot be interpreted as an integer" TypeError.
         start_dttm = datetime.fromtimestamp(float(query.start_time) / 1000)
         prefix = f"tmp_{query.user_id}_table"
         query.tmp_table_name = start_dttm.strftime(f"{prefix}_%Y_%m_%d_%H_%M_%S")
@@ -781,7 +692,8 @@ def _apply_limit(
     sqllab_ctas_no_limit: bool,
     sql_max_row: int,
 ) -> None:
-    """Port of ``superset_old/sql_lab.py::apply_limit``."""
+    """Apply per-statement row limit to ``query``, respecting CTAS
+    and DML exclusions."""
     from superset.sql.parse import LimitMethod
 
     if statement.is_mutating() or (
@@ -795,38 +707,21 @@ def _apply_limit(
     if query.limit:
         spec = getattr(query.database, "db_engine_spec", None)
         limit_method = getattr(spec, "limit_method", LimitMethod.FORCE_LIMIT)
-        # 1:1 with the original (superset_old/sql_lab.py:239-244): no
-        # exception handling — if set_limit_value fails (e.g. parse
-        # error), the exception propagates and the query fails rather
-        # than proceeding without a limit clause.
         statement.set_limit_value(query.limit + 1, limit_method)
 
 
 def _get_cancel_query_id(db_engine_spec: Any, cursor: Any, query: Any) -> str | None:
-    """1:1 with ``superset_old/sql_lab.py:464``.
-
-    Calls ``BaseEngineSpec.get_cancel_query_id`` directly — extraction errors
-    propagate to ``_handle_query_error`` exactly as upstream (the call sits
-    inside ``execute_sql_statements``' guarded block), they are NOT swallowed.
-    ``db_engine_spec`` here is the *sync* spec
-    (``superset/db_engine_specs/base.py``), which always defines this method.
-    """
     return db_engine_spec.get_cancel_query_id(cursor, query)
 
 
 @contextmanager
 def _check_for_oauth2(database: Any) -> Any:
-    """Sync 1:1 of ``superset_old/utils/oauth2.py::check_for_oauth2``.
+    """Check for OAuth2 requirements and trigger the authorization dance if needed.
 
-    Runs the wrapped block and, if it raises an error indicating the engine
-    needs OAuth2 authorization, triggers the OAuth2 dance before re-raising.
-
-    Limitation: the port's :meth:`BaseAsyncEngineSpec.start_oauth2_dance` is
-    declared ``async`` (it performs no ``await`` — it only builds the
-    authorization URL and raises :class:`OAuth2RedirectError`).  The Celery
-    worker is synchronous, so we drive the coroutine to its first (and only)
-    step here.  Any future async I/O added to ``start_oauth2_dance`` would
-    need a real event loop on this path.
+    ``start_oauth2_dance`` is declared ``async`` (performs no ``await`` — it only
+    builds the authorization URL and raises OAuth2RedirectError).  The Celery
+    worker is synchronous, so we drive the coroutine to its first step manually.
+    Any future async I/O added to ``start_oauth2_dance`` would need a real loop.
     """
     try:
         yield
@@ -841,9 +736,8 @@ def _check_for_oauth2(database: Any) -> Any:
                     except StopIteration:
                         pass
         except Exception:  # noqa: BLE001
-            # OAuth2RedirectError (or OAuth2Error) is raised here to start the
-            # dance; let it propagate. Any other failure during the check is
-            # swallowed so we surface the original query error below.
+            # OAuth2RedirectError propagates to start the dance; other check
+            # failures are swallowed to surface the original query error.
             if "OAuth2" in type(sys.exc_info()[1]).__name__:
                 raise
         raise
@@ -854,8 +748,6 @@ def _run_cursor_execute(
     query: Any,
     db_engine_spec: Any,
 ) -> None:
-    """Dispatch the actual cursor execution, mirroring the engine-spec dispatch
-    in ``superset_old/sql_lab.py::execute_query``."""
     if hasattr(db_engine_spec, "execute_with_cursor"):
         db_engine_spec.execute_with_cursor(cursor, query.executed_sql, query)
     elif hasattr(db_engine_spec, "execute"):
@@ -871,13 +763,11 @@ def _fetch_query_data(
 ) -> list[Any]:
     """Fetch rows from ``cursor`` and apply the LIMIT+1 overflow-detection trick.
 
-    Mirrors the fetch block inside ``superset_old/sql_lab.py::execute_query``.
     Updates ``query.limiting_factor`` in-place and returns the (possibly
     trimmed) row list.
     """
     from superset.models.sql_lab import LimitingFactor
 
-    # Apply LIMIT+1 fetch trick to detect overflow.
     increased_limit = None if query.limit is None else query.limit + 1
     fetch_fn = getattr(db_engine_spec, "fetch_data", None)
     if callable(fetch_fn):
@@ -890,7 +780,6 @@ def _fetch_query_data(
     if query.limit is None or len(data) <= query.limit:
         query.limiting_factor = LimitingFactor.NOT_LIMITED
     else:
-        # return 1 row less than increased_query
         data = data[:-1]
     return data
 
@@ -916,13 +805,7 @@ def _execute_query(
     db_engine_spec: Any,
     log_params: Optional[dict[str, Any]] = None,
 ) -> Any:
-    """Run ``query.executed_sql`` against ``cursor`` and wrap the result.
-
-    1:1 with ``superset_old/sql_lab.py::execute_query``. Returns a
-    :class:`SupersetResultSet` when the original is available; otherwise a
-    lightweight shim that exposes ``.size``, ``.columns``, ``.pa_table``, and
-    ``.to_pandas_df`` so the downstream serializer keeps working.
-    """
+    """Run ``query.executed_sql`` against ``cursor`` and return a SupersetResultSet."""
     from superset.common.query_status import QueryStatus
     from superset.exceptions import OAuth2RedirectError
     from superset.extensions import stats_logger_manager
@@ -931,17 +814,10 @@ def _execute_query(
     stats_logger = stats_logger_manager.instance
 
     try:
-        # QUERY_LOGGER audit hook — 1:1 with the original ``execute_query``,
-        # invoked before executing each statement. ``security_manager`` is the
-        # upstream instance in the original; the port's security manager is
-        # async & per-session, so we pass ``None`` here (the configurable hook
-        # owns its use of the arg).
+        # QUERY_LOGGER audit hook — passes None for security_manager because
+        # the async port's manager is per-session (the hook owns its use of it).
         log_query = _resolve_query_logger()
         if log_query:
-            # Called UNGUARDED inside the main execution try — 1:1 with the
-            # original ``execute_query`` (superset_old/sql_lab.py:256-264): a
-            # failing QUERY_LOGGER hook propagates to the query-error handlers
-            # below (the statement is NOT executed), it is not swallowed.
             log_query(
                 query.database.sqlalchemy_uri,
                 query.executed_sql,
@@ -951,9 +827,6 @@ def _execute_query(
                 log_params,
             )
 
-        # Persist ``executed_sql`` (set by the caller) before executing, so it
-        # survives a worker crash mid-statement — mirrors the original's
-        # ``db.session.commit()`` at the top of ``execute_query``.
         session.commit()
 
         with _superset_events.event_logger.log_context(
@@ -986,13 +859,9 @@ def _execute_query(
             )
         ) from ex
     except OAuth2RedirectError:
-        # user needs to authenticate with OAuth2 in order to run query
         raise
     except Exception as ex:
-        # query is stopped in another thread/worker; stopping raises expected
-        # exceptions which we should skip.  Refresh the live row (not a merge
-        # into a throwaway session) to read the committed status, exactly as
-        # the original ``db.session.refresh(query)`` did.
+        # Refresh from DB to detect STOPPED status committed by another worker.
         try:
             session.refresh(query)
         except Exception:  # noqa: BLE001
@@ -1007,17 +876,11 @@ def _execute_query(
 
     cursor_description = cursor.description
 
-    # Wrap into the original SupersetResultSet when available.
     return _wrap_result_set(data, cursor_description, db_engine_spec)
 
 
-# ---------------------------------------------------------------------------
-# Result-set serialization (msgpack + Arrow IPC)
-# ---------------------------------------------------------------------------
-
-
 class _LiteSetResultSet:
-    """Fallback :class:`SupersetResultSet` used when the original is missing.
+    """Fallback SupersetResultSet used when the original is missing.
 
     Exposes the minimal surface (``size``, ``columns``, ``to_pandas_df``,
     ``pa_table``) used by :func:`_serialize_and_expand_data`.
@@ -1059,7 +922,6 @@ class _LiteSetResultSet:
 def _serialize_payload(
     payload: dict[Any, Any], use_msgpack: bool = False
 ) -> bytes | str:
-    """1:1 with ``superset_old/sql_lab.py::_serialize_payload``."""
     if use_msgpack:
         import msgpack
 
@@ -1082,7 +944,6 @@ def _serialize_and_expand_data(
     use_msgpack: bool = False,
     expand_data: bool = False,
 ) -> tuple[bytes | str | list[Any], list[Any], list[Any], list[Any]]:
-    """1:1 with ``superset_old/sql_lab.py::_serialize_and_expand_data``."""
     selected_columns = result_set.columns
 
     if use_msgpack:
@@ -1146,7 +1007,6 @@ def _handle_query_error(
     payload: dict[str, Any] | None = None,
     prefix_message: str = "",
 ) -> dict[str, Any]:
-    """1:1 port of ``superset_old/sql_lab.py::handle_query_error``."""
     from superset.common.query_status import QueryStatus
     from superset.exceptions import SupersetErrorException, SupersetErrorsException
 
@@ -1198,32 +1058,20 @@ def _resolve_troubleshooting_link() -> str:
         return ""
 
 
-# ---------------------------------------------------------------------------
-# Cancel-query helper used by the controllers/query.py stop endpoint
-# (kept here so the original module layout is preserved).
-# ---------------------------------------------------------------------------
-
-
 def cancel_query(query: Any) -> bool:
-    """1:1 with ``superset_old/sql_lab.py::cancel_query``."""
+    """Cancel an in-progress query, returning ``True`` on success."""
     from superset.constants import QUERY_CANCEL_KEY, QUERY_EARLY_CANCEL_KEY
     from superset.utils.core import QuerySource
 
     db_engine_spec = query.database.db_engine_spec
 
-    # 1:1 with ``superset_old/sql_lab.py::cancel_query`` (lines 682-696): both
-    # ``has_implicit_cancel`` and ``prepare_cancel_query`` are called UNGUARDED
-    # (the sync ``db_engine_spec`` always defines them) — failures propagate.
     if db_engine_spec.has_implicit_cancel():
         return True
 
-    # Some databases may need to make preparations for query cancellation.
     db_engine_spec.prepare_cancel_query(query)
 
     if query.extra.get(QUERY_EARLY_CANCEL_KEY):
-        # Query has been cancelled prior to being able to set the cancel key.
-        # This can happen if the query cancellation key can only be acquired
-        # after the query has been executed.
+        # Cancelled before the cancel key was set (key only available post-execution).
         return True
 
     cancel_query_id = query.extra.get(QUERY_CANCEL_KEY)

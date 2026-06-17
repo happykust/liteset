@@ -113,8 +113,8 @@ async def authenticate_websocket(
     if token:
         try:
             # verify_sub=False: anonymous async-token cookies carry ``sub=None``
-            # (minted by AsyncTokenMiddleware, 1:1 with the original); pyjwt
-            # >= 2.10 otherwise raises ``InvalidSubjectError`` on a null sub,
+            # (minted by AsyncTokenMiddleware); pyjwt >= 2.10 otherwise raises
+            # ``InvalidSubjectError`` on a null sub,
             # which would reject every anonymous GAQ WebSocket connection.
             payload = pyjwt.decode(
                 token,

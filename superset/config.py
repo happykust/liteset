@@ -36,19 +36,16 @@ from superset.advanced_data_type.plugins.internet_address import internet_addres
 from superset.advanced_data_type.plugins.internet_port import internet_port
 from superset.tasks.types import ExecutorType
 
-# Minimum 16 characters for secret key (validated via field_validator below).
-# SecretStr masks the value in repr/logs to prevent accidental exposure.
 SecretKeyStr = SecretStr
 
-# Module-level constants (must be importable by superset_test_config.py etc.)
 BASE_DIR = str(files("superset"))
 if "SUPERSET_HOME" in os.environ:
     DATA_DIR = os.environ["SUPERSET_HOME"]
 else:
     DATA_DIR = os.path.expanduser("~/.superset")
 
-# Module-level compat variables expected by superset_test_config.py
-# (which does ``from superset.config import *`` then ``**FEATURE_FLAGS``)
+# superset_test_config.py does ``from superset.config import *`` then
+# ``**FEATURE_FLAGS``
 FEATURE_FLAGS: dict[str, bool] = {}
 
 import logging as _logging  # noqa: E402
@@ -74,7 +71,6 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "STATIC_ASSETS_PREFIX": "static_assets_prefix",
     "DEBUG": "debug",
     "TESTING": "testing",
-    # Phase 4: query processing and SqlLab config
     "ROW_LIMIT": "row_limit",
     "SAMPLES_ROW_LIMIT": "samples_row_limit",
     "CACHE_DEFAULT_TIMEOUT": "cache_default_timeout",
@@ -93,7 +89,6 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "DEFAULT_RELATIVE_START_TIME": "default_relative_start_time",
     "DEFAULT_RELATIVE_END_TIME": "default_relative_end_time",
     "VIZ_TYPE_DENYLIST": "viz_type_denylist",
-    # UI / Branding
     "APP_NAME": "app_name",
     "APP_ICON": "app_icon",
     "LOGO_TARGET_PATH": "logo_target_path",
@@ -109,14 +104,12 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "DOCUMENTATION_URL": "documentation_url",
     "DOCUMENTATION_TEXT": "documentation_text",
     "DOCUMENTATION_ICON": "documentation_icon",
-    # Auth / Security
     "AUTH_TYPE": "auth_type",
     "AUTH_USERNAME_CI": "auth_username_ci",
     "AUTH_USER_REGISTRATION": "auth_user_registration",
     "AUTH_USER_REGISTRATION_ROLE": "auth_user_registration_role",
     "AUTH_ROLES_MAPPING": "auth_roles_mapping",
     "AUTH_ROLES_SYNC_AT_LOGIN": "auth_roles_sync_at_login",
-    # LDAP knobs (mirrors the upstream auth builder)
     "AUTH_LDAP_SERVER": "auth_ldap_server",
     "AUTH_LDAP_SEARCH": "auth_ldap_search",
     "AUTH_LDAP_SEARCH_FILTER": "auth_ldap_search_filter",
@@ -147,7 +140,6 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "JWT_ACCESS_TOKEN_EXPIRES": "jwt_access_token_expires",
     "WTF_CSRF_ENABLED": "wtf_csrf_enabled",
     "WTF_CSRF_TIME_LIMIT": "wtf_csrf_time_limit",
-    # Frontend Bootstrap
     "LANGUAGES": "languages",
     "THEME_DEFAULT": "theme_default",
     "THEME_DARK": "theme_dark",
@@ -163,7 +155,6 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "WELCOME_PAGE_LAST_TAB": "welcome_page_last_tab",
     "ENVIRONMENT_TAG_CONFIG": "environment_tag_config",
     "COMMON_BOOTSTRAP_OVERRIDES_FUNC": "common_bootstrap_overrides_func",
-    # FRONTEND_CONF_KEYS
     "SUPERSET_WEBSERVER_TIMEOUT": "superset_webserver_timeout",
     "SUPERSET_WEBSERVER_DOMAINS": "superset_webserver_domains",
     "SUPERSET_DASHBOARD_POSITION_DATA_LIMIT": "superset_dashboard_position_data_limit",
@@ -209,7 +200,6 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "GLOBAL_ASYNC_QUERIES_POLLING_DELAY": "global_async_queries_polling_delay",
     "GLOBAL_ASYNC_QUERIES_WEBSOCKET_URL": "global_async_queries_websocket_url",
     "SQL_VALIDATORS_BY_ENGINE": "sql_validators_by_engine",
-    # Email / SMTP / Slack / Infra
     "SMTP_HOST": "smtp_host",
     "SMTP_PORT": "smtp_port",
     "SMTP_USER": "smtp_user",
@@ -224,10 +214,8 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "ADVANCED_DATA_TYPES": "advanced_data_types",
     "MAX_WS_PER_USER": "max_ws_per_user",
     "ALERT_REPORTS_NOTIFICATION_DRY_RUN": "alert_reports_notification_dry_run",
-    # Feature flag functions
     "GET_FEATURE_FLAGS_FUNC": "get_feature_flags_func",
     "IS_FEATURE_ENABLED_FUNC": "is_feature_enabled_func",
-    # ── Existing fields that were missing mappings ──
     "AUTH_ROLE_PUBLIC": "auth_role_public",
     "AUTH_ROLE_ADMIN": "auth_role_admin",
     "GUEST_ROLE_NAME": "guest_role_name",
@@ -238,61 +226,45 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "GUEST_TOKEN_VALIDATOR_HOOK": "guest_token_validator_hook",
     "SQLLAB_CTAS_NO_LIMIT": "sqllab_ctas_no_limit",
     "SQLLAB_DEFAULT_DBID": "sqllab_default_dbid",
-    # ── Stats / Event logging ──
     "STATS_LOGGER": "stats_logger",
     "EVENT_LOGGER": "event_logger",
     "SUPERSET_LOG_VIEW": "superset_log_view",
     "SUPERSET_SECURITY_VIEW_MENU": "superset_security_view_menu",
-    # ── Alembic / Versioning ──
     "ALEMBIC_SKIP_LOG_CONFIG": "alembic_skip_log_config",
     "VERSION_SHA_LENGTH": "version_sha_length",
-    # ── Row limits / Filters ──
     "FILTER_SELECT_ROW_LIMIT": "filter_select_row_limit",
-    # ── SQLAlchemy engine ──
     "SQLALCHEMY_TRACK_MODIFICATIONS": "sqlalchemy_track_modifications",
     "SQLALCHEMY_ENGINE_OPTIONS": "sqlalchemy_engine_options",
     "SQLALCHEMY_CUSTOM_PASSWORD_STORE": "sqlalchemy_custom_password_store",
     "SQLALCHEMY_ENCRYPTED_FIELD_TYPE_ADAPTER": (
         "sqlalchemy_encrypted_field_type_adapter"
     ),
-    # ── SQLGlot ──
     "SQLGLOT_DIALECTS_EXTENSIONS": "sqlglot_dialects_extensions",
-    # ── Query ──
     "QUERY_SEARCH_LIMIT": "query_search_limit",
-    # ── CSRF ──
     "WTF_CSRF_EXEMPT_LIST": "wtf_csrf_exempt_list",
-    # ── Debug / Profiling ──
     "FLASK_USE_RELOAD": "flask_use_reload",
     "PROFILING": "profiling",
     "SHOW_STACKTRACE": "show_stacktrace",
-    # ── Proxy fix ──
     "ENABLE_PROXY_FIX": "enable_proxy_fix",
     "PROXY_FIX_CONFIG": "proxy_fix_config",
-    # ── Rate limiting ──
     "RATELIMIT_ENABLED": "ratelimit_enabled",
     "RATELIMIT_APPLICATION": "ratelimit_application",
     "AUTH_RATE_LIMITED": "auth_rate_limited",
     "AUTH_RATE_LIMIT": "auth_rate_limit",
-    # ── Auth builder ──
     "FAB_API_SWAGGER_UI": "fab_api_swagger_ui",
-    # ── Babel ──
     "BABEL_DEFAULT_LOCALE": "babel_default_locale",
     "BABEL_DEFAULT_FOLDER": "babel_default_folder",
-    # ── SSH Tunnel ──
     "SSH_TUNNEL_MANAGER_CLASS": "ssh_tunnel_manager_class",
     "SSH_TUNNEL_LOCAL_BIND_ADDRESS": "ssh_tunnel_local_bind_address",
     "SSH_TUNNEL_TIMEOUT_SEC": "ssh_tunnel_timeout_sec",
     "SSH_TUNNEL_PACKET_TIMEOUT_SEC": "ssh_tunnel_packet_timeout_sec",
-    # ── Custom font ──
     "CUSTOM_FONT_URLS": "custom_font_urls",
-    # ── Cache warmup / Thumbnails ──
     "CACHE_WARMUP_EXECUTORS": "cache_warmup_executors",
     "THUMBNAIL_EXECUTORS": "thumbnail_executors",
     "THUMBNAIL_DASHBOARD_DIGEST_FUNC": "thumbnail_dashboard_digest_func",
     "THUMBNAIL_CHART_DIGEST_FUNC": "thumbnail_chart_digest_func",
     "THUMBNAIL_CACHE_CONFIG": "thumbnail_cache_config",
     "THUMBNAIL_ERROR_CACHE_TTL": "thumbnail_error_cache_ttl",
-    # ── Screenshot / Webdriver ──
     "SCREENSHOT_LOCATE_WAIT": "screenshot_locate_wait",
     "SCREENSHOT_LOAD_WAIT": "screenshot_load_wait",
     "SCREENSHOT_SELENIUM_RETRIES": "screenshot_selenium_retries",
@@ -311,26 +283,20 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "SCREENSHOT_TILED_CHART_THRESHOLD": "screenshot_tiled_chart_threshold",
     "SCREENSHOT_TILED_HEIGHT_THRESHOLD": "screenshot_tiled_height_threshold",
     "SCREENSHOT_TILED_VIEWPORT_HEIGHT": "screenshot_tiled_viewport_height",
-    # ── Upload / File ──
     "UPLOAD_FOLDER": "upload_folder",
     "UPLOAD_CHUNK_SIZE": "upload_chunk_size",
-    # ── Cache (extended) ──
     "FILTER_STATE_CACHE_CONFIG": "filter_state_cache_config",
     "EXPLORE_FORM_DATA_CACHE_CONFIG": "explore_form_data_cache_config",
     "STORE_CACHE_KEYS_IN_METADATA_DB": "store_cache_keys_in_metadata_db",
-    # ── CORS ──
     "ENABLE_CORS": "enable_cors",
     "CORS_OPTIONS": "cors_options",
-    # ── Time grain ──
     "TIME_GRAIN_DENYLIST": "time_grain_denylist",
     "TIME_GRAIN_ADDONS": "time_grain_addons",
     "TIME_GRAIN_ADDON_EXPRESSIONS": "time_grain_addon_expressions",
     "TIME_GRAIN_JOIN_COLUMN_PRODUCERS": "time_grain_join_column_producers",
-    # ── Module / Middleware ──
     "DEFAULT_MODULE_DS_MAP": "default_module_ds_map",
     "ADDITIONAL_MODULE_DS_MAP": "additional_module_ds_map",
     "ADDITIONAL_MIDDLEWARE": "additional_middleware",
-    # ── Logging ──
     "LOGGING_CONFIGURATOR": "logging_configurator",
     "LOG_FORMAT": "log_format",
     # LOG_LEVEL is an int in upstream config (e.g. logging.INFO = 20).
@@ -344,7 +310,6 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "INTERVAL": "log_interval",
     "BACKUP_COUNT": "backup_count",
     "QUERY_LOGGER": "query_logger",
-    # ── SQL Lab (extended) ──
     "SUPERSET_META_DB_LIMIT": "superset_meta_db_limit",
     "SQLLAB_SCHEDULE_WARNING_MESSAGE": "sqllab_schedule_warning_message",
     "SQLLAB_PAYLOAD_MAX_MB": "sqllab_payload_max_mb",
@@ -354,39 +319,28 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "SQLLAB_QUERY_COST_ESTIMATE_TIMEOUT": "sqllab_query_cost_estimate_timeout",
     "QUERY_COST_FORMATTERS_BY_ENGINE": "query_cost_formatters_by_engine",
     "SQLLAB_CTAS_SCHEMA_NAME_FUNC": "sqllab_ctas_schema_name_func",
-    # ── Celery ──
     "CELERY_BEAT_SCHEDULER_EXPIRES": "celery_beat_scheduler_expires",
     "CELERY_CONFIG": "celery_config",
-    # 1:1 with superset_old/tasks/celery_app.py:66 — when True, commit the
-    # scoped sync session in task_postrun.
+    # When True, commit the scoped sync session in task_postrun.
     "SQLALCHEMY_COMMIT_ON_TEARDOWN": "sqlalchemy_commit_on_teardown",
     "CELERY_ALWAYS_EAGER": "celery_always_eager",
-    # ── HTTP headers ──
     "DEFAULT_HTTP_HEADERS": "default_http_headers",
     "OVERRIDE_HTTP_HEADERS": "override_http_headers",
     "HTTP_HEADERS": "http_headers",
-    # ── Database ──
     "DEFAULT_DB_ID": "default_db_id",
-    # ── Results backend ──
     "RESULTS_BACKEND": "results_backend",
     "RESULTS_BACKEND_USE_MSGPACK": "results_backend_use_msgpack",
-    # ── CSV / Hive upload ──
     "CSV_TO_HIVE_UPLOAD_S3_BUCKET": "csv_to_hive_upload_s3_bucket",
     "CSV_TO_HIVE_UPLOAD_DIRECTORY": "csv_to_hive_upload_directory",
     "CSV_TO_HIVE_UPLOAD_DIRECTORY_FUNC": "csv_to_hive_upload_directory_func",
     "UPLOADED_CSV_HIVE_NAMESPACE": "uploaded_csv_hive_namespace",
     "ALLOWED_USER_CSV_SCHEMA_FUNC": "allowed_user_csv_schema_func",
     "CSV_DEFAULT_NA_NAMES": "csv_default_na_names",
-    # ── Jinja / Templates ──
     "JINJA_CONTEXT_ADDONS": "jinja_context_addons",
     "CUSTOM_TEMPLATE_PROCESSORS": "custom_template_processors",
-    # ── Roles / Permissions ──
     "ROBOT_PERMISSION_ROLES": "robot_permission_roles",
-    # ── App mutator ──
     "FLASK_APP_MUTATOR": "flask_app_mutator",
-    # ── Misc SMTP/infra ──
     "ENABLE_CHUNK_ENCODING": "enable_chunk_encoding",
-    # ── Auth-builder security ──
     "SILENCE_FAB": "silence_fab",
     "FAB_ADD_SECURITY_VIEWS": "fab_add_security_views",
     "FAB_ADD_SECURITY_API": "fab_add_security_api",
@@ -397,35 +351,25 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "FAB_PASSWORD_COMPLEXITY_VALIDATOR": "fab_password_complexity_validator",
     "FAB_PASSWORD_HASH_METHOD": "fab_password_hash_method",
     "FAB_PASSWORD_HASH_SALT_LENGTH": "fab_password_hash_salt_length",
-    # ── Troubleshooting / Permissions ──
     "TROUBLESHOOTING_LINK": "troubleshooting_link",
     "PERMISSION_INSTRUCTIONS_LINK": "permission_instructions_link",
-    # ── Blueprints ──
     "BLUEPRINTS": "blueprints",
-    # ── Tracking / Polling ──
     "TRACKING_URL_TRANSFORMER": "tracking_url_transformer",
     "DB_POLL_INTERVAL_SECONDS": "db_poll_interval_seconds",
     "PRESTO_POLL_INTERVAL": "presto_poll_interval",
-    # ── DB auth / connection ──
     "ALLOWED_EXTRA_AUTHENTICATIONS": "allowed_extra_authentications",
     "DASHBOARD_TEMPLATE_ID": "dashboard_template_id",
     "ENGINE_CONTEXT_MANAGER": "engine_context_manager",
     "DB_CONNECTION_MUTATOR": "db_connection_mutator",
     "DB_SQLA_URI_VALIDATOR": "db_sqla_uri_validator",
     "DISALLOWED_SQL_FUNCTIONS": "disallowed_sql_functions",
-    # ── SQL query mutator ──
     "SQL_QUERY_MUTATOR": "sql_query_mutator",
     "MUTATE_AFTER_SPLIT": "mutate_after_split",
     "MUTATE_ALERT_QUERY": "mutate_alert_query",
-    # ── Email header ──
     "EMAIL_HEADER_MUTATOR": "email_header_mutator",
-    # ── User exclusion ──
     "EXCLUDE_USERS_FROM_LISTS": "exclude_users_from_lists",
-    # ── DB denylist ──
     "DBS_AVAILABLE_DENYLIST": "dbs_available_denylist",
-    # ── Machine auth ──
     "MACHINE_AUTH_PROVIDER_CLASS": "machine_auth_provider_class",
-    # ── Alerts & Reports (extended) ──
     "ALERT_REPORTS_CRON_WINDOW_SIZE": "alert_reports_cron_window_size",
     "ALERT_REPORTS_WORKING_TIME_OUT_KILL": "alert_reports_working_time_out_kill",
     "ALERT_REPORTS_EXECUTORS": "alert_reports_executors",
@@ -444,11 +388,9 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     ),
     "ALERT_MINIMUM_INTERVAL": "alert_minimum_interval",
     "REPORT_MINIMUM_INTERVAL": "report_minimum_interval",
-    # ── Slack (extended) ──
     "SLACK_PROXY": "slack_proxy",
     "SLACK_CACHE_TIMEOUT": "slack_cache_timeout",
     "SLACK_API_RATE_LIMIT_RETRY_COUNT": "slack_api_rate_limit_retry_count",
-    # ── Webdriver / Screenshots ──
     "WEBDRIVER_TYPE": "webdriver_type",
     "WEBDRIVER_WINDOW": "webdriver_window",
     "WEBDRIVER_AUTH_FUNC": "webdriver_auth_func",
@@ -457,29 +399,22 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "WEBDRIVER_BASEURL": "webdriver_baseurl",
     "WEBDRIVER_BASEURL_USER_FRIENDLY": "webdriver_baseurl_user_friendly",
     "EMAIL_PAGE_RENDER_WAIT": "email_page_render_wait",
-    # ── Preferred databases ──
     "PREFERRED_DATABASES": "preferred_databases",
     "TEST_DATABASE_CONNECTION_TIMEOUT": "test_database_connection_timeout",
-    # ── OAuth2 database ──
     "DATABASE_OAUTH2_CLIENTS": "database_oauth2_clients",
     "DATABASE_OAUTH2_JWT_ALGORITHM": "database_oauth2_jwt_algorithm",
     "DATABASE_OAUTH2_TIMEOUT": "database_oauth2_timeout",
     "DATABASE_OAUTH2_REDIRECT_URI": "database_oauth2_redirect_uri",
-    # ── CSP / Talisman ──
     "CONTENT_SECURITY_POLICY_WARNING": "content_security_policy_warning",
     "TALISMAN_ENABLED": "talisman_enabled",
     "TALISMAN_CONFIG": "talisman_config",
     "TALISMAN_DEV_CONFIG": "talisman_dev_config",
-    # ── Session ──
     "SESSION_SERVER_SIDE": "session_server_side",
     "SEND_FILE_MAX_AGE_DEFAULT": "send_file_max_age_default",
-    # ── Database safety ──
     "PREVENT_UNSAFE_DB_CONNECTIONS": "prevent_unsafe_db_connections",
     "DATASET_IMPORT_ALLOWED_DATA_URLS": "dataset_import_allowed_data_urls",
     "SSL_CERT_PATH": "ssl_cert_path",
-    # ── SQLA table mutator ──
     "SQLA_TABLE_MUTATOR": "sqla_table_mutator",
-    # ── Global async queries (extended) ──
     "GLOBAL_ASYNC_QUERY_MANAGER_CLASS": "global_async_query_manager_class",
     "GLOBAL_ASYNC_QUERIES_REDIS_STREAM_PREFIX": (
         "global_async_queries_redis_stream_prefix"
@@ -503,28 +438,19 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "GLOBAL_ASYNC_QUERIES_JWT_COOKIE_DOMAIN": "global_async_queries_jwt_cookie_domain",
     "GLOBAL_ASYNC_QUERIES_JWT_SECRET": "global_async_queries_jwt_secret",
     "GLOBAL_ASYNC_QUERIES_CACHE_BACKEND": "global_async_queries_cache_backend",
-    # ── Guest token (extended) ──
     "GUEST_TOKEN_JWT_AUDIENCE": "guest_token_jwt_audience",
-    # ── Dataset health ──
     "DATASET_HEALTH_CHECK": "dataset_health_check",
-    # ── Zip file limits ──
     "ZIPPED_FILE_MAX_SIZE": "zipped_file_max_size",
     "ZIP_FILE_MAX_COMPRESS_RATIO": "zip_file_max_compress_ratio",
-    # ── Query filters ──
     "EXTRA_RELATED_QUERY_FILTERS": "extra_related_query_filters",
     "EXTRA_DYNAMIC_QUERY_FILTERS": "extra_dynamic_query_filters",
-    # ── Catalog migration ──
     "CATALOGS_SIMPLIFIED_MIGRATION": "catalogs_simplified_migration",
-    # ── User agent ──
     "USER_AGENT_FUNC": "user_agent_func",
 }
 
 
 _superset_config_cache: dict[str, dict[str, Any]] = {}
 
-# Default feature flags — mirrors Apache Superset's DEFAULT_FEATURE_FLAGS.
-# User-provided FEATURE_FLAGS (via superset_config.py or env) are merged
-# on top, matching the original merge semantics.
 _DEFAULT_FEATURE_FLAGS: dict[str, bool] = {
     "DRUID_JOINS": False,
     "DYNAMIC_PLUGINS": False,
@@ -610,7 +536,7 @@ def _cast_to_boolean(value: Any) -> bool | None:
 # (e.g. ``SUPERSET_SECRET_KEY`` injected via k8s/helm secrets).
 #
 # Each entry maps the env var name to the target settings field plus a parser
-# that mirrors the original inline expression in ``superset_old/config.py``:
+# matching the original inline expressions:
 #   SECRET_KEY        = os.environ.get("SUPERSET_SECRET_KEY") or CHANGE_ME...
 #   DEBUG             = parse_boolean_string(os.environ.get("FLASK_DEBUG"))
 #   MAPBOX_API_KEY    = os.environ.get("MAPBOX_API_KEY", "")
@@ -628,7 +554,7 @@ _LEGACY_ENV_VARS: dict[str, tuple[str, Any]] = {
 class SupersetConfigSettingsSource(PydanticBaseSettingsSource):
     """Read settings from superset_config.py as a Pydantic settings source.
 
-    Resolution order mirrors upstream Superset's ``config.py`` tail:
+    Resolution order:
       1. ``SUPERSET_CONFIG_PATH`` env var pointing at a file (``pex``-style), or
       2. an importable ``superset_config`` module on the ``PYTHONPATH``.
 
@@ -746,11 +672,7 @@ class LegacyEnvSettingsSource(PydanticBaseSettingsSource):
         return self._values
 
 
-# ---------------------------------------------------------------------------
-# Default Celery configuration — mirrors superset_old/config.py ``CeleryConfig``.
-# Users may override by setting CELERY_CONFIG in superset_config.py.
-# ---------------------------------------------------------------------------
-_CELERY_BEAT_SCHEDULER_EXPIRES_SEC = 604800  # timedelta(weeks=1).total_seconds()
+_CELERY_BEAT_SCHEDULER_EXPIRES_SEC = 604800
 
 
 class CeleryConfig:  # pylint: disable=too-few-public-methods
@@ -792,8 +714,7 @@ class SupersetSettings(BaseSettings):
 
     secret_key: SecretKeyStr
     sqlalchemy_database_uri: str
-    # Default mirrors superset_old/config.py:1920-1922 — an unconfigured
-    # install gets a dedicated sqlite examples DB, NOT the metadata DB.
+    # Unconfigured installs get a dedicated SQLite examples DB, not the metadata DB.
     sqlalchemy_examples_uri: str = (
         "sqlite:///"
         + os.path.join(DATA_DIR, "examples.db")
@@ -802,19 +723,15 @@ class SupersetSettings(BaseSettings):
     host: str = "0.0.0.0"  # noqa: S104
     port: int = 8088
     debug: bool = False
-    # The ``TESTING`` flag equivalent — gates dev-only helpers such as
-    # ``superset load-test-users`` (1:1 with upstream which wraps the body in
-    # ``if current_app.config["TESTING"]:``).
     testing: bool = False
     static_assets_prefix: str = ""
     global_async_queries: bool = False
     cors_allow_origins: list[str] = []
     log_level: str = "INFO"
     production: bool = False
-    # Query processing (used by AsyncQueryContextProcessor)
     row_limit: int = 50000
     samples_row_limit: int = 1000
-    cache_default_timeout: int = 86400  # int(timedelta(days=1).total_seconds())
+    cache_default_timeout: int = 86400
     csv_export: dict[str, Any] = {"encoding": "utf-8-sig"}
     excel_export: dict[str, Any] = {}
     data_cache_config: dict[str, Any] = {}
@@ -826,32 +743,23 @@ class SupersetSettings(BaseSettings):
     display_max_row: int = 10000
     sqllab_default_dbid: int | None = None
     default_sqllab_limit: int = 1000
-
-    # Viz / explore_json settings
     mapbox_api_key: str = ""
     default_relative_start_time: str = "today"
     default_relative_end_time: str = "today"
     viz_type_denylist: list[str] = []
-
-    # Session cookie max age (seconds), applied to FlaskSessionDecoder
-    # 31 days in seconds (matches original timedelta(days=31))
+    # Session cookie max age in seconds, applied to FlaskSessionDecoder.
     session_max_age: int = 2678400
-
-    # Redis (used for auth cache and general caching)
     redis_url: str = ""
     csrf_enabled: bool = True
     csrf_cookie_name: str = "csrf_access_token"
     csrf_header_name: str = "X-CSRFToken"
     session_cookie_name: str = "session"
-
-    # Auth role names
     auth_role_public: str = "Public"
     auth_role_admin: str = "Admin"
     guest_role_name: str = (
         "Public"  # matches Apache Superset 6.0.0 default; see audit 04-security-auth.md
     )
 
-    # Security headers
     content_security_policy: str = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; "
@@ -862,18 +770,11 @@ class SupersetSettings(BaseSettings):
         "worker-src 'self' blob:"
     )
 
-    # Rate limiting
     rate_limit_per_minute: int = 100
     rate_limit_window_seconds: int = 60
-
-    # User-provided feature flag overrides.  Merged on top of
-    # _DEFAULT_FEATURE_FLAGS via model_validator below.
+    # Merged on top of _DEFAULT_FEATURE_FLAGS via model_validator.
     feature_flags: dict[str, Any] = {}
-
-    # DASHBOARD_RBAC feature flag
     dashboard_rbac: bool = False
-
-    # Embedded dashboards (guest tokens)
     embedded_superset: bool = False
     guest_token_jwt_secret: str = "test-guest-secret-change-me"  # noqa: S105
     guest_token_jwt_algo: str = "HS256"  # noqa: S105
@@ -882,29 +783,23 @@ class SupersetSettings(BaseSettings):
     )
     guest_token_header_name: str = "X-GuestToken"  # noqa: S105
     guest_token_validator_hook: Any | None = None
-
-    # ── UI / Branding ──
     app_name: str = "Liteset"
     app_icon: str = "/static/assets/images/liteset-logo-horiz.png"
     logo_target_path: str | None = None
     logo_tooltip: str = "Liteset"
-    logo_right_text: Any = ""  # Can be str or Callable
-    favicons: list[dict[str, str]] = [{"href": "/static/assets/images/liteset-favicon.png"}]
-
-    # ── Version / Build ──
+    logo_right_text: Any = ""
+    favicons: list[dict[str, str]] = [
+        {"href": "/static/assets/images/liteset-favicon.png"}
+    ]  # noqa: E501
     version_string: str = ""
     version_sha: str = ""
     build_number: str | None = None
-
-    # ── Help / Docs ──
     bug_report_url: str | None = None
     bug_report_text: str = "Report a bug"
     bug_report_icon: str | None = None
     documentation_url: str | None = None
     documentation_text: str = "Documentation"
     documentation_icon: str | None = None
-
-    # ── Authentication ──
     auth_type: int = 1  # 1=AUTH_DB, 2=AUTH_LDAP, 3=AUTH_REMOTE_USER, 4=AUTH_OAUTH
     # Case-insensitive username lookup (upstream default True). When True a user
     # cannot self-register a case-variant duplicate via OAuth/LDAP.
@@ -916,14 +811,9 @@ class SupersetSettings(BaseSettings):
     oauth_providers: list[dict[str, Any]] = []
     recaptcha_public_key: str = ""
     custom_security_manager: Any | None = None
-
-    # ── Roles mapping / sync (used by LDAP & OAuth providers) ──
     auth_roles_mapping: dict[str, list[str]] = {}
     auth_roles_sync_at_login: bool = False
-
-    # ── LDAP authentication ──
-    # Mirrors the upstream LDAP configuration knobs 1:1.  Defaults
-    # match the upstream ``setdefault`` calls in ``BaseSecurityManager.__init__``.
+    # LDAP defaults match the ``setdefault`` calls in ``BaseSecurityManager.__init__``.
     auth_ldap_server: str = ""
     auth_ldap_search: str = ""
     auth_ldap_search_filter: str = ""
@@ -943,30 +833,19 @@ class SupersetSettings(BaseSettings):
     auth_ldap_firstname_field: str = "givenName"
     auth_ldap_lastname_field: str = "sn"
     auth_ldap_email_field: str = "mail"
-
-    # ── Session cookies ──
     session_cookie_httponly: bool = True
     session_cookie_secure: bool = False
     session_cookie_samesite: str | None = "Lax"
-
-    # ── JWT ──
-    jwt_access_token_expires: int = 900  # seconds (15 min)
-
-    # ── CSRF ──
+    jwt_access_token_expires: int = 900
     wtf_csrf_enabled: bool = True
-    wtf_csrf_time_limit: int = 604800  # 7 days in seconds
-
-    # ── Internationalization ──
+    wtf_csrf_time_limit: int = 604800
     languages: dict[str, dict[str, str]] = {
         "en": {"flag": "us", "name": "English", "url": "/lang/en"},
     }
 
-    # ── Theme ──
-    theme_default: Any = {"algorithm": "default"}  # Can be dict or Callable
-    theme_dark: Any = {"algorithm": "dark"}  # Can be dict or Callable
+    theme_default: Any = {"algorithm": "default"}
+    theme_dark: Any = {"algorithm": "dark"}
     enable_ui_theme_administration: bool = True
-
-    # ── D3 / Visualization ──
     d3_format: dict[str, Any] = {}
     d3_time_format: dict[str, Any] = {}
     currencies: list[str] = [
@@ -981,8 +860,6 @@ class SupersetSettings(BaseSettings):
     deckgl_base_map: Any | None = None
     extra_categorical_color_schemes: list[Any] = []
     extra_sequential_color_schemes: list[Any] = []
-
-    # ── Misc frontend ──
     application_root: str = "/"
     has_gsheets_installed: bool = False
     welcome_page_last_tab: str = "all"
@@ -994,13 +871,9 @@ class SupersetSettings(BaseSettings):
             "production": {"color": "", "text": ""},
         },
     }
-    common_bootstrap_overrides_func: Any | None = None  # Callable or None
-
-    # ── Webserver ──
+    common_bootstrap_overrides_func: Any | None = None
     superset_webserver_timeout: int = 60
     superset_webserver_domains: list[str] | None = None
-
-    # ── Dashboard ──
     superset_dashboard_position_data_limit: int = 65535
     superset_dashboard_periodical_refresh_limit: int = 0
     superset_dashboard_periodical_refresh_warning_message: str | None = None
@@ -1018,14 +891,11 @@ class SupersetSettings(BaseSettings):
         [86400, "24 hours"],
     ]
 
-    # ── SQL Lab extended ──
     sqllab_save_warning_message: str | None = None
     sqllab_query_result_timeout: int = 0
     default_viz_type: str = "table"
     default_time_filter: str = "No filter"
     scheduled_queries: dict[str, Any] = {}
-
-    # ── File extensions ──
     excel_extensions: set[str] = {"xlsx", "xls"}
     csv_extensions: set[str] = {"csv", "tsv", "txt"}
     columnar_extensions: set[str] = {"parquet", "zip"}
@@ -1039,42 +909,27 @@ class SupersetSettings(BaseSettings):
         "zip",
     }
 
-    # ── Password Hashing ──
     fab_password_hash_method: str = "scrypt"  # noqa: S105
     fab_password_hash_salt_length: int = 16
-
-    # ── HTML ──
     html_sanitization: bool = True
     html_sanitization_schema_extensions: dict[str, Any] = {}
-
-    # ── Alerts / Reports defaults ──
     alert_reports_default_cron_value: str = "0 0 * * *"
     alert_reports_default_retention: int = 90
     alert_reports_default_working_timeout: int = 3600
-
-    # ── Native filters ──
     native_filter_default_row_limit: int = 1000
-
-    # ── Client retry ──
     superset_client_retry_attempts: int = 3
     superset_client_retry_delay: int = 1000
     superset_client_retry_backoff_multiplier: int = 2
     superset_client_retry_max_delay: int = 10000
     superset_client_retry_jitter_max: int = 1000
     superset_client_retry_status_codes: list[int] = [502, 503, 504]
-
-    # ── Misc FRONTEND_CONF ──
     prevent_unsafe_default_urls_on_dataset: bool = True
     jwt_access_csrf_cookie_name: str = "access_csrf_token"
     sync_db_permissions_in_async_mode: bool = False
     table_viz_max_row_server: int = 500000
     enable_javascript_controls: bool = False
-
-    # ── SQLAlchemy docs ──
     sqlalchemy_docs_url: str = "https://docs.sqlalchemy.org/en/latest/"
     sqlalchemy_display_text: str = "Change your database"
-
-    # ── Global Async Queries ──
     global_async_queries_transport: str = "polling"
     global_async_queries_polling_delay: int = 500
     # Liteset folds the WebSocket relay INTO the main ASGI app (controller
@@ -1087,16 +942,13 @@ class SupersetSettings(BaseSettings):
     # + ``/ws/events`` (wss:// under TLS).
     global_async_queries_websocket_url: str = "ws://127.0.0.1:8088/ws/events"
 
-    # ── SQL Validators ──
-    # 1:1 with ``superset_old/config.py::SQL_VALIDATORS_BY_ENGINE`` — ships
-    # the presto/postgres validators on by default so "Validate SQL" works
-    # out of the box for those engines.
+    # Ships the presto/postgres validators on by default so "Validate SQL"
+    # works out of the box for those engines.
     sql_validators_by_engine: dict[str, str] = {  # noqa: RUF012
         "presto": "PrestoDBSQLValidator",
         "postgresql": "PostgreSQLValidator",
     }
 
-    # ── SMTP / Email ──
     smtp_host: str = "localhost"
     smtp_port: int = 25
     smtp_user: str = "superset"
@@ -1107,59 +959,29 @@ class SupersetSettings(BaseSettings):
     smtp_ssl_server_auth: bool = False
     email_reports_subject_prefix: str = "[Report] "
     email_reports_cta: str = "Explore in Superset"
-
-    # ── Slack ──
-    slack_api_token: Any | None = None  # Can be str or Callable
-
-    # ── Infrastructure ──
+    slack_api_token: Any | None = None
     advanced_data_types: dict[str, Any] = {
         "internet_address": internet_address,
         "port": internet_port,
     }
     max_ws_per_user: int = 5
-
-    # ── Alert/Report notification dry run ──
     alert_reports_notification_dry_run: bool = False
+    get_feature_flags_func: Any | None = None
+    is_feature_enabled_func: Any | None = None
 
-    # ── Feature flag functions (advanced) ──
-    get_feature_flags_func: Any | None = None  # Callable[[dict], dict] | None
-    is_feature_enabled_func: Any | None = None  # Callable[[str], bool] | None
-
-    # ══════════════════════════════════════════════════════════════════════
-    # Remaining config variables for full backward compat with original
-    # superset_old/config.py.  Grouped by functional area.
-    # ══════════════════════════════════════════════════════════════════════
-
-    # ── Stats / Event logging ──
-    # StatsLogger instance (DummyStatsLogger default in original)
     stats_logger: Any = None
-    # EventLogger instance (DBEventLogger default in original)
     event_logger: Any = None
     superset_log_view: bool = True
     superset_security_view_menu: bool = True
-
-    # ── Alembic / Versioning ──
     alembic_skip_log_config: bool = False
     version_sha_length: int = 8
-
-    # ── Row limits / Filters ──
     filter_select_row_limit: int = 10000
-
-    # ── SQLAlchemy engine ──
     sqlalchemy_track_modifications: bool = False
     sqlalchemy_engine_options: dict[str, Any] = {}
-    # Callable[[URL], str] | None
     sqlalchemy_custom_password_store: Any | None = None
-    # EncryptedFieldTypeAdapter
     sqlalchemy_encrypted_field_type_adapter: Any | None = None
-
-    # ── SQLGlot ──
-    sqlglot_dialects_extensions: Any = {}  # dict or Callable returning dict
-
-    # ── Query ──
+    sqlglot_dialects_extensions: Any = {}
     query_search_limit: int = 1000
-
-    # ── CSRF (extended) ──
     wtf_csrf_exempt_list: list[str] = [
         "superset.charts.data.api.data",
         "superset.dashboards.api.cache_dashboard_screenshot",
@@ -1168,12 +990,9 @@ class SupersetSettings(BaseSettings):
         "superset.views.datasource.views.samples",
     ]
 
-    # ── Debug / Profiling ──
     flask_use_reload: bool = True
     profiling: bool = False
     show_stacktrace: bool = False
-
-    # ── Proxy fix ──
     enable_proxy_fix: bool = False
     proxy_fix_config: dict[str, int] = {
         "x_for": 1,
@@ -1183,45 +1002,31 @@ class SupersetSettings(BaseSettings):
         "x_prefix": 1,
     }
 
-    # ── Rate limiting (extended) ──
     ratelimit_enabled: bool = False
     ratelimit_application: str = "50 per second"
     auth_rate_limited: bool = True
     auth_rate_limit: str = "5 per second"
-
-    # ── Auth builder ──
     fab_api_swagger_ui: bool = True
-
-    # ── Babel ──
     babel_default_locale: str = "en"
     babel_default_folder: str = "superset/translations"
 
-    # ── SSH Tunnel ──
-    # Default points at the Liteset port of SSHManager.  The original
     # ``superset.extensions.ssh.SSHManager`` path is preserved because it
-    # actually exists in the new tree at
-    # ``superset/extensions/ssh.py:SSHManager``.
+    # actually exists in the new tree at ``superset/extensions/ssh.py:SSHManager``.
     ssh_tunnel_manager_class: str = "superset.extensions.ssh.SSHManager"
     ssh_tunnel_local_bind_address: str = "127.0.0.1"
     ssh_tunnel_timeout_sec: float = 10.0
     ssh_tunnel_packet_timeout_sec: float = 1.0
-
-    # ── Custom font ──
     custom_font_urls: list[str] = []
-
-    # ── Cache warmup / Thumbnails ──
     cache_warmup_executors: list[Any] = [ExecutorType.OWNER]
     thumbnail_executors: list[Any] = [ExecutorType.CURRENT_USER]
-    thumbnail_dashboard_digest_func: Any | None = None  # Callable or None
-    thumbnail_chart_digest_func: Any | None = None  # Callable or None
+    thumbnail_dashboard_digest_func: Any | None = None
+    thumbnail_chart_digest_func: Any | None = None
     thumbnail_cache_config: dict[str, Any] = {
         "CACHE_TYPE": "NullCache",
-        "CACHE_DEFAULT_TIMEOUT": 604800,  # 7 days
+        "CACHE_DEFAULT_TIMEOUT": 604800,
         "CACHE_NO_NULL_WARNING": True,
     }
-    thumbnail_error_cache_ttl: int = 86400  # 1 day
-
-    # ── Screenshot settings ──
+    thumbnail_error_cache_ttl: int = 86400
     screenshot_locate_wait: int = 10
     screenshot_load_wait: int = 60
     screenshot_selenium_retries: int = 5
@@ -1231,30 +1036,24 @@ class SupersetSettings(BaseSettings):
     screenshot_wait_for_error_modal_visible: int = 5
     screenshot_wait_for_error_modal_invisible: int = 5
     screenshot_playwright_wait_event: str = "domcontentloaded"
-    screenshot_playwright_default_timeout: int = 60000  # 60s in ms
+    screenshot_playwright_default_timeout: int = 60000  # milliseconds
     screenshot_tiled_enabled: bool = True
     screenshot_tiled_chart_threshold: int = 20
     screenshot_tiled_height_threshold: int = 5000
     screenshot_tiled_viewport_height: int = 2000
-
-    # ── Upload / File ──
     upload_folder: str = "/static/uploads/"
     upload_chunk_size: int = 4096
-
-    # ── Cache (extended) ──
     filter_state_cache_config: dict[str, Any] = {
         "CACHE_TYPE": "SupersetMetastoreCache",
-        "CACHE_DEFAULT_TIMEOUT": 7776000,  # 90 days
+        "CACHE_DEFAULT_TIMEOUT": 7776000,
         "REFRESH_TIMEOUT_ON_RETRIEVAL": True,
     }
     explore_form_data_cache_config: dict[str, Any] = {
         "CACHE_TYPE": "SupersetMetastoreCache",
-        "CACHE_DEFAULT_TIMEOUT": 604800,  # 7 days
+        "CACHE_DEFAULT_TIMEOUT": 604800,
         "REFRESH_TIMEOUT_ON_RETRIEVAL": True,
     }
     store_cache_keys_in_metadata_db: bool = False
-
-    # ── CORS (extended) ──
     enable_cors: bool = True
     cors_options: dict[str, Any] = {
         "origins": [
@@ -1263,79 +1062,54 @@ class SupersetSettings(BaseSettings):
         ],
     }
 
-    # ── Time grain ──
     time_grain_denylist: list[str] = []
     time_grain_addons: dict[str, str] = {}
     time_grain_addon_expressions: dict[str, dict[str, str]] = {}
-    time_grain_join_column_producers: dict[str, Any] = {}  # Callable values
-
-    # ── Module / Middleware ──
+    time_grain_join_column_producers: dict[str, Any] = {}
     default_module_ds_map: dict[str, list[str]] = {
         "superset.connectors.sqla.models": ["SqlaTable"],
     }
     additional_module_ds_map: dict[str, list[str]] = {}
-    additional_middleware: list[Any] = []  # list[Callable]
-
-    # ── Logging ──
-    logging_configurator: Any | None = None  # DefaultLoggingConfigurator in original
+    additional_middleware: list[Any] = []
+    logging_configurator: Any | None = None
     log_format: str = "%(asctime)s:%(levelname)s:%(name)s:%(message)s"
-    log_level_value: int = 20  # logging.INFO
+    log_level_value: int = 20
     enable_time_rotate: bool = False
-    time_rotate_log_level: int = 20  # logging.INFO
-    log_filename: str = ""  # os.path.join(DATA_DIR, "superset.log") in original
+    time_rotate_log_level: int = 20
+    log_filename: str = ""
     rollover: str = "midnight"
     log_interval: int = 1
     backup_count: int = 30
-    query_logger: Any | None = None  # Callable or None
-
-    # ── SQL Lab (extended) ──
+    query_logger: Any | None = None
     superset_meta_db_limit: int | None = 1000
     sqllab_schedule_warning_message: str | None = None
     sqllab_payload_max_mb: int | None = None
     sqllab_timeout: int = 30
     sqllab_validation_timeout: int = 10
-    sqllab_async_time_limit_sec: int = 21600  # 6 hours
+    sqllab_async_time_limit_sec: int = 21600
     sqllab_query_cost_estimate_timeout: int = 10
-    query_cost_formatters_by_engine: dict[str, Any] = {}  # Callable values
-    sqllab_ctas_schema_name_func: Any | None = None  # Callable or None
-
-    # ── Celery ──
-    celery_beat_scheduler_expires: int = 604800  # 1 week in seconds
-    celery_config: Any | None = CeleryConfig  # CeleryConfig class or None
+    query_cost_formatters_by_engine: dict[str, Any] = {}
+    sqllab_ctas_schema_name_func: Any | None = None
+    celery_beat_scheduler_expires: int = 604800
+    celery_config: Any | None = CeleryConfig
     # When True, commit the scoped sync session in task_postrun (mirrors
     # original SQLALCHEMY_COMMIT_ON_TEARDOWN config key).
     sqlalchemy_commit_on_teardown: bool = False
-    # When True, skip session.remove() in task_postrun so the session stays
-    # alive after task completion (useful for Celery eager-mode test patterns).
-    # Mirrors original CELERY_ALWAYS_EAGER config key.
     celery_always_eager: bool = False
-
-    # ── HTTP headers ──
     default_http_headers: dict[str, Any] = {}
     override_http_headers: dict[str, Any] = {}
     http_headers: dict[str, Any] = {}
-
-    # ── Database ──
     default_db_id: int | None = None
-
-    # ── Results backend ──
-    results_backend: Any | None = None  # BaseCache or None
+    results_backend: Any | None = None
     results_backend_use_msgpack: bool = True
-
-    # ── CSV / Hive upload ──
     csv_to_hive_upload_s3_bucket: str | None = None
     csv_to_hive_upload_directory: str = "EXTERNAL_HIVE_TABLES/"
-    csv_to_hive_upload_directory_func: Any | None = None  # Callable or None
+    csv_to_hive_upload_directory_func: Any | None = None
     uploaded_csv_hive_namespace: str | None = None
-    allowed_user_csv_schema_func: Any | None = None  # Callable or None
+    allowed_user_csv_schema_func: Any | None = None
     csv_default_na_names: list[str] = list(STR_NA_VALUES)
-
-    # ── Jinja / Templates ──
-    jinja_context_addons: dict[str, Any] = {}  # Callable values
-    # type[BaseTemplateProcessor] values
+    jinja_context_addons: dict[str, Any] = {}
     custom_template_processors: dict[str, Any] = {}
-
-    # ── Roles / Permissions ──
     robot_permission_roles: list[str] = [
         "Public",
         "Gamma",
@@ -1344,13 +1118,8 @@ class SupersetSettings(BaseSettings):
         "sql_lab",
     ]
 
-    # ── App mutator ──
-    flask_app_mutator: Any | None = None  # Callable or None
-
-    # ── Misc SMTP/infra ──
+    flask_app_mutator: Any | None = None
     enable_chunk_encoding: bool = False
-
-    # ── Auth-builder security ──
     silence_fab: bool = True
     fab_add_security_views: bool = True
     fab_add_security_api: bool = True
@@ -1358,34 +1127,26 @@ class SupersetSettings(BaseSettings):
     fab_add_security_view_menu_view: bool = False
     fab_add_security_permission_views_view: bool = False
     # When True the password field on PUT /api/v1/me/ is validated against the
-    # upstream default complexity rules (≥2 uppercase, ≥1 special char,
-    # ≥2 digits, ≥3 lowercase, ≥10 chars total) or a custom callable stored in
-    # ``fab_password_complexity_validator``.  Mirrors the upstream
+    # default complexity rules (≥2 uppercase, ≥1 special char, ≥2 digits,
+    # ≥3 lowercase, ≥10 chars total) or a custom callable stored in
+    # ``fab_password_complexity_validator``.  Corresponds to the
     # ``FAB_PASSWORD_COMPLEXITY_ENABLED`` / ``FAB_PASSWORD_COMPLEXITY_VALIDATOR``
-    # config keys 1:1.
+    # config keys.
     fab_password_complexity_enabled: bool = False
     # Callable[[str], None] that raises on invalid passwords.  None → use the
     # built-in default_password_complexity() rules.
     fab_password_complexity_validator: Any | None = None
-
-    # ── Troubleshooting / Permissions ──
     troubleshooting_link: str = ""
     permission_instructions_link: str = ""
-
-    # ── Blueprints ──
-    blueprints: list[Any] = []  # list[Blueprint]
-
-    # ── Tracking / Polling ──
-    tracking_url_transformer: Any | None = None  # Callable[[str], str]
+    blueprints: list[Any] = []
+    tracking_url_transformer: Any | None = None
     db_poll_interval_seconds: dict[str, int] = {}
     presto_poll_interval: float = 1
-
-    # ── DB auth / connection ──
     allowed_extra_authentications: dict[str, dict[str, Any]] = {}
     dashboard_template_id: int | None = None
-    engine_context_manager: Any | None = None  # context manager Callable
-    db_connection_mutator: Any | None = None  # Callable or None
-    db_sqla_uri_validator: Any | None = None  # Callable[[URL], None] | None
+    engine_context_manager: Any | None = None
+    db_connection_mutator: Any | None = None
+    db_sqla_uri_validator: Any | None = None
     disallowed_sql_functions: dict[str, set[str]] = {
         "postgresql": {
             "current_database",
@@ -1469,24 +1230,13 @@ class SupersetSettings(BaseSettings):
         },
     }
 
-    # ── SQL query mutator ──
-    sql_query_mutator: Any | None = None  # Callable or None
+    sql_query_mutator: Any | None = None
     mutate_after_split: bool = False
     mutate_alert_query: bool = False
-
-    # ── Email header ──
-    email_header_mutator: Any | None = None  # Callable or None
-
-    # ── User exclusion ──
+    email_header_mutator: Any | None = None
     exclude_users_from_lists: list[str] | None = None
-
-    # ── DB denylist ──
     dbs_available_denylist: dict[str, set[str]] = {}
-
-    # ── Machine auth ──
     machine_auth_provider_class: str = "superset.utils.machine_auth.MachineAuthProvider"
-
-    # ── Alerts & Reports (extended) ──
     alert_reports_cron_window_size: int = 59
     alert_reports_working_time_out_kill: bool = True
     alert_reports_executors: list[Any] = [ExecutorType.OWNER]
@@ -1497,20 +1247,16 @@ class SupersetSettings(BaseSettings):
     alert_reports_max_custom_screenshot_width: int = 2400
     alert_minimum_interval: int = 0
     report_minimum_interval: int = 0
-
-    # ── Slack (extended) ──
     slack_proxy: str | None = None
-    slack_cache_timeout: int = 86400  # 1 day
+    slack_cache_timeout: int = 86400
     slack_api_rate_limit_retry_count: int = 2
-
-    # ── Webdriver / Screenshots ──
     webdriver_type: str = "firefox"
     webdriver_window: dict[str, Any] = {
         "dashboard": (1600, 2000),
         "slice": (3000, 1200),
         "pixel_density": 1,
     }
-    webdriver_auth_func: Any | None = None  # Callable or None
+    webdriver_auth_func: Any | None = None
     webdriver_configuration: dict[str, Any] = {
         "options": {"capabilities": {}, "preferences": {}, "binary_location": ""},
         "service": {
@@ -1524,27 +1270,20 @@ class SupersetSettings(BaseSettings):
     webdriver_baseurl: str = "http://0.0.0.0:8080/"  # noqa: S104
     webdriver_baseurl_user_friendly: str = "http://0.0.0.0:8080/"  # noqa: S104
     email_page_render_wait: int = 30
-
-    # ── Preferred databases ──
     preferred_databases: list[str] = [
         "PostgreSQL",
         "Presto",
         "MySQL",
         "SQLite",
     ]
-    # seconds (timedelta(seconds=30) in original)
     test_database_connection_timeout: int = 30
-
-    # ── OAuth2 database ──
     database_oauth2_clients: dict[str, dict[str, Any]] = {}
     database_oauth2_jwt_algorithm: str = "HS256"
-    database_oauth2_timeout: int = 30  # seconds (timedelta(seconds=30) in original)
+    database_oauth2_timeout: int = 30
     # Optional explicit redirect URI override.  When unset, the default
     # is ``/api/v1/database/oauth2/`` (relative — engines requiring an
     # absolute URI must configure this).
     database_oauth2_redirect_uri: str = ""
-
-    # ── CSP / Talisman ──
     content_security_policy_warning: bool = True
     talisman_enabled: bool = True
     talisman_config: dict[str, Any] = {
@@ -1607,19 +1346,12 @@ class SupersetSettings(BaseSettings):
         "session_cookie_secure": False,
     }
 
-    # ── Session (extended) ──
     session_server_side: bool = False
-    send_file_max_age_default: int = 31536000  # 365 days
-
-    # ── Database safety ──
+    send_file_max_age_default: int = 31536000
     prevent_unsafe_db_connections: bool = True
     dataset_import_allowed_data_urls: list[str] = [".*"]
     ssl_cert_path: str | None = None
-
-    # ── SQLA table mutator ──
-    sqla_table_mutator: Any | None = None  # Callable or None (lambda table: table)
-
-    # ── Global async queries (extended) ──
+    sqla_table_mutator: Any | None = None
     global_async_query_manager_class: str = (
         "superset.async_events.async_query_manager.AsyncQueryManager"
     )
@@ -1650,25 +1382,14 @@ class SupersetSettings(BaseSettings):
         "CACHE_REDIS_SSL_CA_CERTS": None,
     }
 
-    # ── Guest token (extended) ──
-    guest_token_jwt_audience: Any | None = None  # Callable[[], str] | str | None
-
-    # ── Dataset health ──
-    dataset_health_check: Any | None = None  # Callable[[SqlaTable], str] | None
-
-    # ── Zip file limits ──
-    zipped_file_max_size: int = 104857600  # 100 MB
+    guest_token_jwt_audience: Any | None = None
+    dataset_health_check: Any | None = None
+    zipped_file_max_size: int = 104857600
     zip_file_max_compress_ratio: float = 200.0
-
-    # ── Query filters ──
     extra_related_query_filters: dict[str, Any] = {}
     extra_dynamic_query_filters: dict[str, Any] = {}
-
-    # ── Catalog migration ──
     catalogs_simplified_migration: bool = False
-
-    # ── User agent ──
-    user_agent_func: Any | None = None  # Callable[[Database, QuerySource], str] | None
+    user_agent_func: Any | None = None
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -1683,7 +1404,6 @@ class SupersetSettings(BaseSettings):
         """
         import logging as _std_logging
 
-        # Normalise numeric strings (env-var path: LITESET_LOG_LEVEL="20")
         if isinstance(v, str):
             try:
                 v = int(v)
@@ -1745,10 +1465,8 @@ class SupersetSettings(BaseSettings):
     def _resolve_version_info(self) -> SupersetSettings:
         """Populate version_string / version_sha from static/version_info.json.
 
-        1:1 with upstream ``VERSION_STRING = _try_json_readversion(...)`` /
-        ``VERSION_SHA = _try_json_readsha(...)``. Only fills empty values so an
-        explicit config override still wins. The file is generated on install
-        (``{"GIT_SHA": ..., "version": ...}``).
+        Only fills empty values so an explicit config override still wins.
+        The file is generated on install (``{"GIT_SHA": ..., "version": ...}``).
         """
         if self.version_string and self.version_sha:
             return self
@@ -1764,8 +1482,7 @@ class SupersetSettings(BaseSettings):
         if not self.version_string:
             self.version_string = data.get("version") or ""
         if not self.version_sha:
-            # Truncate to VERSION_SHA_LENGTH (1:1 with upstream
-            # ``_try_json_readsha(VERSION_INFO_FILE, VERSION_SHA_LENGTH)``).
+            # Truncate to VERSION_SHA_LENGTH.
             self.version_sha = (data.get("GIT_SHA") or "")[: self.version_sha_length]
         return self
 
@@ -1773,22 +1490,19 @@ class SupersetSettings(BaseSettings):
     def _merge_feature_flags(self) -> SupersetSettings:
         """Merge feature flags: defaults <- SUPERSET_FEATURE_* env <- user config.
 
-        1:1 with upstream precedence — ``superset_config.py`` FEATURE_FLAGS win
-        OVER env vars:
+        Precedence (later wins):
         1. Start with _DEFAULT_FEATURE_FLAGS
-        2. Merge SUPERSET_FEATURE_* env vars (upstream config.py:647 updates the
-           defaults dict with env)
-        3. Merge user FEATURE_FLAGS last (feature_flag_manager.init_app does
-           ``_feature_flags = DEFAULT_FEATURE_FLAGS`` then ``.update(FEATURE_FLAGS)``)
+        2. Merge SUPERSET_FEATURE_* env vars
+        3. Merge user FEATURE_FLAGS last (``superset_config.py`` wins over env;
+           feature_flag_manager does ``.update(FEATURE_FLAGS)`` last)
         """
         import re
 
         merged = _DEFAULT_FEATURE_FLAGS.copy()
-        # Apply SUPERSET_FEATURE_* env vars FIRST (onto defaults).
         for k, v in os.environ.items():
             if re.match(r"^SUPERSET_FEATURE_\w+", k):
                 flag_name = k[len("SUPERSET_FEATURE_") :]
-                # parse_boolean_string semantics (incl. "t"), 1:1 with upstream.
+                # parse_boolean_string semantics (incl. "t").
                 merged[flag_name] = v.lower() in (
                     "y",
                     "yes",
@@ -1797,7 +1511,6 @@ class SupersetSettings(BaseSettings):
                     "on",
                     "1",
                 )
-        # User FEATURE_FLAGS (superset_config.py) win over env — applied last.
         merged.update(self.feature_flags)
         self.feature_flags = merged
         return self

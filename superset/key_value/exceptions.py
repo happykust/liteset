@@ -14,15 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Key-value store exceptions -- ported 1:1 from
-superset_old/key_value/exceptions.py.
-
-The original uses a lazy-gettext for translatable messages. In the
-Litestar port we use plain strings here (the equivalent
-:func:`superset.i18n.lazy_gettext` is available for any future
-translatable-message work); the message text is kept identical for
-grep-ability.
-"""
+"""Key-value store exceptions."""
 
 from __future__ import annotations
 

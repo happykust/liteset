@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/database/update.py``."""
+"""Command for updating a database connection."""
 
 from __future__ import annotations
 
@@ -68,9 +68,6 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
                 new_name,
             )
             if not is_unique:
-                # Field-keyed 422 — 1:1 with upstream
-                # ``DatabaseInvalidError(exceptions=[DatabaseExists
-                # ValidationError()])``.
                 from superset.commands.database.exceptions import (
                     DatabaseExistsValidationError,
                     DatabaseInvalidError,
@@ -78,12 +75,6 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
 
                 raise DatabaseInvalidError(exceptions=[DatabaseExistsValidationError()])
 
-        # Field validators — 1:1 with ``DatabasePutSchema`` (extra/server_cert
-        # validators + ``Length`` bounds: database_name 1-250, sqlalchemy_uri
-        # 0-1024, force_ctas_schema 0-250) and ``sqlalchemy_uri_validator``
-        # (make_url_safe + configurable ``check_sqlalchemy_uri`` when
-        # ``PREVENT_UNSAFE_DB_CONNECTIONS`` is enabled). Each runs only when the
-        # field is present in the (partial) PUT payload (PUT min length is 0).
         uri = self._data.get("sqlalchemy_uri")
         force_ctas_schema = self._data.get("force_ctas_schema")
         extra = self._data.get("extra")
@@ -106,15 +97,10 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
     async def run(self) -> "Database":  # noqa: C901
         assert self._database is not None
 
-        # Capture the original name before the setattr loop overwrites it, so a
-        # rename can be propagated to the (name-based) FAB permissions below.
         original_database_name = self._database.database_name
-        # Capture the original default catalog BEFORE the setattr loop mutates
-        # the model — used to propagate a default-catalog change to dependent
-        # assets after the update.  1:1 with upstream update.py:83-93: some DBs
-        # need a live query for the default catalog, so a BROKEN current
-        # connection raises here — swallow it and force the asset update so the
-        # connection can still be fixed via PUT.
+        # Capture the original default catalog before the setattr loop mutates
+        # the model; a broken connection raises here — swallow and force the
+        # asset update so the connection can still be fixed via PUT.
         force_update = False
         try:
             original_catalog = self._database.get_default_catalog()
@@ -122,29 +108,15 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
             original_catalog = None
             force_update = True
 
-        # --- build_sqlalchemy_uri --------------------------------------------
-        # Mirrors the ``@pre_load`` hook on
-        # ``DatabaseParametersSchemaMixin.build_sqlalchemy_uri`` from
-        # ``superset_old.databases.schemas``: when the request uses
-        # ``configuration_method == 'dynamic_form'`` the engine spec
-        # composes the SQLAlchemy URI from ``{engine, driver, parameters,
-        # masked_encrypted_extra}`` and the model only stores
-        # ``sqlalchemy_uri``.  ``engine`` / ``driver`` / ``parameters``
-        # are derived/read-only on ``Database`` (no setter) so they must
-        # be popped here before the ``setattr`` loop below — otherwise
-        # we'd raise ``AttributeError: property 'driver' has no setter``.
+        # ``engine`` / ``driver`` / ``backend`` are read-only properties on
+        # ``Database`` (no setter); pop them before the setattr loop.
         configuration_method = self._data.get("configuration_method")
         engine = self._data.pop("engine", None)
         driver = self._data.pop("driver", None)
-        # ``backend`` is a read-only property too — same treatment.
         self._data.pop("backend", None)
         parameters = self._data.pop("parameters", None)
         if configuration_method == "dynamic_form" and parameters:
-            # Build failures surface as DatabaseParametersInvalidError →
-            # HTTP 400 in the controller — 1:1 with upstream's @pre_load
-            # ``build_sqlalchemy_uri`` raising Marshmallow ValidationError
-            # (R11-08: a broad-except used to swallow every error and save
-            # the database with its OLD URI while returning 200).
+            # Build failure must not silently save the old URI → HTTP 400.
             from superset.commands.database.exceptions import (
                 DatabaseParametersInvalidError,
             )
@@ -182,23 +154,8 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
             except ValueError as ex:
                 raise DatabaseParametersInvalidError(str(ex)) from ex
 
-        # --- unmask_encrypted_extra ----------------------------------------
-        # The PUT request may contain ``masked_encrypted_extra`` — a version of
-        # ``encrypted_extra`` where sensitive fields (private keys, passwords,
-        # etc.) are replaced with the "XXXXXXXXXX" sentinel by the
-        # ``mask_encrypted_extra`` classmethod on the engine spec.
-        #
-        # Mirrors ``superset_old/commands/database/update.py`` lines 70-77:
-        #   if "masked_encrypted_extra" in self._properties:
-        #       self._properties["encrypted_extra"] = (
-        #           self._model.db_engine_spec.unmask_encrypted_extra(
-        #               self._model.encrypted_extra,
-        #               self._properties.pop("masked_encrypted_extra"),
-        #           )
-        #       )
-        #
-        # Without this step the masked placeholders would be written verbatim
-        # to the database, permanently destroying the real credentials.
+        # Unmask before writing: without this step the "XXXXXXXXXX" sentinel
+        # would be persisted verbatim, permanently destroying stored credentials.
         if "masked_encrypted_extra" in self._data:
             self._data["encrypted_extra"] = (
                 self._database.db_engine_spec.unmask_encrypted_extra(
@@ -207,22 +164,15 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
                 )
             )
 
-        # ``hasattr`` matches read-only properties too (e.g. ``backend``
-        # / ``driver``); fall through to ``setattr`` raises in that case.
-        # The build_sqlalchemy_uri block above already popped the known
-        # read-only keys, but we still guard each setattr with a setter
-        # check so future schema additions can't crash this hot path.
+        # Guard each setattr against read-only properties; the known ones were
+        # popped above, but future schema additions might add more.
         for key, value in self._data.items():
             attr = getattr(type(self._database), key, None)
             if isinstance(attr, property) and attr.fset is None:
                 continue
             if hasattr(self._database, key):
                 setattr(self._database, key, value)
-        # Mirror ``superset_old.commands.database.update.UpdateDatabaseCommand.run``
-        # line 97: ``database.set_sqlalchemy_uri(database.sqlalchemy_uri)``.
-        # Required so a freshly-set URI containing the real password is
-        # masked (PASSWORD_MASK in ``sqlalchemy_uri`` column, real
-        # secret moved to the ``password`` column).
+        # Split real password into ``password`` column and store masked URI.
         if "sqlalchemy_uri" in self._data and hasattr(
             self._database, "set_sqlalchemy_uri"
         ):
@@ -231,12 +181,6 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
             self._database.changed_by_fk = self._user_id
         await self._dao.session.flush()
 
-        # Propagate a default-catalog change to dependent assets (SqlaTable /
-        # Query / SavedQuery / TabState / TableSchema) — 1:1 with upstream
-        # update.py:104-110: ``force_update or (catalog changed and not
-        # multi-catalog)``.  Upstream evaluates BOTH ``self._model`` and
-        # ``database`` allow_multi_catalog checks on the same (post-update)
-        # instance, so only the new flag value matters.
         new_catalog = self._database.get_default_catalog()
         new_allow_multi_catalog = bool(
             getattr(self._database, "allow_multi_catalog", False)
@@ -246,10 +190,6 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
         ):
             await self._update_catalog_attribute(self._database.id, new_catalog)
 
-        # If the database name changed, existing permissions are name-based and
-        # must be updated.  Mirrors superset_old UpdateDatabaseCommand which
-        # always invokes SyncPermissionsCommand after an update (it internally
-        # no-ops when old == new name).
         await self._sync_permissions(original_database_name)
 
         return self._database
@@ -257,10 +197,10 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
     async def _update_catalog_attribute(
         self, database_id: int, new_catalog: str | None
     ) -> None:
-        """Set ``catalog`` on all assets tied to this database — 1:1 with
-        ``superset_old/commands/database/update.py::_update_catalog_attribute``.
-        ``SavedQuery`` keys the database on ``db_id``; the others on
-        ``database_id``."""
+        """Set ``catalog`` on all assets for this database.
+
+        ``SavedQuery`` uses ``db_id``; all other models use ``database_id``.
+        """
         from sqlalchemy import update as _sa_update
 
         from superset.models.connectors import SqlaTable
@@ -276,8 +216,8 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
         """Resync name-based catalog/schema permissions after an update.
 
         Swallows OAuth2 redirects (the connection needs re-auth) so the update
-        itself never fails — mirrors the original's
-        ``except (OAuth2RedirectError, MissingOAuth2TokenError): pass``.
+        itself never fails — catches ``OAuth2RedirectError`` and
+        ``MissingOAuth2TokenError`` silently.
         """
         from superset.commands.database.sync_permissions import (
             SyncPermissionsCommand,
@@ -302,11 +242,6 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
                 db_connection=self._database,
             ).execute()
         except (OAuth2RedirectError, MissingOAuth2TokenError):
-            # The connection needs OAuth2 re-auth — don't fail the update.
-            # 1:1 with upstream update.py:123-124 ``except (OAuth2RedirectError,
-            # MissingOAuth2TokenError): pass``.  ``MissingOAuth2TokenError`` IS
-            # raised by ``SyncPermissionsCommand.validate()`` when the ping of
-            # an OAuth2-enabled database fails for lack of a token — without
-            # this catch a user couldn't update an OAuth2 database with an
-            # expired token (500 instead of update-without-perm-sync).
+            # MissingOAuth2TokenError: SyncPermissionsCommand.validate() pings
+            # the DB; an OAuth2-needing DB would 500 without this catch.
             pass

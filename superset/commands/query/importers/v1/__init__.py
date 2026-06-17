@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/query/importers/v1/__init__.py``."""
+"""Import command for saved queries (v1 bundle format)."""
 
 from __future__ import annotations
 
@@ -35,11 +35,9 @@ class ImportSavedQueriesCommand(AsyncImportModelsCommand):
 
     Resolves database dependencies (each saved query references a
     ``database_uuid``), imports any new databases first, then upserts the
-    saved queries with the resolved ``db_id``.  Mirrors the original
-    :class:`ImportSavedQueriesCommand` two-phase logic.
+    saved queries with the resolved ``db_id``.
     """
 
-    # 1:1 with upstream metadata-type validation (``SavedQuery``).
     _expected_type = "SavedQuery"
 
     def __init__(
@@ -54,14 +52,11 @@ class ImportSavedQueriesCommand(AsyncImportModelsCommand):
     async def _validate(self, configs: dict[str, dict[str, Any]]) -> None:
         for name, config in configs.items():
             if name.startswith("queries/"):
-                # UUID + sql + database_uuid required to dedupe properly.
                 for required in ("uuid", "sql", "database_uuid"):
                     if not config.get(required):
                         raise CommandInvalidError(f"Missing {required} in {name}")
-                # ``schema`` Length(0, 128) — 1:1 with the original
-                # ``ImportV1SavedQuerySchema`` (the DB column is
-                # String(128); without this a crafted bundle dies with a
-                # DataError 500 instead of a clean 422).
+                # schema max 128 chars matches the DB column; enforcing here
+                # avoids a DataError 500.
                 schema = config.get("schema")
                 if isinstance(schema, str) and len(schema) > 128:
                     raise CommandInvalidError(
@@ -77,14 +72,12 @@ class ImportSavedQueriesCommand(AsyncImportModelsCommand):
         configs = self._configs
         session = self._dao.session
 
-        # 1. Discover database UUIDs referenced by saved queries.
         database_uuids: set[str] = set()
         for file_name, config in configs.items():
             if file_name.startswith("queries/") and isinstance(config, dict):
                 if config.get("database_uuid"):
                     database_uuids.add(config["database_uuid"])
 
-        # 2. Import related databases (overwrite=False).
         database_ids: dict[str, int] = {}
         for file_name, config in configs.items():
             if (
@@ -99,7 +92,6 @@ class ImportSavedQueriesCommand(AsyncImportModelsCommand):
                 )
                 database_ids[str(db.uuid)] = int(db.id)
 
-        # 3. Import saved queries with resolved ``db_id``.
         for file_name, config in configs.items():
             if (
                 file_name.startswith("queries/")
@@ -111,5 +103,4 @@ class ImportSavedQueriesCommand(AsyncImportModelsCommand):
                 await import_saved_query(session, cfg, overwrite=self._overwrite)
 
     async def _import_single(self, file_name: str, content: dict[str, Any]) -> None:
-        # Not used — run() handles the full orchestration.
-        pass
+        pass  # run() handles full orchestration; this method is not used.

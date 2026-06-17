@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/annotation_layer/create.py``."""
+"""Command for creating annotation layers."""
 
 from __future__ import annotations
 
@@ -40,10 +40,6 @@ class CreateAnnotationLayerCommand(AsyncBaseCommand["AnnotationLayer"]):
             raise CommandInvalidError("name is required")
         is_unique = await self._dao.validate_update_uniqueness(name)
         if not is_unique:
-            # Field-keyed 422 — 1:1 with upstream
-            # ``AnnotationLayerInvalidError(exceptions=[AnnotationLayerName
-            # UniquenessValidationError()])`` → ``{"name": ["Name must be
-            # unique"]}``.
             from superset.commands.annotation_layer.exceptions import (
                 AnnotationLayerInvalidError,
                 AnnotationLayerNameUniquenessValidationError,

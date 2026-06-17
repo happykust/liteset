@@ -16,16 +16,11 @@
 # under the License.
 """Synthetic data generator used by the ``big_data`` example.
 
-1:1 port of ``superset_old/utils/mock_data.py`` with two adjustments:
-
-* the upstream declarative model base is replaced with the liteset
-  ``Base`` (``superset.models.helpers.Base``) since the upstream app-builder
-  is no longer a runtime dependency.
-* ``superset.db`` (the upstream SQLAlchemy global) is replaced with the
-  module-level sync session/engine exposed by
+* Uses ``superset.models.helpers.Base`` rather than the Flask-AppBuilder
+  declarative base; the app-builder is no longer a runtime dependency.
+* Uses the module-level sync session/engine from
   :mod:`superset.examples._ctx`.  This module is only ever invoked from
-  CLI/example code paths, so synchronous SQLAlchemy is appropriate
-  (matches the original behaviour).
+  CLI/example code paths, so synchronous SQLAlchemy is appropriate.
 """
 
 from __future__ import annotations
@@ -273,7 +268,6 @@ def add_sample_rows(model: type[Base], count: int) -> Iterator[Base]:
         sample = samples[i % len(samples)] if samples else None
         kwargs = {}
         for column in inspector.columns.values():
-            # for primary keys, keep incrementing
             if column.primary_key:
                 if max_primary_key is None:
                     max_primary_key = (
@@ -284,19 +278,15 @@ def add_sample_rows(model: type[Base], count: int) -> Iterator[Base]:
                     )
                 max_primary_key += 1
                 kwargs[column.name] = max_primary_key
-
-            # if the column has a foreign key, copy the value from an existing entity
             elif column.foreign_keys:
                 if sample:
                     kwargs[column.name] = getattr(sample, column.name)
                 else:
                     kwargs[column.name] = get_valid_foreign_key(column)
-
-            # should be an enum but it's not
+            # datasource_type is not declared as an enum in the model
+            # but behaves like one
             elif column.name == "datasource_type":
                 kwargs[column.name] = "table"
-
-            # otherwise, generate a random value based on the type
             else:
                 kwargs[column.name] = generate_value(column)
 

@@ -14,12 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Shared helpers used across the sqllab command package.
-
-Most of these are direct ports of the synchronous helpers in
-``superset_old/sql_lab.py`` and ``superset_old/sqllab/utils.py`` adapted
-to the Liteset async/sync split.
-"""
+"""Shared helpers used across the sqllab command package."""
 
 from __future__ import annotations
 
@@ -32,11 +27,9 @@ import sqlalchemy as sa
 
 logger = logging.getLogger(__name__)
 
-# Default maximum rows if no limit is provided and no config override.
 DEFAULT_SQL_MAX_ROW = 100000
 
-# Async-capable driver prefixes that must be replaced with sync
-# equivalents when executing user queries via DBAPI cursors.
+# Async driver prefixes must be replaced with sync equivalents for user query execution.
 _ASYNC_DRIVER_REPLACEMENTS: dict[str, str] = {
     "postgresql+asyncpg": "postgresql+psycopg2",
     "postgresql+aiopg": "postgresql+psycopg2",
@@ -45,8 +38,7 @@ _ASYNC_DRIVER_REPLACEMENTS: dict[str, str] = {
     "sqlite+aiosqlite": "sqlite",
 }
 
-# SQLAlchemy backend name -> sqlglot dialect name. sqlglot uses "postgres"
-# while SQLAlchemy uses "postgresql"; a few others also differ.
+# sqlglot uses "postgres" while SQLAlchemy uses "postgresql"; a few others also differ.
 _SQLGLOT_DIALECT_ALIASES: dict[str, str] = {
     "postgresql": "postgres",
     "mssql": "tsql",
@@ -67,9 +59,9 @@ _SQLGLOT_DIALECT_ALIASES: dict[str, str] = {
 
 
 def map_sqlglot_dialect(engine: str | None) -> str | None:
-    """Map a SQLAlchemy backend name (e.g. "postgresql") to a sqlglot
-    dialect name (e.g. "postgres"). Returns None if no engine is given,
-    letting sqlglot auto-detect. Unknown engines are returned as-is.
+    """
+    Map a SQLAlchemy backend name to a sqlglot dialect name;
+    None lets sqlglot auto-detect.
     """
     if not engine:
         return None
@@ -80,10 +72,9 @@ def map_sqlglot_dialect(engine: str | None) -> str | None:
 def make_json_safe(value: Any) -> Any:
     """Convert Python values to JSON-serializable types.
 
-    JS-MAX-INTEGER cast for big integers ports
-    ``superset_old/dataframe.py::_convert_big_integers`` so frontends
-    that decode the JSON via ``Number(...)`` don't lose precision on
-    e.g. Snowflake ``NUMBER(38,0)`` IDs.
+    Casts big integers to string when they exceed ``JS_MAX_INTEGER`` so
+    frontends that decode via ``Number(...)`` don't lose precision
+    (e.g. Snowflake ``NUMBER(38,0)`` IDs).
     """
     from superset.utils.core import JS_MAX_INTEGER
 
@@ -118,21 +109,18 @@ def to_sync_uri(uri: str) -> str:
 
 
 def build_connection_uri(database: Any) -> str:
-    """Build a usable sync connection string from a Database model.
+    """Build a usable sync connection string, injecting the real password back in.
 
-    The ``Database.sqlalchemy_uri`` column stores the URI with the password
-    masked (``PASSWORD_MASK``). The real password is in ``Database.password``.
-    We reconstruct the full URI by injecting the password back in.
+    ``Database.sqlalchemy_uri`` stores the URI with the password masked
+    (``PASSWORD_MASK``);
+    the real password lives in ``Database.password``.
     """
     raw_uri = database.sqlalchemy_uri or ""
     try:
         url = sa.engine.make_url(raw_uri)
     except Exception:  # noqa: BLE001
-        # If the stored URI is totally invalid, return as-is and let
-        # SQLAlchemy raise a proper error later.
         return to_sync_uri(raw_uri)
 
-    # Inject password from the separate column if it was masked.
     password = getattr(database, "password", None)
     if password:
         url = url.set(password=password)
@@ -141,11 +129,9 @@ def build_connection_uri(database: Any) -> str:
 
 
 def get_engine_name(database: Any) -> str:
-    """Return the sqlglot-friendly engine name for ``database``.
-
-    Mirrors ``database.db_engine_spec.engine`` access from the original
-    while gracefully falling back to the raw SQLAlchemy backend name when
-    the engine spec is unavailable (e.g. unit tests using a mock DAO).
+    """
+    Return the sqlglot-friendly engine name for ``database``;
+    falls back to the raw SA backend name.
     """
     spec = getattr(database, "db_engine_spec", None)
     if spec is not None:
@@ -164,10 +150,8 @@ def apply_display_max_row_configuration_if_require(
 ) -> dict[str, Any]:
     """Cap the rows in ``sql_results`` to ``max_rows_in_result``.
 
-    1:1 with
-    ``superset_old/sqllab/utils.py::apply_display_max_row_configuration_if_require``
-    so ``GetSQLResultsCommand`` returns the exact same shape (the
-    frontend uses the ``displayLimitReached`` boolean).
+    Sets ``displayLimitReached=True`` when truncation occurs (the frontend
+    reads this boolean).
     """
     from superset.common.query_status import QueryStatus
 

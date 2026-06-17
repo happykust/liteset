@@ -43,8 +43,9 @@ def _capped_row_limit(
     result_type: str | None,
     server_pagination: bool | None = None,
 ) -> int:
-    """Apply the configured row-limit cap to a request-supplied limit — 1:1
-    with upstream ``QueryObjectFactory._process_row_limit``: an absent/zero
+    """Apply the configured row-limit cap to a request-supplied limit.
+
+    An absent/zero
     limit falls back to ``SAMPLES_ROW_LIMIT`` (samples) or ``ROW_LIMIT``, and the
     result is capped at ``SQL_MAX_ROW`` (or ``TABLE_VIZ_MAX_ROW_SERVER`` when
     ``server_pagination`` is on — the Table viz pages server-side and so is
@@ -78,11 +79,7 @@ def _capped_row_limit(
 
 @dataclass
 class AsyncQueryObject:
-    """Describes a single query to execute against a datasource.
-
-    Mirrors superset.common.query_object.QueryObject fields for
-    API contract compatibility. Does not depend on the legacy WSGI stack.
-    """
+    """Describes a single query to execute against a datasource."""
 
     datasource: dict[str, Any]
     columns: list[Any] = field(default_factory=list)
@@ -105,9 +102,7 @@ class AsyncQueryObject:
     series_columns: list[str] = field(default_factory=list)
     series_limit: int = 0
     series_limit_metric: Any | None = None
-    # ``None`` = not supplied → auto-detect in ``__post_init__``; an explicit
-    # ``False`` from the caller must STAY False, exactly like the original
-    # ``_set_is_timeseries`` (superset_old/common/query_object.py:180-185).
+    # None = not supplied; explicit False is preserved.
     is_timeseries: bool | None = None
     result_type: str | None = None
     applied_time_extras: dict[str, str] = field(default_factory=dict)
@@ -118,17 +113,12 @@ class AsyncQueryObject:
     granularity_sqla: str | None = None
 
     def __post_init__(self) -> None:  # noqa: C901  # complex business logic
-        # Deprecated field renaming — a truthy deprecated value overrides the
-        # new field (1:1 upstream ``_rename_deprecated_fields``).
         if self.granularity_sqla:
             self.granularity = self.granularity_sqla
 
-        # Metric normalization: {"label": "count"} → "count".
         # Preserve ``metrics is None`` (raw columns mode) — the
         # ``_build_sql`` logic uses the ``None`` vs ``[]`` distinction
-        # to decide whether to aggregate, matching original
-        # ``helpers.get_sqla_query:1731``: ``bool(metrics is not None
-        # or groupby)``.
+        # to decide whether to aggregate.
         if self.metrics is not None:
             normalized: list[Any] = []
             for m in self.metrics:
@@ -138,64 +128,36 @@ class AsyncQueryObject:
                     normalized.append(m)
             self.metrics = normalized
 
-        # Filter out None entries from post_processing.
-        # 1:1 with ``superset_old/common/query_object.py:_set_post_processing``
-        # (line 203-204): the original silently drops null entries so that
-        # ``None.get("operation")`` cannot 500 in exec_post_processing.
         self.post_processing = [p for p in self.post_processing if p]
 
         # Capture the caller-supplied is_timeseries value *before* auto-detection
-        # so that series_columns population uses the same semantics as the original
-        # ``_init_series_columns(series_columns, metrics, is_timeseries)`` call
-        # (superset_old/common/query_object.py:155,206-217): the original passes
-        # the caller-supplied is_timeseries (bool|None) directly; when None is
-        # passed, ``elif is_timeseries and metrics`` is False and series_columns
-        # stays [].  Using the auto-detected self.is_timeseries here would cause
-        # spurious series breakdowns when is_timeseries was implicitly detected
-        # rather than explicitly set.
+        # so that series_columns population uses the explicit (bool|None) value.
+        # When None is passed, ``elif is_timeseries and metrics`` is False and
+        # series_columns stays [].  Using the auto-detected self.is_timeseries
+        # here would cause spurious series breakdowns when is_timeseries was
+        # implicitly detected rather than explicitly set.
         _explicit_is_timeseries = self.is_timeseries
 
-        # is_timeseries: 1:1 with ``_set_is_timeseries``
-        # (superset_old/common/query_object.py:180-185) —
-        # ``is_timeseries if is_timeseries is not None else DTTM_ALIAS in
-        # columns``: auto-detection runs ONLY when the caller did not supply
-        # the flag; an explicit False is preserved.
+        # is_timeseries: auto-detection runs ONLY when the caller did not supply
+        # the flag (``is_timeseries if is_timeseries is not None else DTTM_ALIAS
+        # in columns``); an explicit False is preserved.
         if self.is_timeseries is None:
             self.is_timeseries = "__timestamp" in (self.columns or [])
 
-        # Auto-populate series_columns from columns when unset for a time-series
-        # chart with metrics.
-        # 1:1 with ``superset_old/common/query_object.py:_init_series_columns``
-        # (lines 206-217): if series_columns is empty but is_timeseries=True and
-        # metrics is non-empty, use columns as the series key so that time-series
-        # charts have the correct series breakdown without requiring callers to
-        # explicitly set series_columns.
-        # NOTE: Use ``_explicit_is_timeseries`` (the caller-supplied value) not
-        # ``self.is_timeseries`` (which may have been set by auto-detection above)
-        # to preserve the original semantics — see comment above.
         if not self.series_columns and _explicit_is_timeseries and self.metrics:
             self.series_columns = list(self.columns)
 
         # Extract the effective time range for dttm resolution when not supplied
-        # at the top level.
-        # 1:1 with ``superset_old/common/query_object_factory.py:_process_time_range``
-        # (lines 127-152): uses a LOCAL variable only — self.time_range stays None
-        # when the caller passed None.  The original factory passes time_range=None
-        # to QueryObject.__init__ (line 86: ``time_range=time_range``, not
-        # ``processed_time_range``) so that _apply_filters() sees a falsy
-        # time_range and leaves every TEMPORAL_RANGE filter's val intact.
+        # at the top level, using a LOCAL variable only — self.time_range stays
+        # None when the caller passed None.
         # Storing the extracted value in self.time_range would cause _apply_filters()
-        # to overwrite all TEMPORAL_RANGE filter vals (including unrelated ones) with
-        # the chosen val — silently wrong for charts with multiple temporal filters.
+        # to overwrite all TEMPORAL_RANGE filter vals (including unrelated ones)
+        # with the chosen val — silently wrong for charts with multiple temporal
+        # filters.
         _extracted_time_range: str | None = None
         if self.time_range is None:
             from superset.constants import NO_TIME_RANGE
 
-            # 1:1 with _process_time_range (superset_old/common/
-            # query_object_factory.py:128-152): default NO_TIME_RANGE, and the
-            # matched filter's RAW val — a None/"" val is passed through
-            # as-is (get_since_until(None) then resolves to (None, ~today)),
-            # NOT coerced to NO_TIME_RANGE (which would yield (None, None)).
             _extracted_time_range = NO_TIME_RANGE
             temporal_flts = [
                 flt for flt in self.filters if flt.get("op") == "TEMPORAL_RANGE"
@@ -212,23 +174,16 @@ class AsyncQueryObject:
                 else:
                     _extracted_time_range = temporal_flts[0].get("val")
             # NOTE: self.time_range remains None so _apply_filters() is a no-op,
-            # preserving every filter's original val (matches original behavior).
+            # preserving every filter's original val.
 
-        # Resolve from_dttm/to_dttm when not explicitly provided.
-        # Mirrors original superset_old/common/query_object_factory.py:74-81,
-        # which calls get_since_until_from_time_range(processed_time_range, …)
-        # and stores the result as from_dttm/to_dttm on the QueryObject.
-        # Uses _effective_time_range so that both explicit-time_range and
-        # filter-only cases resolve dttm correctly.
         # ``is not None`` (not truthiness): a None/"" extracted val must reach
-        # get_since_until_from_time_range like the original, which calls it
-        # unconditionally (superset_old/common/query_object_factory.py:74-81).
+        # get_since_until_from_time_range unconditionally.
         _effective_time_range = (
             self.time_range if self.time_range is not None else _extracted_time_range
         )
         if self.from_dttm is None or self.to_dttm is None:
             try:
-                # 1:1 with upstream factory: use
+                # Use
                 # ``get_since_until_from_time_range(time_range, time_shift, extras)``
                 # — NOT bare ``get_since_until`` — so config-driven relative-time
                 # anchors (``default_relative_start_time``/``...end_time``) and
@@ -249,15 +204,11 @@ class AsyncQueryObject:
                 # Malformed time_range — leave dttms None, emit un-filtered SQL
                 pass
 
-        # 1:1 with ``QueryContextFactory._apply_filters``
-        # (``superset_old/common/query_context_factory.py:199-204``): when a
-        # top-level ``time_range`` is set, every ``TEMPORAL_RANGE`` filter's
-        # ``val`` is overwritten with it so the WHERE clause matches the
-        # request's effective time range (the Explore UI sends the canonical
+        # When a top-level ``time_range`` is set, every ``TEMPORAL_RANGE``
+        # filter's ``val`` is overwritten with it so the WHERE clause matches
+        # the request's effective time range (the Explore UI sends the canonical
         # range as ``time_range`` while leaving stale ``val`` strings on the
-        # adhoc temporal filters). Upstream's factory runs this on every query
-        # object via ``_process_query_object``; here ``__post_init__`` is the
-        # equivalent build hook.
+        # adhoc temporal filters).
         self._apply_filters()
 
         # Formula annotation filtering (client-side only)
@@ -270,9 +221,7 @@ class AsyncQueryObject:
             ]
 
     def _apply_filters(self) -> None:
-        """1:1 with ``QueryContextFactory._apply_filters``.
-
-        When ``time_range`` is set, sync every ``TEMPORAL_RANGE`` filter's
+        """When ``time_range`` is set, sync every ``TEMPORAL_RANGE`` filter's
         ``val`` to it.
         """
         if self.time_range:
@@ -285,7 +234,7 @@ class AsyncQueryObject:
         form_data: dict[str, Any] | None,
         datasource: Any,
     ) -> None:
-        """1:1 with ``QueryContextFactory._apply_granularity``.
+        """Apply the temporal granularity to the x-axis column.
 
         Replaces a temporal x-axis column's expression with the granularity and
         removes the now-redundant temporal filter (a fresh one keyed on the
@@ -325,7 +274,6 @@ class AsyncQueryObject:
                 ),
                 None,
             )
-            # Replace the x-axis column's values with the granularity.
             if x_axis_column:
                 if isinstance(x_axis_column, dict):
                     x_axis_column["sqlExpression"] = granularity
@@ -339,7 +287,6 @@ class AsyncQueryObject:
                     if post_processing.get("operation") == "pivot":
                         post_processing["options"]["index"] = [granularity]
 
-        # If no temporal x-axis, pick the default temporal filter to remove.
         if not filter_to_remove:
             temporal_filters = [
                 flt["col"] for flt in self.filters if flt.get("op") == "TEMPORAL_RANGE"
@@ -362,12 +309,8 @@ class AsyncQueryObject:
             ]
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to dict matching Superset's QueryObject.to_dict().
-
-        Excludes volatile fields (time_range, post_processing, annotation_layers,
-        time_offsets, result_type, apply_fetch_values_predicate) — those are only
-        included conditionally in cache_key().
-        """
+        """Serialize query object to dict, excluding volatile fields
+        handled by cache_key()."""
         return {
             "columns": self.columns,
             "metrics": self.metrics,
@@ -396,7 +339,7 @@ class AsyncQueryObject:
     def cache_key(self) -> dict[str, Any]:
         """Return a dict suitable for cache-key computation.
 
-        Matches Superset's QueryObject.cache_key() structure:
+        Structure:
         - Starts from to_dict() (volatile fields already excluded)
         - Removes from_dttm, to_dttm, datasource
         - Conditionally removes apply_fetch_values_predicate when False
@@ -405,15 +348,12 @@ class AsyncQueryObject:
         - Includes filtered annotation_layers (9 specific fields per layer)
         """
         base = self.to_dict()
-        # Remove volatile datetime bounds and datasource
         for key in ("from_dttm", "to_dttm", "datasource"):
             base.pop(key, None)
-        # Conditionally remove apply_fetch_values_predicate when False
         if not self.apply_fetch_values_predicate:
             base.pop("apply_fetch_values_predicate", None)
         else:
             base["apply_fetch_values_predicate"] = True
-        # Conditionally add fields when truthy
         if self.result_type:
             base["result_type"] = self.result_type
         if self.time_range:
@@ -422,7 +362,6 @@ class AsyncQueryObject:
             base["post_processing"] = self.post_processing
         if self.time_offsets:
             base["time_offsets"] = self.time_offsets
-        # Include filtered annotation_layers (specific fields only)
         _ANNOTATION_CACHE_FIELDS = {  # noqa: N806
             "annotationType",
             "descriptionColumns",
@@ -443,22 +382,15 @@ class AsyncQueryObject:
             ]
         return base
 
-    # ------------------------------------------------------------------
-    # Validation
-    # ------------------------------------------------------------------
-
     def validate(self, datasource: Any | None = None) -> None:
         """Run all sub-validators; raise *QueryObjectValidationError* on failure.
-
-        Order matches Superset's QueryObject.validate().
 
         Args:
             datasource: The resolved ORM datasource model (e.g.
                 ``SqlaTable``).  When provided, ``_sanitize_filters`` uses its
                 ``database`` to render Jinja templates in ``extras.where`` /
                 ``extras.having`` and to select the correct SQL dialect for
-                clause sanitization -- matching the original
-                ``superset_old/common/query_object.py:_sanitize_filters``.
+                clause sanitization.
         """
         self._validate_there_are_no_missing_series()
         self._validate_no_have_duplicate_labels(datasource=datasource)
@@ -468,12 +400,11 @@ class AsyncQueryObject:
     def _sanitize_filters(self, datasource: Any | None = None) -> None:
         """Sanitize ``extras.where`` and ``extras.having``.
 
-        1:1 with ``superset_old/common/query_object.py::_sanitize_filters``:
-        when a datasource is available the clause is first rendered through
+        When a datasource is available the clause is first rendered through
         the sandboxed Jinja processor, then sanitized with the correct
         engine dialect via :func:`sanitize_clause`.
         """
-        # Lazy import like upstream: jinja_context pulls in models/security.
+        # Lazy import: jinja_context pulls in models/security.
         from superset.jinja_context import get_template_processor
 
         for param in ("where", "having"):
@@ -501,17 +432,12 @@ class AsyncQueryObject:
     def _validate_no_have_duplicate_labels(self, datasource: Any | None = None) -> None:
         """Check that column / metric labels are unique.
 
-        1:1 with
-        ``superset_old/common/query_object.py:_validate_no_have_duplicate_labels``
-        (lines 294-304): uses ``get_metric_names`` (which applies the datasource
+        Uses ``get_metric_names`` (which applies the datasource
         ``verbose_map`` to produce display labels) and ``get_column_names``, then
         reports ALL duplicate labels in a single i18n error message.
         """
         from superset.utils.column import get_column_names, get_metric_names
 
-        # Retrieve datasource verbose_map if available — mirrors
-        # ``QueryObject.metric_names`` property which passes it to
-        # ``get_metric_names``.
         verbose_map: dict[str, Any] | None = None
         if datasource and hasattr(datasource, "verbose_map"):
             verbose_map = datasource.verbose_map
@@ -535,12 +461,7 @@ class AsyncQueryObject:
 
     @staticmethod
     def _is_valid_date_range(date_range: str) -> bool:
-        """Return True if *date_range* is a valid YYYY-MM-DD:YYYY-MM-DD offset.
-
-        Mirrors ``superset_old/common/query_object.py:_is_valid_date_range``
-        (lines 323-335): split on ':', strip both sides, validate with strptime.
-        No surrounding-space requirement — '2021-01-01:2021-12-31' is valid.
-        """
+        """Return True if date_range is a valid YYYY-MM-DD:YYYY-MM-DD string."""
         try:
             start_date, end_date = date_range.split(":")
             datetime.strptime(start_date.strip(), "%Y-%m-%d")
@@ -552,11 +473,10 @@ class AsyncQueryObject:
     def _validate_time_offsets(self) -> None:
         """Validate date-range style offsets against the feature flag.
 
-        Mirrors ``superset_old/common/query_object.py:_validate_time_offsets``
-        (lines 306-321): uses ``_is_valid_date_range`` (strptime-based) instead
-        of a simple substring check, and restores the original error message.
-        NO isinstance(str) pre-check — the original lets a non-string offset
-        crash with AttributeError inside ``.split(":")`` (→ 500), and adding a
+        Uses ``_is_valid_date_range`` (strptime-based) instead of a simple
+        substring check.
+        NO isinstance(str) pre-check — a non-string offset is left to crash
+        with AttributeError inside ``.split(":")`` (→ 500), and adding a
         400 here would change the observable status for that input.
         """
         for offset in self.time_offsets:
@@ -573,9 +493,9 @@ class AsyncQueryObject:
     def _validate_there_are_no_missing_series(self) -> None:
         """Check that every *series_columns* entry exists in *columns*.
 
-        1:1 with ``superset_old/common/query_object.py:362-371``: uses list
-        membership (``col not in self.columns``) so that adhoc-column dicts in
-        series_columns are compared via ``__eq__`` rather than ``__hash__``.
+        Uses list membership (``col not in self.columns``) so that adhoc-column
+        dicts in series_columns are compared via ``__eq__`` rather than
+        ``__hash__``.
         Building a ``set[str]`` of labels and checking dict membership in that
         set raises ``TypeError: unhashable type: 'dict'`` whenever
         series_columns was auto-populated from self.columns (which can contain
@@ -595,10 +515,9 @@ class AsyncQueryObject:
     def from_request(cls, q: Any, datasource_ref: dict[str, Any]) -> AsyncQueryObject:
         """Create from a dict or ChartDataQueryObject schema struct."""
         if isinstance(q, dict):
-            # Deprecated field renaming. 1:1 with upstream
-            # ``QueryObject._rename_deprecated_fields``: a present, truthy
-            # deprecated value OVERRIDES the new field (not just a fallback when
-            # the new field is empty).
+            # Deprecated field renaming. A present, truthy deprecated value
+            # OVERRIDES the new field (not just a fallback when the new field
+            # is empty).
             columns = q.get("columns", [])
             if q.get("groupby"):
                 columns = q["groupby"]
@@ -635,8 +554,8 @@ class AsyncQueryObject:
                 series_limit=series_limit,
                 series_limit_metric=series_limit_metric,
                 # ``None`` (not False) when absent → __post_init__ auto-detects
-                # ``__timestamp in columns`` — 1:1 upstream _set_is_timeseries
-                # (R11-15: a False default killed the auto-detection).
+                # ``__timestamp in columns`` (a False default kills the
+                # auto-detection).
                 is_timeseries=q.get("is_timeseries"),
                 result_type=q.get("result_type"),
                 applied_time_extras=q.get("applied_time_extras", {}),
@@ -718,7 +637,7 @@ class AsyncQueryObject:
             series_columns=list(getattr(q, "series_columns", [])),
             series_limit=getattr(q, "series_limit", 0),
             series_limit_metric=getattr(q, "series_limit_metric", None),
-            # ``None`` default — see the dict-path note above (R11-15).
+            # None (not False) — see dict-path note above.
             is_timeseries=getattr(q, "is_timeseries", None),
             result_type=getattr(q, "result_type", None),
             applied_time_extras=dict(getattr(q, "applied_time_extras", {})),

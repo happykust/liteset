@@ -14,12 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/database/uploaders/excel_reader.py``.
+"""Excel file reader for database uploads.
 
-Mirrors the original Excel reader 1:1.  ``file`` is normalised via
-:func:`_to_stream` so the reader works with Litestar ``UploadFile``,
-a legacy file-storage object, or a raw ``IO[bytes]`` /
-``bytes`` payload.
+``file`` is normalised via :func:`_to_stream` so the reader works with
+``UploadFile``, or a raw ``IO[bytes]`` / ``bytes`` payload.
 """
 
 from __future__ import annotations
@@ -66,7 +64,6 @@ class ExcelReader(BaseDataReader):
         )
 
     def file_to_dataframe(self, file: Any) -> pd.DataFrame:
-        """Read Excel file into a DataFrame."""
         kwargs = {
             "header": self._options.get("header_row", 0),
             "index_col": self._options.get("index_column"),

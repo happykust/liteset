@@ -63,7 +63,6 @@ class FakeQueryDAO(BaseAsyncDAO[FakeQuery]):
     model_cls = FakeQuery
 
     async def save_metadata(self, query: FakeQuery, payload: dict) -> None:
-        # 1:1 with superset_old/daos/query.py:
         # default {}, unconditional overwrite, keep name key
         columns = payload.get("columns", {})
         for col in columns:
@@ -231,9 +230,9 @@ async def test_save_metadata(async_session: AsyncSession) -> None:
 
     data = json.loads(q.extra_json)
     assert len(data["columns"]) == 2
-    # 1:1 with original: column_name is set from name
+    # column_name is set from name
     assert data["columns"][0]["column_name"] == "id"
-    # 1:1 with original: 'name' key is kept, not removed
+    # 'name' key is kept, not removed
     assert data["columns"][0]["name"] == "id"
     assert data["columns"][1]["column_name"] == "already_named"
 
@@ -244,7 +243,7 @@ async def test_save_metadata(async_session: AsyncSession) -> None:
 
 
 async def test_async_dao_save_metadata_name_preserved() -> None:
-    """1:1 with original: col with only 'name' stores BOTH 'name' AND 'column_name'."""
+    """Col with only 'name' stores BOTH 'name' AND 'column_name'."""
     mock_session = MagicMock()
     dao = AsyncQueryDAO(mock_session)
     q = FakeQuery()
@@ -259,9 +258,9 @@ async def test_async_dao_save_metadata_name_preserved() -> None:
 
 
 async def test_async_dao_save_metadata_overwrites_column_name() -> None:
-    """1:1 with original: 'column_name' is overwritten when 'name' is present.
+    """'column_name' is overwritten when 'name' is present.
 
-    superset_old unconditionally: col["column_name"] = col.get("name")
+    The assignment is unconditional: col["column_name"] = col.get("name")
     """
     mock_session = MagicMock()
     dao = AsyncQueryDAO(mock_session)
@@ -284,7 +283,7 @@ async def test_async_dao_save_metadata_overwrites_column_name() -> None:
 
 
 async def test_async_dao_save_metadata_no_columns_default_dict() -> None:
-    """1:1 with original: absent 'columns' key stores {} not []."""
+    """Absent 'columns' key stores {} not []."""
     mock_session = MagicMock()
     dao = AsyncQueryDAO(mock_session)
     q = FakeQuery()

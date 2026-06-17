@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/chart/fave.py``."""
+"""Commands for adding charts to user favorites."""
 
 from __future__ import annotations
 
@@ -38,10 +38,8 @@ logger = logging.getLogger(__name__)
 class AddFavoriteChartCommand(AsyncBaseCommand[None]):
     """Add a chart to a user's favorites.
 
-    1:1 port of ``superset_old/commands/chart/fave.py``.
-    The original calls ``security_manager.raise_for_ownership(chart)`` to
-    ensure the requesting user is an owner of the chart before favoriting
-    (raises 403 if not).  This check is preserved here.
+    ``security_manager.raise_for_ownership`` ensures the requesting user is
+    an owner of the chart before favoriting (raises 403 if not).
     """
 
     def __init__(
@@ -63,12 +61,6 @@ class AddFavoriteChartCommand(AsyncBaseCommand[None]):
         if not chart:
             raise ObjectNotFoundError("Chart", self._chart_id)
 
-        # 1:1 with original: ``security_manager.raise_for_ownership(chart)``
-        # takes the user *id* positionally and raises ``SupersetSecurityException``
-        # when the caller is not an owner — caught and re-raised as a 403.
-        # (The previous ``raise_for_ownership(chart, user=...)`` passed the wrong
-        # kwarg → ``TypeError``, which the over-broad ``except Exception`` masked
-        # as a 403 for *everyone*, including the chart's own owner.)
         if self._security_manager is not None:
             try:
                 await self._security_manager.raise_for_ownership(chart, self._user_id)

@@ -15,14 +15,11 @@
 #  specific language governing permissions and limitations
 #  under the License.
 
-"""SSH tunnel helpers — ported from ``superset_old/utils/ssh_tunnel.py``
-and ``superset_old/extensions/ssh.py`` to the Liteset runtime.
+"""SSH tunnel helpers.
 
 Free helpers (mask/unmask passwords, port lookup) plus the ``SSHManager``
-and ``SSHManagerFactory`` classes that the original ``extensions/ssh.py``
-provided.  The legacy WSGI stack is gone; settings are accepted via
-constructor kwargs so the classes work in both the ASGI runtime and CLI
-tools.
+and ``SSHManagerFactory`` classes.  Settings are accepted via constructor
+kwargs so the classes work in both the ASGI runtime and CLI tools.
 
 * :func:`mask_password_info` — strips secret fields from payloads.
 * :func:`unmask_password_info` — restores masked fields from the DB model.
@@ -45,8 +42,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 logger = logging.getLogger(__name__)
 
-
-# Default ports per database backend (verbatim from the original).
+# Default ports per database backend.
 DEFAULT_PORTS: dict[str, int] = {
     "postgresql": 5432,
     "mysql": 3306,
@@ -58,11 +54,10 @@ DEFAULT_PORTS: dict[str, int] = {
 def mask_password_info(ssh_tunnel: dict[str, Any]) -> dict[str, Any]:
     """Replace secret-bearing fields with the ``PASSWORD_MASK`` sentinel.
 
-    Mirrors ``superset_old.utils.ssh_tunnel.mask_password_info``: any of
-    ``password``, ``private_key`` or ``private_key_password`` that are
-    present and non-``None`` in the incoming dict are popped and
-    replaced with ``PASSWORD_MASK`` so the masked value is what callers
-    serialize back to the user.
+    Any of ``password``, ``private_key`` or ``private_key_password`` that are
+    present and non-``None`` in the incoming dict are popped and replaced with
+    ``PASSWORD_MASK`` so the masked value is what callers serialize back to the
+    user.
     """
     if ssh_tunnel.pop("password", None) is not None:
         ssh_tunnel["password"] = PASSWORD_MASK
@@ -78,8 +73,7 @@ def unmask_password_info(
 ) -> dict[str, Any]:
     """Patch masked values back from the persisted ``SSHTunnel`` model.
 
-    Mirrors ``superset_old.utils.ssh_tunnel.unmask_password_info``: when
-    the inbound payload contains the ``PASSWORD_MASK`` sentinel for
+    When the inbound payload contains the ``PASSWORD_MASK`` sentinel for
     ``password``, ``private_key`` or ``private_key_password``, the value
     is replaced with the corresponding attribute from ``model``.
     """
@@ -93,26 +87,15 @@ def unmask_password_info(
 
 
 def get_default_port(backend: str) -> int | None:
-    """Return the default port for the given backend, or ``None``.
-
-    Verbatim from ``superset_old.utils.ssh_tunnel.get_default_port``.
-    """
+    """Return the default port for the given backend, or ``None``."""
     return DEFAULT_PORTS.get(backend)
-
-
-# ---------------------------------------------------------------------------
-# SSHManager / SSHManagerFactory
-# Ported from ``superset_old/extensions/ssh.py``.
-# Legacy WSGI dependency removed — settings are passed as constructor kwargs.
-# ---------------------------------------------------------------------------
 
 
 class SSHManager:
     """Opens SSH tunnels and rewrites SQLAlchemy URLs to use the tunnel.
 
-    Ported 1:1 from ``superset_old/extensions/ssh.SSHManager`` with the
-    ``app.config`` dependency replaced by explicit constructor
-    parameters that match the ``SupersetSettings`` field names.
+    Accepts explicit constructor parameters matching ``SupersetSettings``
+    field names instead of reading from ``app.config``.
     """
 
     def __init__(
@@ -127,11 +110,6 @@ class SSHManager:
         sshtunnel.TUNNEL_TIMEOUT = tunnel_timeout
         sshtunnel.SSH_TIMEOUT = packet_timeout
 
-    # ------------------------------------------------------------------
-    # Alternative constructor — accepts a SupersetSettings instance so
-    # the factory can call ``SSHManager(settings)`` without changes to
-    # downstream call sites.
-    # ------------------------------------------------------------------
     @classmethod
     def from_settings(cls, settings: Any) -> "SSHManager":
         """Construct from a :class:`~superset.config.SupersetSettings` object."""
@@ -166,8 +144,7 @@ class SSHManager:
     ) -> Any:  # sshtunnel.SSHTunnelForwarder
         """Open an SSH tunnel for *sqlalchemy_database_uri*.
 
-        Mirrors the original ``SSHManager.create_tunnel`` 1:1:
-        prefers ``password`` auth, falls back to RSA private key.
+        Prefers ``password`` auth, falls back to RSA private key.
         """
         import sshtunnel
         from paramiko import RSAKey
@@ -205,10 +182,8 @@ class SSHManager:
 class SSHManagerFactory:
     """Process-wide factory / holder for the configured :class:`SSHManager`.
 
-    Matches the original ``superset_old/extensions/ssh.SSHManagerFactory``
-    interface except that ``init_app`` now accepts a
-    :class:`~superset.config.SupersetSettings` object (or any object with
-    the ``ssh_tunnel_*`` attributes) rather than an app instance.
+    ``init_app`` accepts a :class:`~superset.config.SupersetSettings` object
+    (or any object with the ``ssh_tunnel_*`` attributes).
     """
 
     def __init__(self) -> None:

@@ -16,7 +16,6 @@
 # under the License.
 """Flask-free integration tests for the SQLA datasource models.
 
-Ported 1:1 in intent from ``tests/integration_tests/sqla_models_tests.py``.
 These drive the real (synchronous) model query-building / execution paths
 (``get_sqla_query``, ``exc_query``, ``values_for_column``,
 ``get_extra_cache_keys``, ``_normalize_prequery_result_type``) and the async
@@ -71,9 +70,7 @@ VIRTUAL_TABLE_STRING_TYPES: dict[str, Pattern[str]] = {
 }
 
 
-# ---------------------------------------------------------------------------
 # Local no-op gettext (replaces flask_babel ``_``); unused by assertions.
-# ---------------------------------------------------------------------------
 def _(msg: str) -> str:
     return msg
 
@@ -111,7 +108,6 @@ def _example_database() -> Database:
 
 
 def _get_table(name: str) -> SqlaTable:
-    """Port of ``SupersetTestCase.get_table(name=...)`` for the seeded DB."""
     session = get_sync_session()
     return (
         session.query(SqlaTable)
@@ -143,14 +139,10 @@ class TestDatabaseModel:
         assert col.is_temporal is False
 
     def test_temporal_varchar(self):
-        """Ensure a column with is_dttm set to true evaluates to is_temporal == True"""
-
         database = _example_database()
         tbl = SqlaTable(table_name="test_tbl", database=database)
         col = TableColumn(column_name="ds", type="VARCHAR", table=tbl)
-        # by default, VARCHAR should not be assumed to be temporal
         assert col.is_temporal is False
-        # changing to `is_dttm = True`, calling `is_temporal` should return True
         col.is_dttm = True
         assert col.is_temporal is True
 
@@ -237,15 +229,10 @@ class TestDatabaseModel:
         sqla_query = table.get_sqla_query(**base_query_obj)
         query = table.database.compile_sqla_query(sqla_query.sqla_query)
 
-        # assert virtual dataset
         assert "SELECT\n  'user_abc' AS user,\n  'xyz_P1D' AS time_grain" in query
-        # assert dataset calculated column
         assert "case when 'abc' = 'abc' then 'yes' else 'no' end" in query
-        # assert adhoc column
         assert "'foo_P1D'" in query
-        # assert dataset saved metric
         assert "count('bar_P1D')" in query
-        # assert adhoc metric
         assert "SUM(CASE WHEN user = 'user_abc' THEN 1 ELSE 0 END)" in query
 
     @pytest.mark.skip(
@@ -429,7 +416,6 @@ class TestDatabaseModel:
             "extras": {},
         }
 
-        # Table with Jinja callable.
         table = SqlaTable(
             table_name="test_table",
             sql="SELECT '{{ abcd xyz + 1 ASDF }}' as user",
@@ -579,14 +565,11 @@ async def test_fetch_metadata_for_updated_virtual_table(db_session):
     )
     await db_session.refresh(table, ["columns"])
 
-    # make sure the columns have been mapped properly
     assert len(table.columns) == 4
 
     dao = AsyncDatasetDAO(session=db_session)
     await dao.fetch_metadata(table)
 
-    # assert that the removed column has been dropped and
-    # the physical and calculated columns are present
     assert {col.column_name for col in table.columns} == {
         "intcol",
         "strcol",
@@ -594,10 +577,8 @@ async def test_fetch_metadata_for_updated_virtual_table(db_session):
         "expr",
     }
     cols: dict[str, TableColumn] = {col.column_name: col for col in table.columns}
-    # assert that the type for intcol has been updated (asserting CI types)
     backend = table.database.backend
     assert VIRTUAL_TABLE_INT_TYPES[backend].match(cols["intcol"].type)
-    # assert that the expression has been replaced with the new physical column
     assert cols["mycase"].expression == ""
     assert VIRTUAL_TABLE_STRING_TYPES[backend].match(cols["mycase"].type)
     assert cols["expr"].expression == "case when 1 then 1 else 0 end"
@@ -613,11 +594,6 @@ async def _add_column(session, table_id, *, column_name, type, expression=None):
     session.add(col)
     await session.flush()
     return col
-
-
-# ---------------------------------------------------------------------------
-# Text-column query tests (run real SQL against the seeded examples DB).
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -642,7 +618,6 @@ def text_column_table(integration_backend):
 
 
 def test_values_for_column_on_text_column(text_column_table):
-    # null value, empty string and text should be retrieved
     with_null = text_column_table.values_for_column(column_name="foo", limit=10000)
     assert None in with_null
     assert len(with_null) == 8
@@ -676,7 +651,6 @@ def test_values_for_column_on_text_column_with_rls_no_values(text_column_table):
 
 def test_filter_on_text_column(text_column_table):
     table = text_column_table
-    # null value should be replaced
     result_object = table.exc_query(
         {
             "metrics": ["count"],
@@ -686,7 +660,6 @@ def test_filter_on_text_column(text_column_table):
     )
     assert result_object.df["count"][0] == 1
 
-    # also accept None value
     result_object = table.exc_query(
         {
             "metrics": ["count"],
@@ -696,7 +669,6 @@ def test_filter_on_text_column(text_column_table):
     )
     assert result_object.df["count"][0] == 1
 
-    # empty string should be replaced
     result_object = table.exc_query(
         {
             "metrics": ["count"],
@@ -706,7 +678,6 @@ def test_filter_on_text_column(text_column_table):
     )
     assert result_object.df["count"][0] == 1
 
-    # also accept "" string
     result_object = table.exc_query(
         {
             "metrics": ["count"],
@@ -716,7 +687,6 @@ def test_filter_on_text_column(text_column_table):
     )
     assert result_object.df["count"][0] == 1
 
-    # both replaced
     result_object = table.exc_query(
         {
             "metrics": ["count"],
@@ -732,7 +702,6 @@ def test_filter_on_text_column(text_column_table):
     )
     assert result_object.df["count"][0] == 4
 
-    # should filter text in double quotes
     result_object = table.exc_query(
         {
             "metrics": ["count"],
@@ -748,7 +717,6 @@ def test_filter_on_text_column(text_column_table):
     )
     assert result_object.df["count"][0] == 1
 
-    # should filter text in single quotes
     result_object = table.exc_query(
         {
             "metrics": ["count"],
@@ -764,7 +732,6 @@ def test_filter_on_text_column(text_column_table):
     )
     assert result_object.df["count"][0] == 1
 
-    # should filter text with double quote
     result_object = table.exc_query(
         {
             "metrics": ["count"],
@@ -780,7 +747,6 @@ def test_filter_on_text_column(text_column_table):
     )
     assert result_object.df["count"][0] == 1
 
-    # should filter text with single quote
     result_object = table.exc_query(
         {
             "metrics": ["count"],
@@ -827,11 +793,6 @@ def test_should_generate_closed_and_open_time_filter_range(integration_backend):
         }
     )
     assert result_object.df.iloc[0]["count"] == 2
-
-
-# ---------------------------------------------------------------------------
-# physical_dataset: a real physical table created in the examples DB.
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -939,11 +900,6 @@ def test_none_operand_in_filter(physical_dataset):
                     "is_timeseries": False,
                 }
             )
-
-
-# ---------------------------------------------------------------------------
-# extra cache keys
-# ---------------------------------------------------------------------------
 
 
 class _RoledUser:

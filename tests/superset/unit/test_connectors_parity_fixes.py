@@ -14,13 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Parity-fix coverage for ``superset/models/connectors.py``.
-
-Covers three 1:1 regressions vs. ``superset_old``:
-  1. ``SqlaTable.data["time_grain_sqla"]`` populated from engine-spec grains.
-  2. ``SqlaTable.get_extra_cache_keys`` / ``has_extra_cache_key_calls``.
-  3. ``async_values_for_column`` SQL_QUERY_MUTATOR + ``%%``->``%`` + Jinja.
-"""
+"""Parity-fix coverage for superset/models/connectors.py."""
 
 from __future__ import annotations
 
@@ -37,9 +31,6 @@ def _grains():
         TimeGrain(name="Day", label="Day", function="d", duration="P1D"),
         TimeGrain(name="Week", label="Week", function="w", duration="P1W"),
     )
-
-
-# --- Fix 1 ----------------------------------------------------------------
 
 
 def test_time_grain_sqla_populated_from_grains():
@@ -66,13 +57,10 @@ def test_time_grain_sqla_empty_when_no_grains():
     assert [(g.duration, g.name) for g in tbl.database.grains() or []] == []
 
 
-# --- Fix: DATASET_HEALTH_CHECK config hook (was hardcoded None) -----------
-
-
 def test_health_check_message_uses_config_hook(monkeypatch):
-    """``health_check_message`` invokes the configured ``DATASET_HEALTH_CHECK``
-    callable with ``self`` — 1:1 with the original property (was hardcoded
-    ``None``, so a deployed hook was silently ignored)."""
+    """health_check_message was hardcoded None; now invokes the configured
+    DATASET_HEALTH_CHECK callable with self.
+    """
     from superset.models.connectors import SqlaTable
 
     tbl = SqlaTable()
@@ -83,7 +71,6 @@ def test_health_check_message_uses_config_hook(monkeypatch):
 
 
 def test_health_check_message_none_when_hook_unset(monkeypatch):
-    """No configured hook -> None (the default), never a crash."""
     from superset.models.connectors import SqlaTable
 
     tbl = SqlaTable()
@@ -91,9 +78,6 @@ def test_health_check_message_none_when_hook_unset(monkeypatch):
     settings.dataset_health_check = None
     monkeypatch.setattr("superset.config.SupersetSettings", lambda *a, **k: settings)
     assert tbl.health_check_message is None
-
-
-# --- Fix 2 ----------------------------------------------------------------
 
 
 def test_base_datasource_get_extra_cache_keys_default_empty():
@@ -109,8 +93,8 @@ def test_has_extra_cache_key_calls_detects_extracache_macro():
     tbl = SqlaTable()
     tbl.sql = "SELECT * FROM t WHERE x = {{ url_param('a') }}"
     tbl.fetch_values_predicate = None
-    # Isolate the SQL-statement detection path (RLS resolution needs a
-    # request context / metadata DB).
+    # RLS resolution needs a request context / metadata DB; disable to isolate
+    # the SQL-statement path.
     tbl.is_rls_supported = False
     assert tbl.has_extra_cache_key_calls({}) is True
 
@@ -140,13 +124,10 @@ def test_get_extra_cache_keys_returns_empty_when_no_macro_physical():
     from superset.models.connectors import SqlaTable
 
     tbl = SqlaTable()
-    tbl.sql = None  # physical (non-virtual): skips RLS-predicate branch
+    tbl.sql = None
     tbl.fetch_values_predicate = None
     tbl.is_rls_supported = False
     assert tbl.get_extra_cache_keys({}) == []
-
-
-# --- Fix 3 ----------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -178,8 +159,8 @@ async def test_async_values_for_column_applies_mutator_percent_and_jinja(
     col.get_sqla_col.side_effect = fake_get_sqla_col
     tbl.columns = [col]
 
-    # Real dialect (so AST compile works) with _double_percents forced True
-    # -> the %%->% fixup must fire.
+    # _double_percents=True forces %% in the compiled SQL; the fixup must
+    # convert them to %.
     from sqlalchemy.dialects import sqlite
 
     dialect = sqlite.dialect()
@@ -188,8 +169,8 @@ async def test_async_values_for_column_applies_mutator_percent_and_jinja(
     database.get_dialect.return_value = dialect
 
     def fake_mutate(sql):
-        # Inject a doubled-percent literal so we can prove the fixup runs
-        # AFTER the mutator (original order: mutate, then %%->%).
+        # Inject doubled-percent to verify the fixup runs AFTER the mutator
+        # (mutate → %%→%).
         return sql + " /* x LIKE '%%a%%' */"
 
     database.mutate_sql_based_on_config.side_effect = fake_mutate
@@ -220,23 +201,10 @@ async def test_async_values_for_column_applies_mutator_percent_and_jinja(
     result = await tbl.async_values_for_column("country", limit=100)
 
     assert result == ["US", "FR"]
-    # (c) Jinja: the template processor reached get_sqla_col.
     assert captured["tp"] is fake_tp
-    # (a) SQL_QUERY_MUTATOR hook invoked.
     assert database.mutate_sql_based_on_config.called
-    # (b) %%->% fixup ran on the mutated SQL.
     assert "x LIKE '%a%'" in executed["sql"]
     assert "%%" not in executed["sql"]
-
-
-# ---------------------------------------------------------------------------
-# Round-4 crit — async_query must RE-RAISE SupersetErrorException /
-# SupersetErrorsException (OAuth2RedirectError in particular) instead of
-# swallowing them into QueryResult(status='error'). 1:1 with
-# superset_old/connectors/sqla/models.py:1658-1662 ("...they should bubble up
-# ... so they are returned as proper SIP-40 errors ... important for database
-# OAuth2, see SIP-85").
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -268,7 +236,7 @@ async def test_async_query_reraises_superset_error_exception() -> None:
 
 @pytest.mark.asyncio
 async def test_async_query_converts_generic_errors_to_query_result() -> None:
-    """Non-Superset exceptions keep the original behaviour: QueryResult(error)."""
+    """Non-Superset exceptions must be captured as QueryResult(error), not re-raised."""
     from unittest.mock import patch as _patch
 
     from superset.models.connectors import SqlaTable

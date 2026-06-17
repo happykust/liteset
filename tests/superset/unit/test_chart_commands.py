@@ -58,8 +58,6 @@ def mock_dao():
     dao.session.add = MagicMock()
     dao.session.flush = AsyncMock()
     dao.session.delete = AsyncMock()
-    # Owner-tagging / lookups issue ``(await session.execute()).scalars()
-    # .unique().one_or_none()`` / ``.all()`` — all SYNC on the awaited result.
     # A bare AsyncMock makes ``.scalars()`` a coroutine; configure concrete
     # results so those chains don't crash the create/delete tests.
     _res = MagicMock()
@@ -73,10 +71,6 @@ def mock_dao():
 
 
 def _exec_returns(mock_dao, *, unique_one=None, one=None, all_=None):
-    """Make ``session.execute`` resolve to a concrete result. Commands load via
-    ``(await session.execute(stmt)).scalars().unique().one_or_none()`` (chart),
-    ``.scalars().one_or_none()`` (export), or ``.scalars().all()`` (report
-    schedules) — not the ``find_by_id`` the older tests mocked."""
     res = MagicMock()
     res.scalars.return_value.unique.return_value.one_or_none.return_value = unique_one
     res.scalars.return_value.unique.return_value.all.return_value = all_ or []
@@ -99,11 +93,9 @@ def mock_chart():
     chart.uuid = None
     chart.datasource_id = 1
     chart.datasource_type = "table"
-    chart.datasource = None  # No datasource object for export bundling
-    # ``export._export_single`` and ``warm_up`` read ``chart.table`` (the
-    # SqlaTable relationship); a bare MagicMock attribute would be truthy and
-    # send export down the dataset-bundling path (secure_filename(MagicMock)
-    # -> normalize() TypeError). Explicitly clear it.
+    chart.datasource = None
+    # A bare MagicMock .table would be truthy and send export down the
+    # dataset-bundling path (secure_filename(MagicMock) → normalize() TypeError).
     chart.table = None
     return chart
 
@@ -120,7 +112,7 @@ async def test_create_chart_validates_success(mock_dao):
         data={"slice_name": "Test", "viz_type": "table"},
         user_id=1,
     )
-    await cmd.validate()  # Should not raise
+    await cmd.validate()
 
 
 async def test_update_chart_not_found(mock_dao):
@@ -141,15 +133,12 @@ async def test_update_chart_success(mock_dao, mock_chart):
     await cmd.validate()
     result = await cmd.run()
     assert result.slice_name == "Updated"
-    # ``run()`` flushes once for the chart and again inside
-    # ``sync_owner_tags_after_update`` — assert it was awaited (not once).
     mock_dao.session.flush.assert_awaited()
 
 
 async def test_update_chart_normal_save_bumps_last_saved(mock_dao, mock_chart):
     """A normal user save (no ``query_context_generation``) bumps both
-    ``last_saved_by_fk`` and ``last_saved_at`` — 1:1 with upstream
-    ``UpdateChartCommand.run`` (superset_old/commands/chart/update.py:69-71)."""
+    ``last_saved_by_fk`` and ``last_saved_at``."""
     mock_chart.last_saved_by_fk = None
     mock_chart.last_saved_at = None
     _exec_returns(mock_dao, unique_one=mock_chart)
@@ -169,9 +158,8 @@ async def test_update_chart_query_context_regeneration_skips_last_saved(
     mock_dao, mock_chart
 ):
     """A background report/cache worker regenerating the stored
-    ``query_context`` must NOT touch ``last_saved_*`` — upstream gates both
-    assignments on ``query_context_generation`` being falsy
-    (superset_old/commands/chart/update.py:69-71)."""
+    ``query_context`` must NOT touch ``last_saved_*``; both assignments are
+    gated on ``query_context_generation`` being falsy."""
     mock_chart.last_saved_by_fk = None
     mock_chart.last_saved_at = None
     _exec_returns(mock_dao, unique_one=mock_chart)
@@ -183,7 +171,6 @@ async def test_update_chart_query_context_regeneration_skips_last_saved(
     )
     await cmd.validate()
     await cmd.run()
-    # ``last_saved_*`` untouched; ``changed_by_fk`` still tracks the actor.
     assert mock_chart.last_saved_by_fk is None
     assert mock_chart.last_saved_at is None
     assert mock_chart.changed_by_fk == 42
@@ -194,11 +181,10 @@ async def test_update_chart_query_context_regeneration_keeps_owners(
 ):
     """A query-context-only update skips the ownership check so report
     workers and non-owner viewers can refresh the stored ``query_context``
-    — but it must NOT recompute owners.  Upstream gates ``compute_owners``
-    on ``not is_query_context_update(...)``
-    (superset_old/commands/chart/update.py:115-128); recomputing here would
-    prepend the non-admin actor to ``owners`` (compute_owner_list auto-adds
-    a non-admin caller missing from the list) — silent ownership escalation."""
+    — but it must NOT recompute owners.  ``compute_owners`` is gated on
+    ``not is_query_context_update(...)``; recomputing would prepend the
+    non-admin actor to ``owners`` (compute_owner_list auto-adds a non-admin
+    caller missing from the list) — silent ownership escalation."""
     existing_owner = MagicMock()
     existing_owner.id = 7
     mock_chart.owners = [existing_owner]
@@ -220,9 +206,7 @@ async def test_update_chart_query_context_regeneration_keeps_owners(
     )
     await cmd.validate()
     await cmd.run()
-    # Ownership check skipped (that's the point of the qcu path)…
     sm.raise_for_ownership.assert_not_awaited()
-    # …but owners must stay exactly as they were: no actor prepended.
     assert [o.id for o in mock_chart.owners] == [7]
 
 
@@ -235,9 +219,9 @@ async def test_delete_chart_not_found(mock_dao):
 
 async def test_delete_chart_invisible_is_404(mock_dao, mock_chart):
     """A chart outside the caller's visibility scope reads as nonexistent
-    (404), not forbidden (403) — upstream ``ChartDAO.find_by_ids`` applies
+    (404), not forbidden (403): ``ChartDAO.find_by_ids`` applies
     ``ChartFilter`` (base_filter) so invisible ids never reach the ownership
-    check (superset_old/daos/chart.py:40)."""
+    check."""
     import sqlalchemy as sa
 
     mock_dao.find_by_id = AsyncMock(return_value=mock_chart)
@@ -278,7 +262,6 @@ async def test_update_chart_attach_unpublished_dashboard_is_not_found(
     mock_dao.find_dashboards_by_ids = AsyncMock(return_value=[dash])
     sm = AsyncMock()
     sm.find_user_by_id = AsyncMock(return_value=MagicMock(id=42))
-    # Direct-access would PASS (lax, no published req) — the bug used this.
     sm.can_access_dashboard = AsyncMock(return_value=True)
     with patch(
         "superset.db.filters.dashboard_access_filters",
@@ -296,11 +279,9 @@ async def test_update_chart_attach_unpublished_dashboard_is_not_found(
 
 
 async def test_create_chart_invisible_dashboard_is_not_found(mock_dao):
-    """Attaching a new chart to a dashboard the user can't SEE is the 422
-    DashboardsNotFoundValidationError upstream emits (filtered
-    ``DashboardDAO.find_by_ids`` → count mismatch,
-    superset_old/commands/chart/create.py:68-70) — not a 403 that would
-    disclose the dashboard's existence."""
+    """Attaching a new chart to a dashboard the user can't SEE raises 422
+    DashboardsNotFoundValidationError (filtered ``DashboardDAO.find_by_ids``
+    → count mismatch) — not a 403 that would disclose the dashboard's existence."""
     import sqlalchemy as sa
 
     from superset.exceptions import DashboardsNotFoundValidationError
@@ -359,8 +340,6 @@ async def test_export_charts_produces_zip(mock_dao, mock_chart):
         "viz_type": "table",
     }
     _exec_returns(mock_dao, one=mock_chart)
-    # Access gate: count() must equal len(model_ids); filter patched so no
-    # real security_manager is needed.
     mock_dao.count = AsyncMock(return_value=1)
     with patch(
         "superset.db.filters.chart_access_filters",
@@ -381,22 +360,14 @@ async def test_export_charts_produces_zip(mock_dao, mock_chart):
 
 
 async def test_warm_up_cache(mock_dao, mock_chart):
-    # ``run()`` returns a single ``{chart_id, viz_error, viz_status}`` dict
-    # (not a list). The mock chart has no query_context, so the non-legacy
-    # branch raises ``CommandInvalidError`` which the run() try-boundary
-    # catches into ``viz_error`` with ``viz_status`` left ``None`` — exactly
-    # the original's error envelope.
+    # The mock chart has no query_context so the non-legacy branch raises
+    # CommandInvalidError, which run() catches into viz_error with viz_status=None.
     _exec_returns(mock_dao, one=mock_chart)
     cmd = WarmUpChartCacheCommand(dao=mock_dao, chart_id=1)
     result = await cmd.execute()
     assert result["chart_id"] == 1
     assert result["viz_status"] is None
     assert "query context" in result["viz_error"]
-
-
-# ---------------------------------------------------------------------------
-# Ownership checks
-# ---------------------------------------------------------------------------
 
 
 async def test_delete_non_owner_raises_forbidden(mock_dao, mock_chart):
@@ -441,33 +412,17 @@ async def test_bulk_delete_non_owner_raises_forbidden(mock_dao, mock_chart):
         await cmd.validate()
 
 
-# ---------------------------------------------------------------------------
-# NEW-T2: Report schedule guard for DeleteChartCommand
-# ---------------------------------------------------------------------------
-
-
 async def test_delete_chart_with_report_schedules_raises(mock_dao, mock_chart):
-    """DeleteChartCommand blocks deletion when report schedules exist."""
     mock_dao.find_by_id = AsyncMock(return_value=mock_chart)
     report = MagicMock()
     report.name = "Weekly Report"
-    # The guard uses AsyncReportScheduleDAO(session).find_by_chart_ids, which
-    # queries via session.execute().scalars().all() — return a report there.
     _exec_returns(mock_dao, unique_one=mock_chart, all_=[report])
     cmd = DeleteChartCommand(dao=mock_dao, chart_id=1)
-    # Raises ``ChartDeleteFailedReportsExistError`` (a ``CommandInvalidError``
-    # subclass) with the offending report names in the message.
     with pytest.raises(CommandInvalidError, match="associated alerts or reports"):
         await cmd.validate()
 
 
-# ---------------------------------------------------------------------------
-# NEW-T3: CreateChartCommand.run() owner resolution branches
-# ---------------------------------------------------------------------------
-
-
 async def test_create_chart_run_explicit_owners(mock_dao):
-    """run() resolves explicit owner IDs via security_manager."""
     sm = AsyncMock()
     owner_obj = MagicMock()
     owner_obj.id = 10
@@ -498,7 +453,6 @@ async def test_create_chart_run_explicit_owners(mock_dao):
 
 
 async def test_create_chart_run_auto_assign_current_user(mock_dao):
-    """run() auto-assigns current user as owner when no explicit owners."""
     sm = AsyncMock()
     user_obj = MagicMock()
     user_obj.id = 5
@@ -529,7 +483,6 @@ async def test_create_chart_run_auto_assign_current_user(mock_dao):
 
 
 async def test_create_chart_run_user_not_found(mock_dao):
-    """run() handles user not found during auto-assign (owners stays empty)."""
     sm = AsyncMock()
     sm.find_user_by_id = AsyncMock(return_value=None)
 
@@ -554,7 +507,6 @@ async def test_create_chart_run_user_not_found(mock_dao):
         result = await cmd.run()
 
     sm.find_user_by_id.assert_awaited_with(99)
-    # owners should not have been set (no user found)
     assert result.owners == []
 
 
@@ -575,25 +527,14 @@ async def test_export_charts_denies_inaccessible_id(mock_dao):
             await cmd.validate()
 
 
-# ---------------------------------------------------------------------------
-# NEW-T4: Database YAML ``extra`` fixups in chart export
-# These mirror superset_old/commands/database/export.py:80-88 (parse_extra +
-# schemas_allowed_for_file_upload rename).  The chart export builds the DB
-# YAML inline, so it must apply the same two V1-schema-compat fixups.
-# ---------------------------------------------------------------------------
-
-
 async def test_export_chart_db_extra_single_decodes_only(mock_dao):
     """Chart export must decode the database ``extra`` JSON exactly ONCE.
 
-    1:1 with the original: ``ExportChartsCommand._export`` delegates the
-    database YAML to ``ExportDatasetsCommand``
-    (superset_old/commands/chart/export.py:104), whose ``_export`` only does
-    ``payload["extra"] = json.loads(payload["extra"])``
-    (superset_old/commands/dataset/export.py:108-112). The
-    ``parse_extra()`` double-decode of ``schemas_allowed_for_csv_upload``
-    belongs ONLY to ``ExportDatabasesCommand``
-    (superset_old/commands/database/export.py:44-51) and must NOT happen here.
+    ``ExportChartsCommand._export`` delegates the database YAML to
+    ``ExportDatasetsCommand``, whose ``_export`` only does
+    ``payload["extra"] = json.loads(payload["extra"])``.
+    The ``parse_extra()`` double-decode of ``schemas_allowed_for_csv_upload``
+    belongs ONLY to ``ExportDatabasesCommand`` and must NOT happen here.
     """
     import json as _json
     import zipfile
@@ -634,7 +575,6 @@ async def test_export_chart_db_extra_single_decodes_only(mock_dao):
     _exec_returns(mock_dao, one=chart)
     mock_dao.count = AsyncMock(return_value=1)
 
-    # Suppress SSH tunnel lookup
     with (
         patch("superset.db.daos.database.AsyncSSHTunnelDAO", side_effect=ImportError),
         patch(
@@ -653,9 +593,6 @@ async def test_export_chart_db_extra_single_decodes_only(mock_dao):
         db_yaml = yaml.safe_load(zf.read(db_files[0]))
 
     extra = db_yaml.get("extra", {})
-    # ``extra`` itself is decoded to a dict (single json.loads), but the
-    # inner schemas_allowed_for_csv_upload stays a JSON-encoded string —
-    # the dataset-export path performs NO parse_extra() double-decode.
     assert isinstance(extra, dict)
     assert extra.get("schemas_allowed_for_csv_upload") == _json.dumps(
         ["schema1", "schema2"]
@@ -666,11 +603,10 @@ async def test_export_chart_db_extra_keeps_schemas_allowed_for_file_upload(mock_
     """``schemas_allowed_for_file_upload`` must stay unrenamed in chart export.
 
     The ``schemas_allowed_for_file_upload`` →
-    ``schemas_allowed_for_csv_upload`` rename
-    (superset_old/commands/database/export.py:86-89) is performed ONLY by
+    ``schemas_allowed_for_csv_upload`` rename is performed ONLY by
     ``ExportDatabasesCommand``. Chart export delegates the database YAML to
-    ``ExportDatasetsCommand`` (superset_old/commands/chart/export.py:104),
-    which emits the extra dict as-is after a single ``json.loads``."""
+    ``ExportDatasetsCommand``, which emits the extra dict as-is after a
+    single ``json.loads``."""
     import json as _json
     import zipfile
 
@@ -722,7 +658,6 @@ async def test_export_chart_db_extra_keeps_schemas_allowed_for_file_upload(mock_
         db_yaml = yaml.safe_load(zf.read(db_files[0]))
 
     extra = db_yaml.get("extra", {})
-    # The key keeps its modern name — no V1 back-rename in the dataset path.
     assert extra.get("schemas_allowed_for_file_upload") == ["s1", "s2"]
     assert "schemas_allowed_for_csv_upload" not in extra, (
         "the database-export rename must NOT leak into chart export"

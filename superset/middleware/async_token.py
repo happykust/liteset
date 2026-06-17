@@ -16,10 +16,6 @@
 # under the License.
 """Async-token JWT cookie middleware.
 
-1:1 port of the ``@app.after_request`` handler installed by
-``superset_old.async_events.async_query_manager.AsyncQueryManager
-.register_request_handlers``.
-
 Whenever an authenticated user makes a request, this middleware:
 
 * Mints a per-browser ``channel_id`` when needed.  In the original
@@ -61,7 +57,6 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_secret_key(settings: Any) -> str:
-    """Return the JWT signing key (string)."""
     secret = getattr(
         settings,
         "global_async_queries_jwt_secret",
@@ -79,15 +74,7 @@ def _decode_existing_cookie(
     secret_key: str,
     cookie_name: str = "async-token",
 ) -> dict[str, Any] | None:
-    """Decode the named async-token cookie if present.
-
-    Uses *cookie_name* (from ``GLOBAL_ASYNC_QUERIES_JWT_COOKIE_NAME``) to look
-    up the cookie, mirroring ``AsyncQueryManager.register_request_handlers``
-    which reads via ``self._jwt_cookie_name`` (not a hardcoded string).
-
-    Returns the decoded payload dict, or ``None`` if the cookie is
-    missing / malformed / signed with a different key.
-    """
+    """Return decoded JWT payload or None if missing/malformed/wrong key."""
     if not raw:
         return None
     cookie_header = raw.decode("utf-8", errors="replace")
@@ -100,9 +87,9 @@ def _decode_existing_cookie(
     if morsel is None:
         return None
     try:
-        # verify_sub=False: the anonymous cookie carries ``sub=None`` (1:1 with
-        # the original handler); pyjwt >= 2.10 otherwise rejects a null
-        # sub, which would force a needless re-mint on every anonymous response.
+        # verify_sub=False: the anonymous cookie carries ``sub=None``;
+        # pyjwt >= 2.10 otherwise rejects a null sub, which would force
+        # a needless re-mint on every anonymous response.
         return pyjwt.decode(
             morsel.value,
             secret_key,
@@ -121,12 +108,7 @@ def _build_set_cookie(
     samesite: str | None,
     domain: str | None,
 ) -> bytes:
-    """Compose a ``Set-Cookie`` header value for the async-token JWT.
-
-    Mirrors the original ``response.set_cookie`` invocation:
-    ``HttpOnly`` is always set; ``Secure``, ``SameSite`` and ``Domain``
-    are conditional on the matching settings.
-    """
+    """Compose a Set-Cookie header value; HttpOnly always set."""
     parts: list[str] = [f"{name}={token}"]
     parts.append("Path=/")
     parts.append("HttpOnly")
@@ -142,9 +124,6 @@ def _build_set_cookie(
 class AsyncTokenMiddleware(ASGIMiddleware):
     """Mint / refresh the ``async-token`` JWT cookie on each authenticated
     HTTP response.
-
-    Mirrors ``AsyncQueryManager.register_request_handlers`` from the
-    original Superset.
     """
 
     async def handle(
@@ -186,11 +165,7 @@ class AsyncTokenMiddleware(ASGIMiddleware):
     def _resolve_cookie_config(
         scope: Scope,
     ) -> tuple[str, bool, str | None, str | None, str] | None:
-        """Extract cookie config from app state.
-
-        Returns ``(cookie_name, secure, samesite, domain, secret_key)`` or
-        ``None`` if the app / settings are unavailable or no secret key is set.
-        """
+        """Return (cookie_name, secure, samesite, domain, secret_key) or None."""
         app = scope.get("app")
         if app is None:
             return None
@@ -220,12 +195,8 @@ class AsyncTokenMiddleware(ASGIMiddleware):
         existing: dict[str, Any] | None,
         user_id: int,
     ) -> bool:
-        """Return ``True`` when the existing JWT should be replaced.
-
-        Mirrors the four-condition reset logic from the original
-        ``register_request_handlers``: refresh when the cookie is absent or
-        when the ``sub`` claim no longer matches the current user.
-        """
+        """Return True when the cookie is absent or its sub claim no
+        longer matches the current user."""
         if existing is None:
             return True
         sub_claim = existing.get("sub")
@@ -235,24 +206,14 @@ class AsyncTokenMiddleware(ASGIMiddleware):
 
     @staticmethod
     async def _build_cookie_header(scope: Scope) -> bytes | None:
-        """Decide whether to emit a ``Set-Cookie`` header for this response.
-
-        Returns the header value (bytes) or ``None`` to skip.
-        """
-        # Resolve the authenticated user.  Litestar's auth middleware
-        # populates ``scope["user"]`` with the authenticated entity
-        # (CachedUser / GuestUser / UnauthenticatedUser).  Anonymous
-        # callers do not get an async-token cookie — the original only
-        # minted it when ``get_user_id()`` returned a value or the
-        # session claimed an ``async_user_id``.
+        """Return the Set-Cookie header bytes, or None to skip."""
         user = scope.get("user")
         is_authed = bool(getattr(user, "is_authenticated", False))
         user_id: int = getattr(user, "id", None) if is_authed else None  # type: ignore[assignment]
         if not is_authed or not user_id:
-            # Mirror the original "anonymous channel" behaviour: the
-            # original still set a cookie with ``sub=None`` when no
-            # user was logged in, so the polling endpoint could read
-            # events for the duration of the anonymous session.
+            # Anonymous channel: set the cookie with ``sub=None`` when no
+            # user is logged in so the polling endpoint can read events
+            # for the duration of the anonymous session.
             user_id = 0
 
         cookie_config = AsyncTokenMiddleware._resolve_cookie_config(scope)
@@ -260,15 +221,11 @@ class AsyncTokenMiddleware(ASGIMiddleware):
             return None
         cookie_name, secure, samesite, domain, secret_key = cookie_config
 
-        # Find the existing async-token cookie, if any.
         raw_cookie: bytes | None = None
         for name, value in scope.get("headers", []):
             if name == b"cookie":
                 raw_cookie = value
                 break
-        # Pass cookie_name so we look up the configured name, not a hardcoded
-        # "async-token" string — mirrors the original ``request.cookies.get(
-        # self._jwt_cookie_name)`` call in register_request_handlers.
         existing = _decode_existing_cookie(
             raw_cookie, secret_key, cookie_name=cookie_name
         )
@@ -276,10 +233,6 @@ class AsyncTokenMiddleware(ASGIMiddleware):
         if not AsyncTokenMiddleware._needs_token_refresh(existing, user_id):
             return None
 
-        # Mint a fresh per-browser channel id (1:1 with the original
-        # handler which stored a new uuid4 in the session on first contact).
-        # The async-token cookie itself (HttpOnly) persists the channel across
-        # requests for this browser — no Redis look-up needed here.
         channel_id = str(uuid.uuid4())
 
         sub = str(user_id) if user_id else None
@@ -300,22 +253,12 @@ class AsyncTokenMiddleware(ASGIMiddleware):
         )
 
 
-# ---------------------------------------------------------------------------
-# Helpers exposed for the polling endpoint
-# ---------------------------------------------------------------------------
-
-
 def parse_channel_id_from_cookie(
     raw_cookie_header: str | None,
     secret_key: str,
     cookie_name: str = "async-token",
 ) -> str | None:
-    """Decode the ``async-token`` cookie and return its ``channel`` claim.
-
-    Helper for the polling endpoint (``async_event.get_events``) so the
-    poll reads from the same channel that the chart-data submission
-    wrote to.  Returns ``None`` if the cookie is missing or invalid.
-    """
+    """Return the ``channel`` claim from the async-token JWT, or None."""
     if not raw_cookie_header:
         return None
     cookie: SimpleCookie = SimpleCookie()
@@ -347,14 +290,9 @@ def resolve_async_channel_id_from_request(
 ) -> str | None:
     """Resolve the async-query channel id from the request's async-token cookie.
 
-    Single shared helper used by both the chart-data submit path
-    (:func:`superset.controllers.chart.ChartController.get_chart_data` and
-    ``data``) and the polling endpoint
-    (:func:`superset.controllers.async_event.AsyncEventController.get_events`).
-
-    Returns the ``channel`` claim from the JWT, or ``None`` if the cookie is
-    missing or invalid.  Callers decide what to do with ``None`` — the writer
-    raises HTTP 401; the reader falls back to ``user-{id}``.
+    Shared by the chart-data submit path and the polling endpoint.
+    Callers decide what to do with None — the writer raises HTTP 401;
+    the reader falls back to ``user-{id}``.
     """
     try:
         if settings is None:

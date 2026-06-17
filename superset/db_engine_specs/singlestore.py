@@ -150,14 +150,6 @@ class SingleStoreSpec(BasicParametersMixin, BaseEngineSpec):
         cls,
         database: Database,
     ) -> list[str]:
-        """
-        Get a list of function names that are able to be called on the database.
-        Used for SQL Lab autocomplete.
-
-        :param database: The database to get functions for
-        :return: A list of function names usable in the database
-        """
-
         functions: set[str] = {
             "ABS",
             "ACOS",
@@ -491,10 +483,6 @@ class SingleStoreSpec(BasicParametersMixin, BaseEngineSpec):
         if schema:
             uri = uri.set(database=parse.quote(schema, safe=""))
 
-        # Identify the connector to the SingleStore server — 1:1 with upstream
-        # ``connect_args.setdefault("conn_attrs", {...})``. Guard the settings
-        # read so a config-resolution hiccup never blocks engine creation
-        # (upstream's ``app.config.get("VERSION_STRING", "dev")`` is total).
         try:
             from superset.config import SupersetSettings
 
@@ -519,37 +507,17 @@ class SingleStoreSpec(BasicParametersMixin, BaseEngineSpec):
         sqlalchemy_uri: URL,
         connect_args: dict[str, Any],
     ) -> Optional[str]:
-        """
-        Return the configured schema.
-
-        A MySQL database is a SQLAlchemy schema.
-        """
         return parse.unquote(sqlalchemy_uri.database)
 
     @classmethod
     def get_cancel_query_id(cls, cursor: Any, query: Query) -> Optional[str]:
-        """
-        Get SingleStore connection ID and aggregator ID that will be used to cancel all
-        other running queries in the same connection.
-
-        :param cursor: Cursor instance in which the query will be executed
-        :param query: Query instance
-        :return: SingleStore connection ID and aggregator ID
-        """
+        # Returns both CONNECTION_ID and AGGREGATOR_ID so KILL targets the right node.
         cursor.execute("SELECT CONNECTION_ID(), AGGREGATOR_ID()")
         row = cursor.fetchone()
         return " ".join(str(item) for item in row)
 
     @classmethod
     def cancel_query(cls, cursor: Any, query: Query, cancel_query_id: str) -> bool:
-        """
-        Cancel query in the underlying database.
-
-        :param cursor: New cursor instance to the db of the query
-        :param query: Query instance
-        :param cancel_query_id: SingleStore connection ID and aggregator ID
-        :return: True if query cancelled successfully, False otherwise
-        """
         try:
             cursor.execute(f"KILL CONNECTION {cancel_query_id}")
         except Exception:  # pylint: disable=broad-except

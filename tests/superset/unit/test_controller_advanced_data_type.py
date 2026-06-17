@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Tests for AdvancedDataTypeController."""
+"""Unit tests for AdvancedDataTypeController."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from superset.controllers.advanced_data_type import AdvancedDataTypeController
 from superset.exceptions import SupersetValidationException
 from superset.schemas.advanced_data_type import AdvancedDataTypeConvertRequest
 
-# Extract unbound methods to avoid Controller.__init__ requiring an owner.
+# Litestar controller methods require an owner at __init__; extract the raw fn instead.
 _get_types = AdvancedDataTypeController.get_types.fn
 _convert = AdvancedDataTypeController.convert.fn
 _convert_get = AdvancedDataTypeController.convert_get.fn
@@ -46,8 +46,6 @@ def _make_state_with_registry() -> MagicMock:
 async def test_get_types() -> None:
     state = _make_state_with_registry()
     result = await _get_types(self=None, state=state)  # type: ignore[arg-type]
-    # Returns exactly what is in settings.advanced_data_types — no built-in
-    # injection in the controller (mirrors original app.config read).
     assert result == {"result": ["internet_address"]}
 
 
@@ -56,7 +54,7 @@ async def test_get_types_empty() -> None:
     state = MagicMock()
     state.settings = MagicMock(spec=[])
     result = await _get_types(self=None, state=state)  # type: ignore[arg-type]
-    # No settings attribute → getattr fallback is {} → empty list.
+    # spec=[] means no attributes → getattr fallback is {} → empty list.
     assert result == {"result": []}
 
 
@@ -64,10 +62,8 @@ async def test_get_types_empty() -> None:
 async def test_get_types_respects_user_empty_registry() -> None:
     """ADVANCED_DATA_TYPES={} must produce an empty /types list.
 
-    In the original, ``app.config['ADVANCED_DATA_TYPES']`` is read
-    directly (superset_old/advanced_data_type/api.py:148).  If a user
-    sets ``ADVANCED_DATA_TYPES = {}`` the result is ``[]``.  Liteset
-    must not inject built-in types unconditionally.
+    If a user sets ``ADVANCED_DATA_TYPES = {}`` the result is ``[]``;
+    built-in types must not be injected unconditionally.
     """
     state = MagicMock()
     state.settings.advanced_data_types = {}
@@ -79,8 +75,7 @@ async def test_get_types_respects_user_empty_registry() -> None:
 async def test_get_types_custom_registry_only() -> None:
     """Custom ADVANCED_DATA_TYPES without built-ins returns only custom keys.
 
-    Mirrors original behaviour: if a user provides
-    ``ADVANCED_DATA_TYPES = {'my_type': ...}`` the built-in
+    If a user provides ``ADVANCED_DATA_TYPES = {'my_type': ...}`` the built-in
     ``internet_address`` and ``port`` do NOT appear in the response.
     """
     state = MagicMock()
@@ -102,11 +97,7 @@ async def test_convert_success() -> None:
 
 @pytest.mark.asyncio
 async def test_convert_unknown_type() -> None:
-    """Unknown type returns HTTP 400 "Invalid advanced data type: <type>".
-
-    Mirrors superset_old/advanced_data_type/api.py ``get`` which returns
-    ``self.response(400, message="Invalid advanced data type: ...")``.
-    """
+    """Unknown type returns HTTP 400 "Invalid advanced data type: <type>"."""
     state = _make_state_with_registry()
     request_data = AdvancedDataTypeConvertRequest(
         type="unknown_type",
@@ -119,11 +110,11 @@ async def test_convert_unknown_type() -> None:
 
 @pytest.mark.asyncio
 async def test_convert_fetch_data_handler() -> None:
-    """Handler with fetch_data method instead of being directly callable."""
+    """Handler with a fetch_data method (not directly callable) must be
+    dispatched via fetch_data.
+    """
 
     class _Handler:
-        """Non-callable handler that exposes fetch_data."""
-
         def fetch_data(self, values: list[str]) -> list[dict[str, str]]:
             return [{"value": v, "type": "cidr"} for v in values]
 
@@ -140,7 +131,9 @@ async def test_convert_fetch_data_handler() -> None:
 
 @pytest.mark.asyncio
 async def test_convert_not_callable_handler() -> None:
-    """Handler that is neither callable nor has fetch_data."""
+    """Handler that is neither callable nor has fetch_data must raise
+    SupersetValidationException.
+    """
     state = MagicMock()
     state.settings.advanced_data_types = {"bad": "not_a_handler"}
 
@@ -154,11 +147,6 @@ async def test_convert_not_callable_handler() -> None:
 
 def test_controller_path() -> None:
     assert AdvancedDataTypeController.path == "/api/v1/advanced_data_type"
-
-
-# ---------------------------------------------------------------------------
-# convert_get (GET /convert) — RISON parameter validation
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -183,7 +171,7 @@ async def test_convert_get_list_rison_returns_400() -> None:
 
 @pytest.mark.asyncio
 async def test_convert_get_missing_type_returns_400() -> None:
-    """RISON dict missing 'type' key → 400 (mirrors original schema required)."""
+    """RISON dict missing 'type' key → 400 (schema requires it)."""
     state = _make_state_with_registry()
     response = await _convert_get(
         self=None,
@@ -195,7 +183,7 @@ async def test_convert_get_missing_type_returns_400() -> None:
 
 @pytest.mark.asyncio
 async def test_convert_get_missing_values_returns_400() -> None:
-    """RISON dict missing 'values' key → 400 (mirrors original schema required)."""
+    """RISON dict missing 'values' key → 400 (schema requires it)."""
     state = _make_state_with_registry()
     response = await _convert_get(
         self=None,
@@ -226,7 +214,6 @@ async def test_convert_get_success() -> None:
         rison_params={"type": "internet_address", "values": ["10.0.0.1"]},
         state=state,
     )
-    # Returns a plain dict (not Response) on success
     assert isinstance(result, dict)
     assert "result" in result
 

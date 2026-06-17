@@ -23,28 +23,22 @@ import re
 from collections.abc import Sequence
 from typing import Any, cast
 
-# Re-export: the single canonical implementation lives in utils/core.py (ported
-# 1:1 from superset_old/utils/core.py:1678-1722).  The broken Druid-only stub
-# that used to be defined here has been removed; importers that pull this symbol
-# from superset.utils.column (e.g. viz.py) now transparently get the correct one.
+# Re-export: the single canonical implementation lives in utils/core.py.
 from superset.utils.core import get_time_filter_status  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-# Type aliases matching superset's typing
 Column = str | dict[str, Any]
 Metric = str | dict[str, Any]
 
 
 def is_adhoc_metric(metric: Metric) -> bool:
-    """Check if metric is an adhoc metric (dict with expressionType)."""
     return isinstance(metric, dict) and (
         "expressionType" in metric or "expression_type" in metric
     )
 
 
 def is_adhoc_column(column: Column) -> bool:
-    """Check if column is an adhoc column (dict with label and sqlExpression)."""
     return isinstance(column, dict) and (
         {"label", "sqlExpression"}.issubset(column.keys())
         or {"label", "sql_expression"}.issubset(column.keys())
@@ -52,7 +46,6 @@ def is_adhoc_column(column: Column) -> bool:
 
 
 def is_base_axis(column: Column) -> bool:
-    """Check if column is a base axis column."""
     if not isinstance(column, dict):
         return False
     return is_adhoc_column(column) and (
@@ -174,7 +167,6 @@ def get_column_names(
     columns: Sequence[Column] | None,
     verbose_map: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Extract column names from a list of columns."""
     return [
         column
         for column in [get_column_name(column, verbose_map) for column in columns or []]
@@ -186,7 +178,6 @@ def get_metric_names(
     metrics: Sequence[Metric] | None,
     verbose_map: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Extract metric names from a list of metrics."""
     return [
         metric
         for metric in [get_metric_name(metric, verbose_map) for metric in metrics or []]
@@ -195,30 +186,22 @@ def get_metric_names(
 
 
 def get_non_base_axis_columns(columns: list[Column] | None) -> list[Column]:
-    """Return columns that are NOT marked as BASE_AXIS."""
     return [column for column in columns or [] if not is_base_axis(column)]
 
 
 def get_base_axis_columns(columns: list[Column] | None) -> list[Column]:
-    """Return columns marked as BASE_AXIS."""
     return [column for column in columns or [] if is_base_axis(column)]
 
 
 def get_base_axis_labels(columns: list[Column] | None) -> tuple[str, ...]:
-    """Return labels for base axis columns."""
     return tuple(get_column_name(column) for column in get_base_axis_columns(columns))
 
 
 def get_x_axis_label(columns: list[Column] | None) -> str | None:
-    """Return the first base axis label, or None."""
     labels = get_base_axis_labels(columns)
     return labels[0] if labels else None
 
 
-# ---------------------------------------------------------------------------
-# SQL type → inferred pandas type mapping.
-# 1:1 port of superset_old/utils/core.py:132-156.
-# ---------------------------------------------------------------------------
 _TYPE_MAPPING = {
     re.compile(r"INT", re.IGNORECASE): "integer",
     re.compile(r"CHAR|TEXT|VARCHAR", re.IGNORECASE): "string",
@@ -247,11 +230,6 @@ _METRIC_MAP_TYPE = {
 
 
 def _map_sql_type_to_inferred_type(sql_type: str | None) -> str:
-    """Map a SQL type string to a pandas inferred type string.
-
-    1:1 port of ``superset_old/utils/core.py:1540-1564``
-    (``map_sql_type_to_inferred_type``).
-    """
     if not sql_type:
         return "string"
 
@@ -263,11 +241,6 @@ def _map_sql_type_to_inferred_type(sql_type: str | None) -> str:
 
 
 def _get_metric_type_from_column(column: Any, datasource: Any) -> str:
-    """Determine the metric type from a given column in a datasource.
-
-    1:1 port of ``superset_old/utils/core.py:1567-1604``
-    (``get_metric_type_from_column``).
-    """
     from superset.models.connectors import SqlMetric
 
     metric: SqlMetric = next(
@@ -297,8 +270,6 @@ def extract_dataframe_dtypes(
     datasource: Any | None = None,
 ) -> list[int]:
     """Serialize pandas/numpy dtypes to generic types.
-
-    1:1 port of ``superset_old/utils/core.py:1607-1662``.
 
     Handles:
     1. Building ``columns_by_name`` from ``datasource.columns`` (both dict
@@ -369,11 +340,6 @@ def extract_dataframe_dtypes(
 
     return generic_types
 
-
-# ---------------------------------------------------------------------------
-# Utility functions ported from superset_old/utils/core.py
-# Used by ExploreMixin and other query-building code.
-# ---------------------------------------------------------------------------
 
 T = Any  # TypeVar not needed for the simple key-based dedup
 

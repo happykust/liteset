@@ -14,12 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Ported from tests/unit_tests/models/helpers_test.py (Flask-free).
+"""Unit tests for model helper utilities (Flask-free).
 
-The Liteset port keeps the dataset model at ``superset.models.connectors``
+The dataset model lives at ``superset.models.connectors``
 (``superset.connectors.sqla.models`` is now only a thin migration shim).
-``Database.get_sqla_engine`` remains a synchronous context manager, so these
-SQL-compilation tests port over unchanged in intent.
+``Database.get_sqla_engine`` remains a synchronous context manager.
 """
 
 # pylint: disable=import-outside-toplevel
@@ -93,9 +92,6 @@ def test_values_for_column(database: Database) -> None:
 
 
 def test_values_for_column_with_rls(database: Database) -> None:
-    """
-    Test the `values_for_column` method with RLS enabled.
-    """
     from sqlalchemy.sql.elements import TextClause
 
     from superset.models.connectors import SqlaTable, TableColumn
@@ -119,9 +115,6 @@ def test_values_for_column_with_rls(database: Database) -> None:
 
 
 def test_values_for_column_with_rls_no_values(database: Database) -> None:
-    """
-    Test the `values_for_column` method with RLS enabled and no values.
-    """
     from sqlalchemy.sql.elements import TextClause
 
     from superset.models.connectors import SqlaTable, TableColumn
@@ -148,9 +141,6 @@ def test_values_for_column_calculated(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test that calculated columns work.
-    """
     from superset.models.connectors import SqlaTable, TableColumn
 
     table = SqlaTable(
@@ -171,9 +161,6 @@ def test_values_for_column_double_percents(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test the behavior of `double_percents`.
-    """
     from superset.models.connectors import SqlaTable, TableColumn
 
     with database.get_sqla_engine() as engine:
@@ -219,17 +206,10 @@ def test_values_for_column_double_percents(
 
 
 def test_apply_series_others_grouping(database: Database) -> None:
-    """
-    Test the `_apply_series_others_grouping` method.
-
-    This method should replace series columns with CASE expressions that
-    group remaining series into an "Others" category based on a condition.
-    """
     from unittest.mock import Mock
 
     from superset.models.connectors import SqlaTable, TableColumn
 
-    # Create a mock table for testing
     table = SqlaTable(
         database=database,
         schema=None,
@@ -241,7 +221,6 @@ def test_apply_series_others_grouping(database: Database) -> None:
         ],
     )
 
-    # Mock SELECT expressions
     category_expr = Mock()
     category_expr.name = "category"
     metric_expr = Mock()
@@ -251,20 +230,16 @@ def test_apply_series_others_grouping(database: Database) -> None:
 
     select_exprs = [category_expr, metric_expr, other_expr]
 
-    # Mock GROUP BY columns
     groupby_all_columns = {
         "category": category_expr,
         "other_col": other_expr,
     }
 
-    # Define series columns (only category should be modified)
     groupby_series_columns = {"category": category_expr}
 
-    # Create a condition factory that always returns True
     def always_true_condition(col_name: str, expr) -> bool:
         return True
 
-    # Mock the make_sqla_column_compatible method
     def mock_make_compatible(expr, name=None):
         mock_result = Mock()
         mock_result.name = name
@@ -273,7 +248,6 @@ def test_apply_series_others_grouping(database: Database) -> None:
     with patch.object(
         table, "make_sqla_column_compatible", side_effect=mock_make_compatible
     ):
-        # Call the method
         result_select_exprs, result_groupby_columns = (
             table._apply_series_others_grouping(
                 select_exprs,
@@ -283,23 +257,17 @@ def test_apply_series_others_grouping(database: Database) -> None:
             )
         )
 
-        # Verify SELECT expressions
         assert len(result_select_exprs) == 3
 
-        # Category (series column) should be replaced with CASE expression
         category_result = result_select_exprs[0]
         assert category_result.name == "category"  # Should be made compatible
 
-        # Metric (non-series column) should remain unchanged
         assert result_select_exprs[1] == metric_expr
 
-        # Other (non-series column) should remain unchanged
         assert result_select_exprs[2] == other_expr
 
-        # Verify GROUP BY columns
         assert len(result_groupby_columns) == 2
 
-        # Category (series column) should be replaced with CASE expression
         assert "category" in result_groupby_columns
         category_groupby_result = result_groupby_columns["category"]
         # After our fix, GROUP BY expressions are NOT wrapped with
@@ -307,21 +275,14 @@ def test_apply_series_others_grouping(database: Database) -> None:
         # not a Mock with .name attribute. Verify it's different from the original
         assert category_groupby_result != category_expr
 
-        # Other (non-series column) should remain unchanged
         assert result_groupby_columns["other_col"] == other_expr
 
 
 def test_apply_series_others_grouping_with_false_condition(database: Database) -> None:
-    """
-    Test the `_apply_series_others_grouping` method with a condition that returns False.
-
-    This should result in CASE expressions that always use "Others".
-    """
     from unittest.mock import Mock
 
     from superset.models.connectors import SqlaTable, TableColumn
 
-    # Create a mock table for testing
     table = SqlaTable(
         database=database,
         schema=None,
@@ -329,20 +290,16 @@ def test_apply_series_others_grouping_with_false_condition(database: Database) -
         columns=[TableColumn(column_name="category", type="TEXT")],
     )
 
-    # Mock SELECT expressions
     category_expr = Mock()
     category_expr.name = "category"
     select_exprs = [category_expr]
 
-    # Mock GROUP BY columns
     groupby_all_columns = {"category": category_expr}
     groupby_series_columns = {"category": category_expr}
 
-    # Create a condition factory that always returns False
     def always_false_condition(col_name: str, expr) -> bool:
         return False
 
-    # Mock the make_sqla_column_compatible method
     def mock_make_compatible(expr, name=None):
         mock_result = Mock()
         mock_result.name = name
@@ -351,7 +308,6 @@ def test_apply_series_others_grouping_with_false_condition(database: Database) -
     with patch.object(
         table, "make_sqla_column_compatible", side_effect=mock_make_compatible
     ):
-        # Call the method
         result_select_exprs, result_groupby_columns = (
             table._apply_series_others_grouping(
                 select_exprs,
@@ -395,7 +351,6 @@ def test_apply_series_others_grouping_sql_compilation(database: Database) -> Non
         ],
     )
 
-    # Create real SQLAlchemy expressions
     name_col = sa.column("name")
     value_col = sa.column("value")
 
@@ -403,11 +358,9 @@ def test_apply_series_others_grouping_sql_compilation(database: Database) -> Non
     groupby_all_columns = {"name": name_col}
     groupby_series_columns = {"name": name_col}
 
-    # Condition factory that checks if a subquery column is not null
     def condition_factory(col_name: str, expr):
         return sa.column("series_limit.name__").is_not(None)
 
-    # Call the method
     result_select_exprs, result_groupby_columns = table._apply_series_others_grouping(
         select_exprs,
         groupby_all_columns,
@@ -415,11 +368,9 @@ def test_apply_series_others_grouping_sql_compilation(database: Database) -> Non
         condition_factory,
     )
 
-    # Get the database dialect from the actual database
     with database.get_sqla_engine() as engine:
         dialect = engine.dialect
 
-        # Test SELECT expression compilation
         select_case_expr = result_select_exprs[0]
         select_sql = str(
             select_case_expr.compile(
@@ -427,7 +378,6 @@ def test_apply_series_others_grouping_sql_compilation(database: Database) -> Non
             )
         )
 
-        # Test GROUP BY expression compilation
         groupby_case_expr = result_groupby_columns["name"]
         groupby_sql = str(
             groupby_case_expr.compile(
@@ -439,12 +389,9 @@ def test_apply_series_others_grouping_sql_compilation(database: Database) -> Non
     # PostgreSQL/MySQL use single quotes, some might use double quotes
     # The key is that Others should be quoted, not bare
 
-    # Check that 'Others' appears with some form of quotes
-    # and not as a bare identifier
     assert " Others " not in select_sql, "Found unquoted 'Others' in SELECT"
     assert " Others " not in groupby_sql, "Found unquoted 'Others' in GROUP BY"
 
-    # Check for common quoting patterns
     has_single_quotes = "'Others'" in select_sql and "'Others'" in groupby_sql
     has_double_quotes = '"Others"' in select_sql and '"Others"' in groupby_sql
 
@@ -452,11 +399,9 @@ def test_apply_series_others_grouping_sql_compilation(database: Database) -> Non
         "Others literal should be quoted with either single or double quotes"
     )
 
-    # Verify the structure of the generated SQL
     assert "CASE WHEN" in select_sql
     assert "CASE WHEN" in groupby_sql
 
-    # Check that ELSE is followed by a quoted value
     assert "ELSE " in select_sql
     assert "ELSE " in groupby_sql
 
@@ -482,7 +427,6 @@ def test_apply_series_others_grouping_no_label_in_groupby(database: Database) ->
 
     from superset.models.connectors import SqlaTable, TableColumn
 
-    # Create a table instance
     table = SqlaTable(
         database=database,
         schema=None,
@@ -490,7 +434,6 @@ def test_apply_series_others_grouping_no_label_in_groupby(database: Database) ->
         columns=[TableColumn(column_name="category", type="TEXT")],
     )
 
-    # Mock expressions
     category_expr = Mock()
     category_expr.name = "category"
 
@@ -501,7 +444,6 @@ def test_apply_series_others_grouping_no_label_in_groupby(database: Database) ->
     def condition_factory(col_name: str, expr):
         return True
 
-    # Track calls to make_sqla_column_compatible
     with patch.object(
         table, "make_sqla_column_compatible", side_effect=lambda expr, name: expr
     ) as mock_make_compatible:
@@ -514,8 +456,6 @@ def test_apply_series_others_grouping_no_label_in_groupby(database: Database) ->
             )
         )
 
-        # Verify make_sqla_column_compatible was called for SELECT expressions
-        # but NOT for GROUP BY expressions
         calls = mock_make_compatible.call_args_list
 
         # Should have exactly one call (for the SELECT expression)
@@ -525,8 +465,6 @@ def test_apply_series_others_grouping_no_label_in_groupby(database: Database) ->
         # Using unittest.mock.ANY to match any CASE expression
         assert calls[0] == call(ANY, "category")
 
-        # Verify the GROUP BY expression was NOT passed through
-        # make_sqla_column_compatible - it should be the raw CASE expression
         assert "category" in result_groupby_columns
         # The GROUP BY expression should be different from the SELECT expression
         # because only SELECT gets make_sqla_column_compatible applied
@@ -536,9 +474,6 @@ def test_process_orderby_expression_basic(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test basic ORDER BY expression processing.
-    """
     from superset.models.connectors import SqlaTable
 
     table = SqlaTable(
@@ -547,7 +482,6 @@ def test_process_orderby_expression_basic(
         table_name="t",
     )
 
-    # Mock _process_sql_expression to return a processed SELECT statement
     mocker.patch.object(
         table,
         "_process_sql_expression",
@@ -569,9 +503,6 @@ def test_process_orderby_expression_with_case_insensitive_order_by(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test ORDER BY expression processing with case-insensitive matching.
-    """
     from superset.models.connectors import SqlaTable
 
     table = SqlaTable(
@@ -580,7 +511,6 @@ def test_process_orderby_expression_with_case_insensitive_order_by(
         table_name="t",
     )
 
-    # Mock with lowercase "order by"
     mocker.patch.object(
         table,
         "_process_sql_expression",
@@ -602,9 +532,6 @@ def test_process_orderby_expression_complex(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test ORDER BY expression with complex expressions.
-    """
     from superset.models.connectors import SqlaTable
 
     table = SqlaTable(
@@ -635,9 +562,6 @@ def test_process_orderby_expression_none(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test ORDER BY expression processing with None expression.
-    """
     from superset.models.connectors import SqlaTable
 
     table = SqlaTable(
@@ -646,7 +570,6 @@ def test_process_orderby_expression_none(
         table_name="t",
     )
 
-    # Mock should return None when input is None
     mocker.patch.object(
         table,
         "_process_sql_expression",
@@ -668,9 +591,6 @@ def test_process_orderby_expression_empty_string(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test ORDER BY expression processing with empty string.
-    """
     from superset.models.connectors import SqlaTable
 
     table = SqlaTable(
@@ -679,7 +599,6 @@ def test_process_orderby_expression_empty_string(
         table_name="t",
     )
 
-    # Mock should return None for empty string
     mocker.patch.object(
         table,
         "_process_sql_expression",
@@ -701,9 +620,6 @@ def test_process_orderby_expression_strips_whitespace(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test that ORDER BY expression processing strips leading/trailing whitespace.
-    """
     from superset.models.connectors import SqlaTable
 
     table = SqlaTable(
@@ -712,7 +628,6 @@ def test_process_orderby_expression_strips_whitespace(
         table_name="t",
     )
 
-    # Mock with extra whitespace after ORDER BY
     mocker.patch.object(
         table,
         "_process_sql_expression",
@@ -734,9 +649,6 @@ def test_process_orderby_expression_with_template_processor(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test ORDER BY expression with template processor.
-    """
     from unittest.mock import Mock
 
     from superset.models.connectors import SqlaTable
@@ -747,10 +659,8 @@ def test_process_orderby_expression_with_template_processor(
         table_name="t",
     )
 
-    # Create a mock template processor
     template_processor = Mock()
 
-    # Mock the _process_sql_expression to verify it receives the prefixed expression
     mock_process = mocker.patch.object(
         table,
         "_process_sql_expression",
@@ -765,7 +675,6 @@ def test_process_orderby_expression_with_template_processor(
         template_processor=template_processor,
     )
 
-    # Verify _process_sql_expression was called with SELECT prefix
     mock_process.assert_called_once()
     call_args = mock_process.call_args[1]
     assert call_args["expression"] == "SELECT 1 ORDER BY column_name DESC"
@@ -778,9 +687,6 @@ def test_process_select_expression_basic(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test basic SELECT expression processing.
-    """
     from superset.models.connectors import SqlaTable
 
     table = SqlaTable(
@@ -789,7 +695,6 @@ def test_process_select_expression_basic(
         table_name="t",
     )
 
-    # Mock _process_sql_expression to return a processed SELECT statement
     mocker.patch.object(
         table,
         "_process_sql_expression",
@@ -811,9 +716,6 @@ def test_process_select_expression_with_case_insensitive_select(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test SELECT expression processing with case-insensitive matching.
-    """
     from superset.models.connectors import SqlaTable
 
     table = SqlaTable(
@@ -822,7 +724,6 @@ def test_process_select_expression_with_case_insensitive_select(
         table_name="t",
     )
 
-    # Mock with lowercase "select"
     mocker.patch.object(
         table,
         "_process_sql_expression",
@@ -844,9 +745,6 @@ def test_process_select_expression_complex(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test SELECT expression with complex expressions.
-    """
     from superset.models.connectors import SqlaTable
 
     table = SqlaTable(
@@ -877,9 +775,6 @@ def test_process_select_expression_none(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test SELECT expression processing with None expression.
-    """
     from superset.models.connectors import SqlaTable
 
     table = SqlaTable(
@@ -888,7 +783,6 @@ def test_process_select_expression_none(
         table_name="t",
     )
 
-    # Mock should return None when input is None
     mocker.patch.object(
         table,
         "_process_sql_expression",
@@ -910,9 +804,6 @@ def test_process_select_expression_empty_string(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test SELECT expression processing with empty string.
-    """
     from superset.models.connectors import SqlaTable
 
     table = SqlaTable(
@@ -921,7 +812,6 @@ def test_process_select_expression_empty_string(
         table_name="t",
     )
 
-    # Mock should return None for empty string
     mocker.patch.object(
         table,
         "_process_sql_expression",
@@ -943,9 +833,6 @@ def test_process_select_expression_strips_whitespace(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test that SELECT expression processing strips leading/trailing whitespace.
-    """
     from superset.models.connectors import SqlaTable
 
     table = SqlaTable(
@@ -954,7 +841,6 @@ def test_process_select_expression_strips_whitespace(
         table_name="t",
     )
 
-    # Mock with extra whitespace after SELECT
     mocker.patch.object(
         table,
         "_process_sql_expression",
@@ -976,9 +862,6 @@ def test_process_select_expression_with_template_processor(
     mocker: MockerFixture,
     database: Database,
 ) -> None:
-    """
-    Test SELECT expression with template processor.
-    """
     from unittest.mock import Mock
 
     from superset.models.connectors import SqlaTable
@@ -989,10 +872,8 @@ def test_process_select_expression_with_template_processor(
         table_name="t",
     )
 
-    # Create a mock template processor
     template_processor = Mock()
 
-    # Mock the _process_sql_expression to verify it receives the prefixed expression
     mock_process = mocker.patch.object(
         table,
         "_process_sql_expression",
@@ -1007,7 +888,6 @@ def test_process_select_expression_with_template_processor(
         template_processor=template_processor,
     )
 
-    # Verify _process_sql_expression was called with SELECT prefix
     mock_process.assert_called_once()
     call_args = mock_process.call_args[1]
     assert call_args["expression"] == "SELECT some_expression"
@@ -1034,7 +914,6 @@ def test_process_select_expression_distinct_column(
         table_name="t",
     )
 
-    # Mock _process_sql_expression to return a processed SELECT with DISTINCT
     mocker.patch.object(
         table,
         "_process_sql_expression",
@@ -1095,19 +974,12 @@ def test_process_select_expression_end_to_end(database: Database) -> None:
         assert not result.upper().startswith("SELECT"), (
             f"Result still has SELECT prefix: {result}"
         )
-        # The result should contain the core expression (case-insensitive check)
         assert expected.replace(" ", "").lower() in result.replace(" ", "").lower(), (
             f"Expected '{expected}' to be in result '{result}' for input '{expression}'"
         )
 
 
 def test_reapply_query_filters_with_granularity(database: Database) -> None:
-    """
-    Test that _reapply_query_filters correctly applies filters with granularity.
-
-    When granularity is provided, both time_filters and where_clause_and should
-    be combined in the WHERE clause.
-    """
     import sqlalchemy as sa
 
     from superset.models.connectors import SqlaTable, TableColumn
@@ -1119,10 +991,8 @@ def test_reapply_query_filters_with_granularity(database: Database) -> None:
         columns=[TableColumn(column_name="value", type="INTEGER")],
     )
 
-    # Create a simple query
     qry = sa.select(sa.column("value"))
 
-    # Create mock filter conditions
     time_filter = sa.column("time_col") >= "2025-01-01"
     where_filter = sa.column("value") > 10
 
@@ -1130,7 +1000,6 @@ def test_reapply_query_filters_with_granularity(database: Database) -> None:
     where_clause_and = [where_filter]
     having_clause_and: list[ColumnElement] = []
 
-    # Call the method
     result_qry = table._reapply_query_filters(
         qry=qry,
         apply_fetch_values_predicate=False,
@@ -1141,7 +1010,6 @@ def test_reapply_query_filters_with_granularity(database: Database) -> None:
         having_clause_and=having_clause_and,
     )
 
-    # Compile the query to SQL
     with database.get_sqla_engine() as engine:
         sql = str(
             result_qry.compile(
@@ -1149,9 +1017,7 @@ def test_reapply_query_filters_with_granularity(database: Database) -> None:
             )
         )
 
-    # Verify WHERE clause is present
     assert "WHERE" in sql
-    # Both filters should be in the query
     assert "time_col" in sql
     assert "value" in sql
 
@@ -1175,7 +1041,6 @@ def test_reapply_query_filters_without_granularity(database: Database) -> None:
         columns=[TableColumn(column_name="value", type="INTEGER")],
     )
 
-    # Create a simple query
     qry = sa.select(sa.column("value"))
 
     # Empty time_filters (as would happen without granularity)
@@ -1184,7 +1049,6 @@ def test_reapply_query_filters_without_granularity(database: Database) -> None:
     where_clause_and = [where_filter]
     having_clause_and: list[ColumnElement] = []
 
-    # Call the method with granularity=None
     result_qry = table._reapply_query_filters(
         qry=qry,
         apply_fetch_values_predicate=False,
@@ -1195,7 +1059,6 @@ def test_reapply_query_filters_without_granularity(database: Database) -> None:
         having_clause_and=having_clause_and,
     )
 
-    # Compile the query to SQL
     with database.get_sqla_engine() as engine:
         sql = str(
             result_qry.compile(
@@ -1203,17 +1066,11 @@ def test_reapply_query_filters_without_granularity(database: Database) -> None:
             )
         )
 
-    # Verify WHERE clause is present with the where_filter
     assert "WHERE" in sql
     assert "value" in sql
 
 
 def test_reapply_query_filters_with_having_clause(database: Database) -> None:
-    """
-    Test that _reapply_query_filters correctly applies HAVING clause.
-
-    HAVING clauses are used for filtering on aggregated metrics.
-    """
     import sqlalchemy as sa
 
     from superset.models.connectors import SqlaTable, TableColumn
@@ -1225,16 +1082,13 @@ def test_reapply_query_filters_with_having_clause(database: Database) -> None:
         columns=[TableColumn(column_name="value", type="INTEGER")],
     )
 
-    # Create a query with GROUP BY
     qry = sa.select(sa.column("category"), sa.func.sum(sa.column("value"))).group_by(
         sa.column("category")
     )
 
-    # Create HAVING condition
     having_filter = sa.func.sum(sa.column("value")) > 100
     having_clause_and = [having_filter]
 
-    # Call the method
     result_qry = table._reapply_query_filters(
         qry=qry,
         apply_fetch_values_predicate=False,
@@ -1245,7 +1099,6 @@ def test_reapply_query_filters_with_having_clause(database: Database) -> None:
         having_clause_and=having_clause_and,
     )
 
-    # Compile the query to SQL
     with database.get_sqla_engine() as engine:
         sql = str(
             result_qry.compile(
@@ -1253,17 +1106,11 @@ def test_reapply_query_filters_with_having_clause(database: Database) -> None:
             )
         )
 
-    # Verify HAVING clause is present
     assert "HAVING" in sql
     assert "sum" in sql.lower()
 
 
 def test_reapply_query_filters_with_fetch_values_predicate(database: Database) -> None:
-    """
-    Test that _reapply_query_filters applies fetch_values_predicate when enabled.
-
-    Fetch values predicate is used for filtering specific column values.
-    """
     from unittest.mock import Mock
 
     import sqlalchemy as sa
@@ -1277,19 +1124,15 @@ def test_reapply_query_filters_with_fetch_values_predicate(database: Database) -
         columns=[TableColumn(column_name="value", type="INTEGER")],
     )
 
-    # Mock fetch_values_predicate
     fetch_predicate = sa.column("value").in_([1, 2, 3])
     table.fetch_values_predicate = True
 
-    # Mock get_fetch_values_predicate method
     mock_template_processor = Mock()
     with patch.object(
         table, "get_fetch_values_predicate", return_value=fetch_predicate
     ):
-        # Create a simple query
         qry = sa.select(sa.column("value"))
 
-        # Call the method with apply_fetch_values_predicate=True
         result_qry = table._reapply_query_filters(
             qry=qry,
             apply_fetch_values_predicate=True,
@@ -1300,7 +1143,6 @@ def test_reapply_query_filters_with_fetch_values_predicate(database: Database) -
             having_clause_and=[],
         )
 
-        # Compile the query to SQL
         with database.get_sqla_engine() as engine:
             sql = str(
                 result_qry.compile(
@@ -1308,18 +1150,11 @@ def test_reapply_query_filters_with_fetch_values_predicate(database: Database) -
                 )
             )
 
-        # Verify WHERE clause with IN condition is present
         assert "WHERE" in sql
         assert "IN" in sql
 
 
 def test_reapply_query_filters_with_empty_filters(database: Database) -> None:
-    """
-    Test that _reapply_query_filters handles empty filter lists gracefully.
-
-    This is an edge case test to ensure the method doesn't fail when
-    all filter lists are empty.
-    """
     import sqlalchemy as sa
 
     from superset.models.connectors import SqlaTable, TableColumn
@@ -1331,15 +1166,12 @@ def test_reapply_query_filters_with_empty_filters(database: Database) -> None:
         columns=[TableColumn(column_name="value", type="INTEGER")],
     )
 
-    # Create a simple query
     qry = sa.select(sa.column("value"))
 
-    # All empty filter lists
     time_filters: list[ColumnElement] = []
     where_clause_and: list[ColumnElement] = []
     having_clause_and: list[ColumnElement] = []
 
-    # Call the method with empty filters
     result_qry = table._reapply_query_filters(
         qry=qry,
         apply_fetch_values_predicate=False,
@@ -1350,8 +1182,6 @@ def test_reapply_query_filters_with_empty_filters(database: Database) -> None:
         having_clause_and=having_clause_and,
     )
 
-    # Should not raise an error
-    # Compile the query to verify it's valid
     with database.get_sqla_engine() as engine:
         sql = str(
             result_qry.compile(
@@ -1359,7 +1189,6 @@ def test_reapply_query_filters_with_empty_filters(database: Database) -> None:
             )
         )
 
-    # Query should be valid without WHERE or HAVING
     assert "SELECT" in sql
     assert "value" in sql
 
@@ -1383,7 +1212,6 @@ def test_adhoc_column_to_sqla_with_column_reference(database: Database) -> None:
         ],
     )
 
-    # Test: Column reference with spaces should be found in metadata
     col_with_spaces: AdhocColumn = {
         "sqlExpression": "Customer Name",
         "label": "Customer Name",
@@ -1392,7 +1220,6 @@ def test_adhoc_column_to_sqla_with_column_reference(database: Database) -> None:
 
     result = table.adhoc_column_to_sqla(col_with_spaces)
 
-    # Should return a valid SQLAlchemy column
     assert result is not None
     result_str = str(result)
 
@@ -1431,7 +1258,6 @@ def test_adhoc_column_to_sqla_preserves_column_type_for_time_grain(
         ],
     )
 
-    # Test with a DATE column reference with time grain
     date_col: AdhocColumn = {
         "sqlExpression": "local_date",
         "label": "local_date",
@@ -1440,7 +1266,6 @@ def test_adhoc_column_to_sqla_preserves_column_type_for_time_grain(
         "columnType": "BASE_AXIS",
     }
 
-    # Should not raise ColumnNotFoundException
     result = table.adhoc_column_to_sqla(date_col)
 
     assert result is not None
@@ -1451,16 +1276,8 @@ def test_adhoc_column_to_sqla_preserves_column_type_for_time_grain(
 
 
 def test_adhoc_column_to_sqla_with_temporal_column_types(database: Database) -> None:
-    """
-    Test that adhoc_column_to_sqla correctly handles different temporal column types.
-
-    This verifies that for different temporal types (DATE, DATETIME, TIMESTAMP),
-    the column metadata is properly found and the column type is preserved,
-    allowing time grain operations to work correctly.
-    """
     from superset.models.connectors import SqlaTable, TableColumn
 
-    # Test different temporal types
     temporal_types = ["DATE", "DATETIME", "TIMESTAMP"]
 
     for type_name in temporal_types:
@@ -1489,7 +1306,6 @@ def test_adhoc_column_to_sqla_with_temporal_column_types(database: Database) -> 
         assert result is not None
         result_str = str(result)
 
-        # Verify the column name is present
         assert "time_col" in result_str
 
 
@@ -1513,7 +1329,6 @@ def test_adhoc_column_with_spaces_generates_quoted_sql(database: Database) -> No
         ],
     )
 
-    # Test column reference with spaces
     col_with_spaces: AdhocColumn = {
         "sqlExpression": "Customer Name",
         "label": "Customer Name",
@@ -1522,7 +1337,6 @@ def test_adhoc_column_with_spaces_generates_quoted_sql(database: Database) -> No
 
     result = table.adhoc_column_to_sqla(col_with_spaces)
 
-    # Compile the column to SQL to see how it's rendered
     with database.get_sqla_engine() as engine:
         sql = str(
             result.compile(
@@ -1534,7 +1348,6 @@ def test_adhoc_column_with_spaces_generates_quoted_sql(database: Database) -> No
     # Column names with spaces MUST be quoted in SQL
     assert '"Customer Name"' in sql, f"Expected quoted column name in SQL: {sql}"
 
-    # Also test that it works in a query context
     col_numeric: AdhocColumn = {
         "sqlExpression": "Order Total",
         "label": "Order Total",
@@ -1552,7 +1365,7 @@ def test_adhoc_column_with_spaces_generates_quoted_sql(database: Database) -> No
 
     assert '"Order Total"' in sql_numeric, (
         f"Expected quoted column name in SQL: {sql_numeric}"
-    )
+    )  # noqa: E501
 
 
 def test_adhoc_column_with_spaces_in_full_query(database: Database) -> None:
@@ -1576,7 +1389,6 @@ def test_adhoc_column_with_spaces_in_full_query(database: Database) -> None:
         ],
     )
 
-    # Create adhoc columns for both columns with spaces
     customer_col: AdhocColumn = {
         "sqlExpression": "Customer Name",
         "label": "Customer Name",
@@ -1589,15 +1401,12 @@ def test_adhoc_column_with_spaces_in_full_query(database: Database) -> None:
         "isColumnReference": True,
     }
 
-    # Get SQLAlchemy columns
     customer_sqla = table.adhoc_column_to_sqla(customer_col)
     order_sqla = table.adhoc_column_to_sqla(order_col)
 
-    # Build a full query
     tbl = table.get_sqla_table()
     query = sa.select(customer_sqla, order_sqla).select_from(tbl)
 
-    # Compile to SQL
     with database.get_sqla_engine() as engine:
         sql = str(
             query.compile(
@@ -1605,10 +1414,8 @@ def test_adhoc_column_with_spaces_in_full_query(database: Database) -> None:
             )
         )
 
-    # Verify both column names are quoted in the final SQL
     assert '"Customer Name"' in sql, f"Customer Name not properly quoted in SQL: {sql}"
     assert '"Order Total"' in sql, f"Order Total not properly quoted in SQL: {sql}"
 
-    # Verify SELECT and FROM clauses are present
     assert "SELECT" in sql
     assert "FROM" in sql

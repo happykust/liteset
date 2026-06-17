@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dataset/warm_up_cache.py``."""
+"""Command to warm up the cache for all charts referencing a dataset."""
 
 from __future__ import annotations
 
@@ -69,11 +69,8 @@ class WarmUpDatasetCacheCommand(AsyncBaseCommand[list[dict[str, Any]]]):
         if table is None:
             raise WarmUpCacheTableNotFoundError()
 
-        # Eager-load the full chain the chart warm-up command's run() reads
-        # synchronously (datasource → database/columns/metrics, owners) — the
-        # charts are passed as already-loaded instances (upstream passed the
-        # Slice object and validate() short-circuited; re-fetching per chart
-        # was an N-query regression).
+        # Eager-load the full chain so charts are passed as already-loaded
+        # instances — avoids an N-query regression from re-fetching per chart.
         charts_stmt = (
             select(Slice)
             .where(
@@ -96,16 +93,11 @@ class WarmUpDatasetCacheCommand(AsyncBaseCommand[list[dict[str, Any]]]):
         chart_dao = AsyncChartDAO(self._dao.session)
         results: list[dict[str, Any]] = []
         for chart in self._charts:
-            # Pass the already-loaded Slice — 1:1 with upstream where
-            # ChartWarmUpCacheCommand.validate() returns immediately for a
-            # Slice instance (no per-chart re-fetch).
             cmd = WarmUpChartCacheCommand(
                 dao=chart_dao,
                 chart=chart,
                 dashboard_id=self._dashboard_id,
                 extra_filters=self._extra_filters,
-                # Threads the access gate (raise_for_access) and RLS cache
-                # key into the per-chart warm-up — 1:1 upstream (R11-06).
                 security_manager=self._security_manager,
                 current_user=self._current_user,
             )

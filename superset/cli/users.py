@@ -31,10 +31,6 @@ import click
 
 from superset.utils.password import generate_password_hash as _hash_password
 
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
-
 
 def _get_async_session_factory() -> tuple[Any, Any]:
     """Create an async session factory from current settings."""
@@ -49,11 +45,6 @@ def _get_async_session_factory() -> tuple[Any, Any]:
         settings.sqlalchemy_database_uri,
     )
     return create_session_factory(engine), engine
-
-
-# ------------------------------------------------------------------
-# create-admin
-# ------------------------------------------------------------------
 
 
 @click.command("create-admin")
@@ -77,7 +68,6 @@ def create_admin(
 
         session_factory, engine = _get_async_session_factory()
         async with session_factory() as session:
-            # Check if user already exists
             result = await session.execute(
                 text("SELECT id FROM ab_user WHERE username = :u"),
                 {"u": username},
@@ -96,7 +86,6 @@ def create_admin(
                 await engine.dispose()
                 return
 
-            # Find or create Admin role
             result = await session.execute(
                 text("SELECT id FROM ab_role WHERE name = 'Admin'"),
             )
@@ -110,7 +99,6 @@ def create_admin(
                 return
             role_id = role_row[0]
 
-            # Insert user
             now = datetime.now(timezone.utc).replace(tzinfo=None)
             hashed = _hash_password(password)
             await session.execute(
@@ -132,14 +120,12 @@ def create_admin(
                 },
             )
 
-            # Get the new user's id
             result = await session.execute(
                 text("SELECT id FROM ab_user WHERE username = :u"),
                 {"u": username},
             )
             user_id = result.scalar_one()
 
-            # Associate user with Admin role
             await session.execute(
                 text("INSERT INTO ab_user_role (user_id, role_id) VALUES (:uid, :rid)"),
                 {"uid": user_id, "rid": role_id},
@@ -150,11 +136,6 @@ def create_admin(
         await engine.dispose()
 
     anyio.run(_create)
-
-
-# ------------------------------------------------------------------
-# create-user
-# ------------------------------------------------------------------
 
 
 @click.command("create-user")
@@ -180,7 +161,6 @@ def create_user(
 
         session_factory, engine = _get_async_session_factory()
         async with session_factory() as session:
-            # Check duplicates
             result = await session.execute(
                 text("SELECT id FROM ab_user WHERE username = :u"),
                 {"u": username},
@@ -211,7 +191,6 @@ def create_user(
                 return
             role_id = role_row[0]
 
-            # Insert user
             now = datetime.now(timezone.utc).replace(tzinfo=None)
             hashed = _hash_password(password)
             await session.execute(
@@ -249,11 +228,6 @@ def create_user(
         await engine.dispose()
 
     anyio.run(_create)
-
-
-# ------------------------------------------------------------------
-# reset-password
-# ------------------------------------------------------------------
 
 
 @click.command("reset-password")
@@ -296,11 +270,6 @@ def reset_password(username: str, password: str) -> None:
     anyio.run(_reset)
 
 
-# ------------------------------------------------------------------
-# list-users
-# ------------------------------------------------------------------
-
-
 @click.command("list-users")
 def list_users() -> None:
     """List all users."""
@@ -336,13 +305,7 @@ def list_users() -> None:
     anyio.run(_list)
 
 
-# ------------------------------------------------------------------
-# load-test-users (development helper)
-# ------------------------------------------------------------------
-
-
 _TEST_USERS = [
-    # (username, first_name, last_name, email, role)
     # Must match original FAB test users exactly: first_name=username,
     # last_name="user", email=username@fab.org — Cypress tests assert on
     # the rendered "alpha user" string and email addresses.
@@ -366,9 +329,6 @@ def load_test_users(password: str) -> None:  # noqa: C901  # complex business lo
     import anyio
 
     async def _load() -> None:  # noqa: C901  # complex business logic
-        # 1:1 with upstream ``superset_old/cli/test.py:42``: the whole body is
-        # gated on the TESTING flag so dev-only users (admin/general etc.) can't
-        # be seeded into a production deployment.
         from superset.config import SupersetSettings
 
         if not SupersetSettings().testing:  # type: ignore[call-arg]
@@ -393,9 +353,7 @@ def load_test_users(password: str) -> None:  # noqa: C901  # complex business lo
 
             # -----------------------------------------------------------
             # Sync standard FAB roles (Admin, Alpha, Gamma, Public,
-            # sql_lab) BEFORE creating users.  Mirrors the original
-            # superset_old/cli/test.py:49 which calls
-            # ``sm.sync_role_definitions()`` first; without this, the
+            # sql_lab) BEFORE creating users.  Without this, the
             # subsequent user creation loop cannot find the "Admin" /
             # "Alpha" / "Gamma" / "sql_lab" roles (they are created by
             # ``superset init``, which runs AFTER ``load_test_users`` in
@@ -418,12 +376,11 @@ def load_test_users(password: str) -> None:  # noqa: C901  # complex business lo
 
             # -----------------------------------------------------------
             # Resolve the example DB's ``database_access`` PVM so the custom
-            # test roles can run SQL Lab against the examples database — 1:1
-            # with upstream cli/test.py:50-55 (examples_pv granted to BOTH
-            # gamma_sqllab and gamma_no_csv). Mirror upstream's
-            # ``get_example_database()`` (get_or_create_db) but in THIS async
-            # session, not its separate sync session, to avoid a cross-session
-            # identity mismatch when appending the PVM to the roles below.
+            # test roles can run SQL Lab against the examples database
+            # (examples_pv granted to BOTH gamma_sqllab and gamma_no_csv).
+            # Uses THIS async session rather than a separate sync session to
+            # avoid a cross-session identity mismatch when appending the PVM to
+            # the roles below.
             # -----------------------------------------------------------
             from sqlalchemy import select as _select
 
@@ -449,8 +406,7 @@ def load_test_users(password: str) -> None:  # noqa: C901  # complex business lo
             )
 
             # -----------------------------------------------------------
-            # Create custom test roles (gamma_sqllab, gamma_no_csv)
-            # matching original superset_old/cli/test.py:50-61.
+            # Create custom test roles (gamma_sqllab, gamma_no_csv).
             #
             # gamma_sqllab = Gamma + sql_lab permissions
             # gamma_no_csv = Gamma + sql_lab permissions MINUS "can csv on Superset"
@@ -500,26 +456,18 @@ def load_test_users(password: str) -> None:  # noqa: C901  # complex business lo
                     new_role.permissions.append(examples_pv)
 
                 await session.flush()
-                # Count the permissions actually assigned, not ``seen_pv_ids``
-                # (which includes the skipped ``can csv on Superset`` PV for
-                # gamma_no_csv → an off-by-one in the message).
                 click.secho(
                     f"  Created role: {custom_role_name} "
                     f"({len(new_role.permissions)} permissions)",
                     fg="green",
                 )
 
-            # -----------------------------------------------------------
-            # Create test users matching original cli/test.py:63-81
-            # -----------------------------------------------------------
             for uname, fname, lname, email, role_name in _TEST_USERS:
-                # Skip if already exists
                 existing_user = await dao.get_user_by_username(uname)
                 if existing_user is not None:
                     click.echo(f"  User {uname} already exists, skipping.")
                     continue
 
-                # Find role
                 role = await dao.get_role_by_name(role_name)
                 if role is None:
                     click.secho(
@@ -549,17 +497,11 @@ def load_test_users(password: str) -> None:  # noqa: C901  # complex business lo
     anyio.run(_load)
 
 
-# ------------------------------------------------------------------
-# fab sub-group (backward-compatible aliases)
-# ------------------------------------------------------------------
-
-
 @click.group("fab")
 def fab_group() -> None:
     """FAB-compatible commands (backward compatibility)."""
 
 
-# Register aliases in the fab sub-group
 fab_group.add_command(create_admin, "create-admin")
 fab_group.add_command(create_user, "create-user")
 fab_group.add_command(list_users, "list-users")

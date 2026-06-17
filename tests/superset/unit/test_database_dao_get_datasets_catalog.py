@@ -15,11 +15,10 @@
 # specific language governing permissions and limitations
 # under the License.
 """R13-08: ``get_datasets`` must filter catalog/schema UNCONDITIONALLY when
-the argument is supplied (``None`` → ``IS NULL``), 1:1 with upstream
-``DatabaseDAO.get_datasets``. The previous conditional semantics made
-``SyncPermissionsCommand`` rewrite perms on datasets of ALL catalogs when
-``catalog=None``. Omitting the argument keeps the all-datasets contract that
-the export flow relies on.
+the argument is supplied (``None`` → ``IS NULL``). The previous conditional
+semantics made ``SyncPermissionsCommand`` rewrite perms on datasets of ALL
+catalogs when ``catalog=None``. Omitting the argument keeps the all-datasets
+contract that the export flow relies on.
 """
 
 from __future__ import annotations

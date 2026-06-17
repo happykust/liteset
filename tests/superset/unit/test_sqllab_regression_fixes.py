@@ -322,7 +322,7 @@ def _http_status_from_result(result_dict: dict) -> int:
 def test_execute_status_code_idempotency_running_is_200() -> None:
     """Re-submitted RUNNING query → HTTP 200, not 202.
 
-    1:1 with original: QUERY_ALREADY_CREATED != QUERY_IS_RUNNING → 200.
+    QUERY_ALREADY_CREATED != QUERY_IS_RUNNING → 200.
     """
     result = {"status": "running", "query_already_created": True}
     assert _http_status_from_result(result) == 200
@@ -337,7 +337,7 @@ def test_execute_status_code_idempotency_pending_is_200() -> None:
 def test_execute_status_code_fresh_celery_dispatch_is_202() -> None:
     """Fresh Celery job (no query_already_created flag, status=running) → HTTP 202.
 
-    1:1 with original: QUERY_IS_RUNNING → 202.
+    QUERY_IS_RUNNING → 202.
     """
     result = {"status": "running"}
     assert _http_status_from_result(result) == 202
@@ -362,9 +362,7 @@ def test_execute_status_code_query_already_created_not_in_serialized_payload() -
 
 # ---------------------------------------------------------------------------
 # Round-4 fix — pre-execution-check exceptions from execute_sql_statements
-# map to SupersetErrorsException with the DEFAULT status (HTTP 500), 1:1 with
-# handle_query_error (superset_old/sql_lab.py:108-114) + the sync executor
-# (superset_old/sqllab/sql_json_executer.py:107-112). NOT 422.
+# map to SupersetErrorsException with the DEFAULT status (HTTP 500). NOT 422.
 # ---------------------------------------------------------------------------
 
 

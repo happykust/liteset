@@ -21,13 +21,12 @@ Regression guard for the finding:
     Non-existent physical table returns HTTP 200 with empty list instead of
     HTTP 404 when ``_inspect_sync`` swallows ``NoSuchTableError``.
 
-Original behaviour documented in
-``superset_old/connectors/sqla/utils.py:59-61``::
+The correct logic is::
 
     if not (database.has_table(table) or database.has_view(table)):
         raise NoSuchTableError(table)
 
-and ``superset_old/views/datasource/views.py:190-191``::
+and::
 
     except (NoResultFound, NoSuchTableError) as ex:
         raise DatasetNotFoundError() from ex  # → HTTP 404
@@ -52,10 +51,6 @@ from superset.controllers.legacy_datasource import (
 )
 from superset.sql.parse import Table
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _get_raw_method(method_name: str) -> Any:
     handler = getattr(LegacyDatasourceController, method_name)
@@ -71,7 +66,6 @@ def _make_mock_inspector(
     views: list[str] | None = None,
     columns: list[dict[str, Any]] | None = None,
 ) -> MagicMock:
-    """Build a minimal SQLAlchemy Inspector mock."""
     inspector = MagicMock()
     inspector.has_table.return_value = table_exists
     inspector.get_view_names.return_value = views or []
@@ -82,8 +76,6 @@ def _make_mock_inspector(
 
 
 def _make_async_conn(inspector: MagicMock) -> AsyncMock:
-    """Build an async connection whose run_sync calls the sync function."""
-
     async def _run_sync(fn: Any, *args: Any, **kwargs: Any) -> Any:
         return fn(_connection_inner)
 
@@ -95,8 +87,6 @@ def _make_async_conn(inspector: MagicMock) -> AsyncMock:
 
 @contextlib.asynccontextmanager
 async def _async_conn_cm(inspector: MagicMock):  # type: ignore[misc]
-    """Async context manager that yields (mock_conn, mock_spec)."""
-
     async def _run_sync(fn: Any, *args: Any, **kwargs: Any) -> Any:
         with patch("sqlalchemy.inspect", return_value=inspector):
             return fn(MagicMock())
@@ -104,11 +94,6 @@ async def _async_conn_cm(inspector: MagicMock):  # type: ignore[misc]
     conn = AsyncMock()
     conn.run_sync = _run_sync
     yield conn, MagicMock()
-
-
-# ---------------------------------------------------------------------------
-# _get_physical_table_metadata_async — unit tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -122,8 +107,6 @@ async def test_physical_metadata_raises_no_such_table_for_missing_table() -> Non
     database = MagicMock()
     table = Table("nonexistent_table", None)
 
-    # get_async_connection is a local import inside _get_physical_table_metadata_async;
-    # patch at the source module so the function sees the patched version.
     with patch(
         "superset.utils.database.get_async_connection",
         new=lambda db: _async_conn_cm(inspector),
@@ -154,7 +137,6 @@ async def test_physical_metadata_view_exists_returns_columns() -> None:
         new=lambda db: _async_conn_cm(inspector),
     ):
         result = await _get_physical_table_metadata_async(database, table)
-    # View exists → should return column metadata, not raise
     assert isinstance(result, list)
     assert len(result) == 1
     assert result[0]["name"] == "col1"
@@ -192,7 +174,6 @@ async def test_physical_metadata_returns_columns_for_existing_table() -> None:
     assert result[0]["name"] == "id"
     assert result[0]["type"] == "INTEGER"
     assert result[1]["name"] == "name"
-    # Type string with "(" is truncated to prefix
     assert result[1]["type"] == "VARCHAR"
     assert result[1]["longType"] == "VARCHAR(255)"
     assert result[1]["comment"] == "user name"
@@ -225,19 +206,11 @@ async def test_physical_metadata_normalize_columns() -> None:
     assert result[0]["name"] == "userid"
 
 
-# ---------------------------------------------------------------------------
-# external_metadata_by_name — integration of the 404 path
-# ---------------------------------------------------------------------------
-
-
 def _make_ds_dao_mock(database_obj: Any) -> AsyncMock:
-    """Build a minimal ds_dao mock for external_metadata_by_name."""
     dao = AsyncMock()
-    # session.execute returns scalars().first() == database_obj
     exec_result = MagicMock()
     exec_result.scalars.return_value.first.return_value = database_obj
     dao.session.execute = AsyncMock(return_value=exec_result)
-    # _get_datasource_by_name internal query (second session.execute call)
     return dao
 
 
@@ -252,11 +225,9 @@ async def test_external_metadata_by_name_404_for_nonexistent_table() -> None:
 
     database_mock = MagicMock()
 
-    # First session.execute (for _get_datasource_by_name) returns no rows
     ds_result = MagicMock()
     ds_result.scalars.return_value.all.return_value = []
 
-    # Second session.execute (for Database lookup) returns the database mock
     db_result = MagicMock()
     db_result.scalars.return_value.first.return_value = database_mock
 
@@ -310,6 +281,7 @@ async def test_external_metadata_by_name_200_for_existing_table() -> None:
             "schema_name": "public",
         }
     )
+
     request.query_params = {"q": q_val}
 
     cols = [{"name": "id", "type": "INTEGER", "longType": "INTEGER", "comment": None}]
@@ -326,23 +298,10 @@ async def test_external_metadata_by_name_200_for_existing_table() -> None:
     assert response.content == cols
 
 
-# ---------------------------------------------------------------------------
-# save() — database_id unconditional assignment (regression for null edge case)
-# ---------------------------------------------------------------------------
-# Original: superset_old/views/datasource/views.py:87+91
-#   database_id = datasource_dict["database"].get("id")
-#   orm_datasource.database_id = database_id   ← NO None guard
-#
-# Regression: liteset guarded with ``if database_id is not None:`` which
-# silently skipped the assignment for ``{"database": {"id": null}}``.  Fix
-# removes the guard so the original unconditional write is preserved.
-# ---------------------------------------------------------------------------
-
 _save = LegacyDatasourceController.save.fn  # type: ignore[attr-defined]
 
 
 def _make_save_request(payload: dict[str, Any]) -> MagicMock:
-    """Build a minimal Litestar Request mock for the save endpoint."""
     request = MagicMock()
     form_data = MagicMock()
     form_data.get = lambda key, default=None: (
@@ -354,7 +313,6 @@ def _make_save_request(payload: dict[str, Any]) -> MagicMock:
 
 
 def _make_ds_dao_for_save(orm_datasource: Any) -> AsyncMock:
-    """Build a minimal ds_dao mock for the save endpoint."""
     ds_dao = AsyncMock()
     ds_dao.get_datasource = AsyncMock(return_value=orm_datasource)
     ds_dao.session = AsyncMock()
@@ -389,7 +347,6 @@ async def test_save_assigns_database_id_none_when_explicitly_null() -> None:
     ds_dao = _make_ds_dao_for_save(orm_datasource)
     current_user = MagicMock()
 
-    # Prevent actual security-manager construction and to_thread execution.
     mock_sec_mgr = MagicMock()
     mock_sec_mgr.raise_for_access = AsyncMock(return_value=None)
     mock_sec_mgr.find_user_by_id = AsyncMock(return_value=MagicMock(id=1))
@@ -412,9 +369,7 @@ async def test_save_assigns_database_id_none_when_explicitly_null() -> None:
             current_user=current_user,
         )
 
-    # Must succeed (200) — the None write should not cause an early return.
     assert response.status_code == 200
-    # The key assertion: database_id was set to None, not silently skipped.
     assert orm_datasource.database_id is None
 
 
@@ -430,7 +385,7 @@ async def test_save_assigns_database_id_integer_value() -> None:
         "type": "table",
         "database": {"id": 42},
         "columns": [],
-        "owners": [],  # required — see test above
+        "owners": [],
     }
     request = _make_save_request(payload)
     ds_dao = _make_ds_dao_for_save(orm_datasource)
@@ -462,10 +417,6 @@ async def test_save_assigns_database_id_integer_value() -> None:
     assert orm_datasource.database_id == 42
 
 
-# ---------------------------------------------------------------------------
-# samples — failure statuses must be 422 (DatasetSamplesFailedError semantics)
-# ---------------------------------------------------------------------------
-
 _samples = _get_raw_method("samples")
 
 
@@ -481,7 +432,6 @@ def _samples_params() -> dict[str, Any]:
 
 
 def _samples_mocks() -> tuple[Any, Any, Any]:
-    """(request, ds_dao, current_user) for the samples handler."""
     request = MagicMock()
     datasource = MagicMock()
     datasource.type = "table"
@@ -494,7 +444,6 @@ def _samples_mocks() -> tuple[Any, Any, Any]:
 
 
 async def _run_samples_with(count_payload: Any, sample_payload: Any) -> Any:
-    """Drive the samples handler with stubbed query-context processors."""
     import types
 
     request, ds_dao, current_user = _samples_mocks()
@@ -541,11 +490,9 @@ async def _run_samples_with(count_payload: Any, sample_payload: Any) -> Any:
 
 @pytest.mark.asyncio
 async def test_samples_count_query_failed_returns_422() -> None:
-    """count(*) status=failed → 422, 1:1 with DatasetSamplesFailedError.
+    """count(*) status=failed → 422 (DatasetSamplesFailedError / CommandInvalidError).
 
-    Original: superset_old/views/datasource/utils.py:158-159 raises
-    ``DatasetSamplesFailedError`` (CommandInvalidError → status 422,
-    superset_old/commands/exceptions.py:54-57); ``@handle_api_exception``
+    ``DatasetSamplesFailedError`` maps to status 422; ``@handle_api_exception``
     returns ``ex.status`` — NOT 400.
     """
     response = await _run_samples_with(

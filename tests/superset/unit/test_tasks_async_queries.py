@@ -19,9 +19,9 @@
 The Liteset port builds the query context via the module-level helper
 ``_create_query_context_from_form`` (the async replacement for the original
 ``ChartDataQueryContextSchema().load(form_data)``) and publishes job status
-through the synchronous ``_update_job`` Redis-Streams helper. The intent
-mirrors upstream: when query-context construction fails, the task must mark
-the job failed (status ``error`` with the error message) and re-raise.
+through the synchronous ``_update_job`` Redis-Streams helper. When
+query-context construction fails, the task must mark the job failed
+(status ``error`` with the error message) and re-raise.
 """
 
 from unittest import mock
@@ -33,7 +33,6 @@ from superset.tasks import async_queries
 
 
 def _noop_gettext(message: str) -> str:
-    """Local no-op replacement for ``flask_babel.lazy_gettext``."""
     return message
 
 
@@ -45,7 +44,6 @@ def test_load_chart_data_into_cache_with_error(
     mock_update_job,
     mock_get_sync_session,
 ) -> None:
-    """Test that the task is gracefully marked failed in event of error."""
     from superset.tasks.async_queries import load_chart_data_into_cache
 
     job_metadata = {"user_id": 1}

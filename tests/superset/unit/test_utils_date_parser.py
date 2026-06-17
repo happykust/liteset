@@ -14,9 +14,9 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Ported from tests/unit_tests/utils/date_parser_tests.py (Flask-free).
+"""Unit tests for date-parsing functions and related helpers.
 
-In the Liteset port the date-parsing functions and the
+The date-parsing functions and the
 ``TimeRangeAmbiguousError`` / ``TimeRangeParseFailError`` exceptions live in
 ``superset.utils.date`` (the original imported the latter from
 ``superset.commands.chart.exceptions``). ``DateRangeMigration`` still lives in
@@ -233,7 +233,7 @@ def test_get_since_until() -> None:
     expected = expected = datetime(2016, 1, 1, 0, 0, 0), datetime(2017, 1, 1, 0, 0, 0)
     assert result == expected
 
-    # Tests for our new instant_time_comparison logic and Feature Flag off
+    # instant_time_comparison is inert while CHART_PLUGINS_EXPERIMENTAL is off.
     result = get_since_until(
         time_range="2000-01-01T00:00:00 : 2018-01-01T00:00:00",
         instant_time_comparison_range="y",
@@ -283,12 +283,11 @@ def test_get_since_until() -> None:
     expected = datetime(1999, 12, 25), datetime(2017, 12, 25)
     assert result == expected
 
-    # Test time_shift with date range format (contains ' : ')
     result = get_since_until(
         time_range="today : tomorrow",
         time_shift="yesterday : today",
     )
-    # When time_shift contains ' : ', it should be parsed as a new time range
+    # When time_shift contains ' : ', it is parsed as a new time range.
     expected = datetime(2016, 11, 6), datetime(2016, 11, 7)
     assert result == expected
 
@@ -388,7 +387,6 @@ def test_datetime_eval() -> None:
     expected = datetime(2018, 9, 1)
     assert result == expected
 
-    # Parse compact arguments spelling
     result = datetime_eval("dateadd(datetime('today'),1,year,)")
     expected = datetime(2017, 11, 7)
     assert result == expected

@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""1:1 port of ``superset_old/extensions/ssh.py``.
+"""SSH tunnel manager and factory for database connections.
 
 Hosts the canonical ``SSHManager`` and ``SSHManagerFactory`` referenced by
 the default ``SSH_TUNNEL_MANAGER_CLASS`` setting.  The application
@@ -60,8 +60,7 @@ def _resolve_setting(source: Any, *names: str, default: Any = None) -> Any:
 class SSHManager:
     """Build SSH tunnels for downstream database engines.
 
-    Direct port of :class:`superset_old.extensions.ssh.SSHManager`.  The
-    only behavioural change is that ``app`` is generalised to any object
+    The only behavioural change is that ``app`` is generalised to any object
     exposing the SSH-tunnel knobs — the Litestar settings model, a
     plain ``dict`` (upstream-style ``app.config``), or a Celery worker's
     ``current_app.conf``.
@@ -93,13 +92,7 @@ class SSHManager:
         sqlalchemy_url: str,
         server: sshtunnel.SSHTunnelForwarder,
     ) -> Any:
-        """Rewrite *sqlalchemy_url* to point at the local tunnel endpoint.
-
-        Mirrors the original — the inbound URL is parsed, ``host`` and
-        ``port`` are replaced with ``server.local_bind_address`` /
-        ``server.local_bind_port``, and the resulting :class:`URL` is
-        returned (callers stringify as needed).
-        """
+        """Rewrite *sqlalchemy_url* host/port to point at the local tunnel endpoint."""
         url = make_url_safe(sqlalchemy_url)
         return url.set(
             host=server.local_bind_address[0],
@@ -111,12 +104,7 @@ class SSHManager:
         ssh_tunnel: "SSHTunnel",
         sqlalchemy_database_uri: str,
     ) -> sshtunnel.SSHTunnelForwarder:
-        """Open an :class:`SSHTunnelForwarder` for *ssh_tunnel*.
-
-        Verbatim port — the only adjustment is that
-        :func:`get_default_port` now lives in
-        :mod:`superset.utils.ssh_tunnel` (already true in the original).
-        """
+        """Open an :class:`SSHTunnelForwarder` for *ssh_tunnel*."""
         from superset.utils.ssh_tunnel import get_default_port
 
         url = make_url_safe(sqlalchemy_database_uri)
@@ -184,10 +172,6 @@ class SSHManagerFactory:
         return self._ssh_manager
 
 
-# Module-level singleton — mirrors the original
-# ``superset.extensions.ssh_manager_factory`` symbol that downstream code
-# imported.  Initialised lazily by :func:`superset.app.on_startup` (and
-# rebound for tests via the same factory).
 ssh_manager_factory = SSHManagerFactory()
 
 

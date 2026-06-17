@@ -17,17 +17,14 @@
 """Backward-compatibility shim — primary implementation lives in
 :mod:`superset.events`.
 
-The original ``superset_old/utils/log.py`` is fully ported into
-:mod:`superset.events` (which is async-native with no legacy WSGI
-dependency).  This
-module re-exports those primitives plus a handful of pure helpers
+Re-exports the core event-logger primitives plus a handful of pure helpers
 (:func:`stats_timing`, :func:`get_logger_from_status`,
 :func:`get_event_logger_from_cfg_value`, :func:`collect_request_payload`,
 :func:`logs_context`).
 
 Importing from ``superset.utils.log`` continues to work unchanged so any
-existing call site (third-party plugins, ported tasks, the legacy
-``DBEventLogger`` config alias) keeps functioning.
+existing call site (third-party plugins, the legacy ``DBEventLogger``
+config alias) keeps functioning.
 """
 
 from __future__ import annotations
@@ -58,31 +55,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# AbstractEventLogger / DBEventLogger -- legacy aliases.
-# ---------------------------------------------------------------------------
 #
-# The original ``superset_old/utils/log.py`` exported three concrete
-# classes:
+# Backward-compat aliases mapping legacy names to their canonical
+# equivalents in :mod:`superset.events`:
 #
-#   * ``AbstractEventLogger`` -- the abstract base class.
-#   * ``DBEventLogger``       -- the SQLAlchemy-persisting impl.
-#   * ``StdOutEventLogger``   -- the stdout-printing impl.
+#   AbstractEventLogger  →  EventLogger
+#   DBEventLogger        →  AsyncDBEventLogger
+#   StdOutEventLogger    →  unchanged
 #
-# In the Liteset port these live under :mod:`superset.events` with the
-# updated names ``EventLogger`` / ``AsyncDBEventLogger`` /
-# ``StdOutEventLogger``.  Keep the old import paths working for plugins,
-# tests, and any documentation that references the legacy names.
+# Keep the old import paths working for plugins, tests, and documentation.
 
 AbstractEventLogger = EventLogger
 DBEventLogger = AsyncDBEventLogger
-
-
-# ---------------------------------------------------------------------------
-# stats_timing — context manager (1:1 port from
-# ``superset_old.utils.decorators.stats_timing``).
-# ---------------------------------------------------------------------------
 
 
 @contextmanager
@@ -93,11 +77,6 @@ def stats_timing(stats_key: str, stats_logger: BaseStatsLogger) -> Iterator[floa
         yield start_ts
     finally:
         stats_logger.timing(stats_key, now_as_float() - start_ts)
-
-
-# ---------------------------------------------------------------------------
-# get_logger_from_status -- maps HTTP status codes → log methods.
-# ---------------------------------------------------------------------------
 
 
 def get_logger_from_status(
@@ -113,16 +92,10 @@ def get_logger_from_status(
     return EventLogger.get_logger_from_status(status)
 
 
-# ---------------------------------------------------------------------------
-# collect_request_payload — async port of the original helper.
-# ---------------------------------------------------------------------------
-
-
 async def collect_request_payload(request: Any | None = None) -> dict[str, Any]:
     """Async request-payload collector.
 
-    Mirrors ``superset_old/utils/log.py:collect_request_payload`` but
-    awaits Litestar's ``form()`` / ``json()`` coroutines so the audit
+    Awaits Litestar's ``form()`` / ``json()`` coroutines so the audit
     payload includes form/JSON body fields.  Delegates to
     :meth:`EventLogger.collect_request_payload` (single source of truth).
 
@@ -130,8 +103,7 @@ async def collect_request_payload(request: Any | None = None) -> dict[str, Any]:
     plain dict-shaped objects used in tests; missing accessors degrade
     gracefully to whatever can be read synchronously.
     """
-    # Use the ``EventLogger`` implementation directly so the legacy
-    # function shape matches the original 1:1.
+    # Use the ``EventLogger`` implementation directly.
     return await event_logger.collect_request_payload(request)
 
 
@@ -140,23 +112,13 @@ async def collect_request_payload(request: Any | None = None) -> dict[str, Any]:
 collect_request_payload_async = collect_request_payload
 
 
-# ---------------------------------------------------------------------------
-# Legacy decorator alias.
-# ---------------------------------------------------------------------------
-
-
 def log_this(f: Callable[..., Any]) -> Callable[..., Any]:
     """Convenience decorator — wraps ``f`` with :func:`log_this_with_context`.
 
-    Mirrors the original ``AbstractEventLogger.log_this`` so callers that
-    used to do ``@event_logger.log_this`` keep working.
+    Backward-compat alias: callers that used ``@event_logger.log_this`` keep
+    working.
     """
     return log_this_with_context()(f)
-
-
-# ---------------------------------------------------------------------------
-# Async-aware logs_context decorator
-# ---------------------------------------------------------------------------
 
 
 def logs_context(

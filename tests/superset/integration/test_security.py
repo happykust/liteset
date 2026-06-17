@@ -69,13 +69,8 @@ from superset.security.sync_roles import (
 from superset.sql.parse import Table
 from tests.superset.integration import factories as f
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_manager(db_session: Any, **kwargs: Any) -> AsyncSecurityManager:
-    """Build an ``AsyncSecurityManager`` bound to the real async session."""
     return AsyncSecurityManager(dao=AsyncSecurityDAO(db_session), **kwargs)
 
 
@@ -94,7 +89,6 @@ async def _grant_pvms(db_session: Any, role: Any, *pvms: Any) -> None:
 
 
 async def _create_group(db_session: Any, name: str, roles: list[Any]) -> Any:
-    """Persist an ``ab_group`` row with the given roles (port of add_group)."""
     from superset.models.security import Group
 
     group = Group(name=name)
@@ -120,11 +114,6 @@ async def _create_user_in_group(db_session: Any, username: str, group: Any) -> A
 
 
 def _datasource_mock() -> Any:
-    """Port of ``SupersetTestCase.get_datasource_mock``.
-
-    A MagicMock that quacks like a ``SqlaTable`` with ``perm`` / ``schema_perm``
-    set so permission checks have something to read.
-    """
     datasource = MagicMock()
     datasource.type = "table"
     datasource.database = MagicMock()
@@ -152,13 +141,7 @@ async def _get_example_database(db_session: Any) -> Database:
     return result.scalars().first()
 
 
-# ---------------------------------------------------------------------------
-# PVM predicate helpers (port of test_is_admin_only / _alpha_only / _gamma_pvm)
-# ---------------------------------------------------------------------------
-
-
 def _build_pvm(permission_name: str, view_menu_name: str) -> PermissionView:
-    """Build a detached ``PermissionView`` graph for predicate testing."""
     return PermissionView(
         permission=Permission(name=permission_name),
         view_menu=ViewMenu(name=view_menu_name),
@@ -166,35 +149,23 @@ def _build_pvm(permission_name: str, view_menu_name: str) -> PermissionView:
 
 
 def test_is_admin_only() -> None:
-    # can_read on a data model is NOT admin-only
     assert not _is_admin_only(_build_pvm("can_read", "Dataset"))
-    # all_datasource_access is an object-spec / data perm, not admin-only
     assert not _is_admin_only(
         _build_pvm("all_datasource_access", "all_datasource_access")
     )
-    # Log views are admin-only
     assert _is_admin_only(_build_pvm("can_read", "Log"))
-    # User management is admin-only
     assert _is_admin_only(_build_pvm("can_edit", "UserDBModelView"))
 
 
 def test_is_alpha_only() -> None:
-    # Read on a dataset is available below alpha (gamma reads datasets)
     assert not _is_alpha_only(_build_pvm("can_read", "Dataset"))
-    # Write on a dataset is alpha-only
     assert _is_alpha_only(_build_pvm("can_write", "Dataset"))
-    # all_datasource_access / all_database_access are alpha-only
     assert _is_alpha_only(_build_pvm("all_datasource_access", "all_datasource_access"))
     assert _is_alpha_only(_build_pvm("all_database_access", "all_database_access"))
 
 
 def test_is_gamma_pvm() -> None:
     assert _is_gamma_pvm(_build_pvm("can_read", "Dataset"))
-
-
-# ---------------------------------------------------------------------------
-# get_schemas_accessible_by_user
-# ---------------------------------------------------------------------------
 
 
 async def test_schemas_accessible_by_user_admin(db_session: Any) -> None:
@@ -205,15 +176,13 @@ async def test_schemas_accessible_by_user_admin(db_session: Any) -> None:
     schemas = await sm.get_schemas_accessible_by_user(
         database, ["1", "2", "3"], user=admin
     )
-    assert set(schemas) == {"1", "2", "3"}  # no changes for admin
+    assert set(schemas) == {"1", "2", "3"}
 
 
 async def test_schemas_accessible_by_user_schema_access(db_session: Any) -> None:
-    """A gamma user with schema_access to [examples].[1] sees only schema 1."""
     sm = _make_manager(db_session)
     database = await _get_example_database(db_session)
     schema_perm = f"[examples].[1]"  # noqa: F541
-    # Build the schema_access PVM and grant it to a fresh role.
     pvm = await sm.add_permission_view_menu("schema_access", schema_perm)
     role = await f.create_role(db_session, name="schema_access_role")
     await _grant_pvms(db_session, role, pvm)
@@ -228,10 +197,8 @@ async def test_schemas_accessible_by_user_schema_access(db_session: Any) -> None
 async def test_schemas_accessible_by_user_datasource_access(
     db_session: Any,
 ) -> None:
-    """schema access inferred from a datasource_access permission."""
     sm = _make_manager(db_session)
     database = await _get_example_database(db_session)
-    # Create a dataset in a known schema and grant datasource_access to it.
     dataset = await f.create_dataset(
         db_session,
         table_name="sec_temp_table",
@@ -278,11 +245,6 @@ async def test_schemas_accessible_by_user_datasource_and_schema_access(
     assert set(schemas) == {"temp_schema", "2"}
     vm = await sm.find_permission_view_menu("schema_access", "[examples].[2]")
     assert vm is not None
-
-
-# ---------------------------------------------------------------------------
-# TestSecurityManager: can_access_* + raise_for_access
-# ---------------------------------------------------------------------------
 
 
 async def _gamma_user(db_session: Any) -> Any:
@@ -479,8 +441,8 @@ async def test_raise_for_access_viz(db_session: Any) -> None:
 async def test_raise_for_access_rbac(db_session: Any) -> None:
     """DASHBOARD_RBAC fallback in ``raise_for_access`` for query_context + viz.
 
-    Mirrors the upstream matrix: when a gamma user lacks direct datasource
-    access, access is only granted when the dashboard RBAC role matches AND the
+    When a gamma user lacks direct datasource access, access is only granted
+    when the dashboard RBAC role matches AND the
     chart / native-filter resource genuinely belongs to the dashboard +
     datasource.
     """
@@ -707,8 +669,7 @@ async def test_gamma_user_schema_access_to_dashboards(db_session: Any) -> None:
     sm = _make_manager(db_session)
 
     # wb_health_population (id:2) backs every ``world_health`` slice; granting
-    # only its datasource_access perm mirrors upstream moving that dataset into
-    # a dedicated schema and granting schema_access to just that schema.
+    # only its datasource_access perm, simulating schema-level access control.
     role = await f.create_role(db_session, name="schema_access_role")
     pvm = await sm.add_permission_view_menu(
         "datasource_access", "[examples].[wb_health_population](id:2)"
@@ -805,10 +766,6 @@ async def test_get_user_roles_with_groups(db_session: Any) -> None:
 
 
 async def test_get_user_roles_with_groups_dar(db_session: Any) -> None:
-    """Group roles are merged across multiple roles on the same group.
-
-    Port of upstream ``test_get_user_roles_with_groups_dar``.
-    """
     sm = _make_manager(db_session)
     gamma_role = await f.create_role(db_session, name="Gamma")
     dar_role = await f.create_role(db_session, name="dar")
@@ -826,10 +783,6 @@ async def test_get_user_roles_with_groups_dar(db_session: Any) -> None:
 
 
 async def test_user_view_menu_names_with_groups_dar(db_session: Any) -> None:
-    """``user_view_menu_names`` resolves a PVM inherited only via a group role.
-
-    Port of upstream ``test_user_view_menu_names_with_groups_dar``.
-    """
     sm = _make_manager(db_session)
     dar_role = await f.create_role(db_session, name="dar")
     dar_pvm = await sm.add_permission_view_menu(
@@ -845,13 +798,6 @@ async def test_user_view_menu_names_with_groups_dar(db_session: Any) -> None:
 
 
 async def test_gamma_user_view_menu_names_with_groups_dar(db_session: Any) -> None:
-    """View-menu names are resolved across all group-inherited roles.
-
-    Port of upstream ``test_gamma_user_view_menu_names_with_groups_dar``: the dar
-    role contributes a ``datasource_access`` PVM and the gamma role contributes
-    ``can_external_metadata``/``Datasource`` and ``can_recent_activity``/``Log``
-    PVMs; all must surface through ``user_view_menu_names`` via the group.
-    """
     sm = _make_manager(db_session)
     gamma_role = await f.create_role(db_session, name="Gamma")
     dar_role = await f.create_role(db_session, name="dar")
@@ -870,11 +816,9 @@ async def test_gamma_user_view_menu_names_with_groups_dar(db_session: Any) -> No
     group = await _create_group(db_session, "group1", [dar_role, gamma_role])
     user = await _create_user_in_group(db_session, "gamma_with_groups", group)
 
-    # assert pvm for dar role
     assert await sm.user_view_menu_names("datasource_access", user=user) == {
         "[examples].[birth_names](id:1)]"
     }
-    # assert pvm for gamma role
     assert await sm.user_view_menu_names("can_external_metadata", user=user) == {
         "Datasource"
     }
@@ -889,11 +833,9 @@ async def test_all_database_access(db_session: Any) -> None:
     )
     datasource = _datasource_mock()
 
-    # Double check that gamma users can't access all databases.
     assert not await sm.can_access_all_databases(user=gamma_user)
     assert not await sm.can_access_datasource(datasource, user=gamma_user)
 
-    # Grant all_database_access to the gamma role and re-check.
     pvm = await sm.add_permission_view_menu(
         "all_database_access", "all_database_access"
     )
@@ -905,10 +847,6 @@ async def test_all_database_access(db_session: Any) -> None:
     assert await sm.can_access_all_databases(user=gamma_user)
     assert await sm.can_access_datasource(datasource, user=gamma_user)
 
-
-# ---------------------------------------------------------------------------
-# Guest tokens (ported to the Litestar guest-token API surface)
-# ---------------------------------------------------------------------------
 
 GUEST_SECRET = "guest-token-secret-key-at-least-32-bytes"
 
@@ -991,7 +929,6 @@ def test_parse_guest_token_not_guest_type() -> None:
         "type": "not_guest",
     }
     token = jwt.encode(claims, GUEST_SECRET, algorithm="HS256")
-    # Token type mismatch -> parse returns None (matches upstream "not a guest").
     assert parse_guest_token(token, GUEST_SECRET) is None
 
 
@@ -1003,8 +940,6 @@ def test_parse_guest_token_bad_audience() -> None:
         rls=[],
         audience="good_audience",
     )
-    # Decoding with a different expected audience must fail the InvalidAudience
-    # check and return None.
     assert parse_guest_token(token, GUEST_SECRET, audience="bad_audience") is None
 
 
@@ -1032,7 +967,6 @@ def test_parse_guest_token_bad_secret() -> None:
 
 
 def _guest_settings() -> Any:
-    """Minimal settings stub for ``_resolve_guest_from_jwt``."""
     settings = MagicMock()
     settings.guest_token_jwt_secret = GUEST_SECRET
     settings.guest_token_jwt_algo = "HS256"
@@ -1043,7 +977,6 @@ def _guest_settings() -> Any:
 
 
 def _guest_connection(session_factory: Any | None = None) -> Any:
-    """Build a connection stub carrying the guest settings + session factory."""
     connection = MagicMock()
     connection.app.state.settings = _guest_settings()
     connection.app.state.session_factory = session_factory
@@ -1051,7 +984,6 @@ def _guest_connection(session_factory: Any | None = None) -> Any:
 
 
 async def test_get_guest_user_no_user() -> None:
-    """A token with a null ``user`` claim resolves to no guest user."""
     from superset.middleware.auth import SupersetAuthMiddleware
 
     now = int(time.time())
@@ -1072,7 +1004,6 @@ async def test_get_guest_user_no_user() -> None:
 
 
 async def test_get_guest_user_no_resource() -> None:
-    """A token with a null ``resources`` claim resolves to no guest user."""
     from superset.middleware.auth import SupersetAuthMiddleware
 
     now = int(time.time())
@@ -1090,11 +1021,6 @@ async def test_get_guest_user_no_resource() -> None:
     middleware = SupersetAuthMiddleware.__new__(SupersetAuthMiddleware)
     guest_user = await middleware._resolve_guest_from_jwt(_guest_connection(), token)
     assert guest_user is None
-
-
-# ---------------------------------------------------------------------------
-# Structurally-absent upstream behaviour — skipped with factual reasons.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.skip(

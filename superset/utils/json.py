@@ -14,16 +14,13 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""JSON serialization utilities — 1:1 port of ``superset_old/utils/json.py``.
+"""JSON serialization utilities.
 
-The async port keeps ``simplejson`` as the backing implementation so that
-``dumps``/``loads`` preserve upstream semantics (notably ``ignore_nan=True``,
-which serializes ``NaN``/``Infinity`` as ``null`` — stdlib ``json`` would emit
-the invalid ``NaN`` token instead). Two source substitutions are made versus
-upstream: ``LazyString`` comes from :mod:`superset.i18n` (the async-stack
-replacement for the upstream i18n library), and one extra branch in
-``base_json_conv``
-handles ``msgspec`` structs.
+``simplejson`` is used as the backing implementation so that ``dumps``/``loads``
+apply ``ignore_nan=True`` (``NaN``/``Infinity`` serialize as ``null`` — stdlib
+``json`` would emit the invalid ``NaN`` token instead). ``LazyString`` comes
+from :mod:`superset.i18n`, and :func:`base_json_conv` includes an extra branch
+for ``msgspec`` structs.
 """
 
 import copy
@@ -77,7 +74,6 @@ def format_timedelta(time_delta: timedelta) -> str:
     if time_delta < timedelta(0):
         return "-" + str(abs(time_delta))
 
-    # Change this to format positive time deltas the way you want
     return str(time_delta)
 
 
@@ -119,7 +115,6 @@ def base_json_conv(obj: Any) -> Any:  # noqa: C901
             except Exception:  # pylint: disable=broad-except
                 return "[bytes]"
 
-    # msgspec Struct — async-port extension: convert to builtins for JSON.
     if hasattr(obj, "__struct_fields__"):
         import msgspec as _msgspec
 

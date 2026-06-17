@@ -70,14 +70,12 @@ def _create_settings(**overrides: object) -> MagicMock:
 
 @pytest.fixture
 def mock_redis() -> AsyncMock:
-    """Mock redis.asyncio client whose xread yields no entries by default."""
     redis = AsyncMock()
     redis.xread = AsyncMock(return_value=[])
     return redis
 
 
 def _make_app(**settings_overrides: object) -> tuple[Litestar, dict[object, int]]:
-    """Create a Litestar app with AsyncQueryWebSocket and given settings."""
     settings = _create_settings(**settings_overrides)
     active_ws: dict[object, int] = settings_overrides.get("_active_ws", {})  # type: ignore[assignment]
     mock_redis = AsyncMock()
@@ -97,7 +95,6 @@ def _make_app(**settings_overrides: object) -> tuple[Litestar, dict[object, int]
 async def _connect_and_receive(
     client: AsyncTestClient, url: str, headers: dict[str, str] | None = None
 ) -> None:
-    """Open a WebSocket and try to read one frame; raises on rejection."""
     ws = await client.websocket_connect(url, headers=headers or {})
     with ws:
         ws.receive_json()
@@ -112,7 +109,6 @@ def _get_ws_close_code(exc: WebSocketException) -> int | None:
     ``detail`` for string-encoded codes when ``code`` is absent.
     Returns None when no recognisable close-code value is found.
     """
-    # WebSocketDisconnect has a .code attribute (the WS close code).
     code = getattr(exc, "code", None)
     if isinstance(code, int):
         return code
@@ -126,12 +122,6 @@ def _get_ws_close_code(exc: WebSocketException) -> int | None:
 
 
 async def test_websocket_unauthorized_no_token():
-    """Test WebSocket rejection when no token is provided.
-
-    The handler at /ws/events accepts, then closes with 4401 (Unauthorized).
-    This verifies the real handler is reached — a 404 would raise a different
-    exception type (not WebSocketException with a 4401 close code).
-    """
     app, _ = _make_app()
     async with AsyncTestClient(app) as client:
         with pytest.raises(WebSocketException) as exc_info:
@@ -146,12 +136,6 @@ async def test_websocket_unauthorized_no_token():
 
 
 async def test_websocket_unauthorized_invalid_token():
-    """Test WebSocket rejection with invalid JWT.
-
-    The handler at /ws/events accepts, then closes with 4401 (Unauthorized).
-    If the route were wrong (404), no WebSocketException from the handler would
-    be raised — this test would not pass for the wrong reason.
-    """
     app, _ = _make_app()
     async with AsyncTestClient(app) as client:
         with pytest.raises(WebSocketException) as exc_info:
@@ -163,11 +147,6 @@ async def test_websocket_unauthorized_invalid_token():
 
 
 async def test_websocket_forbidden_origin():
-    """Test WebSocket rejection when origin is not allowed.
-
-    The handler at /ws/events accepts, then closes with 4403 (Forbidden).
-    A 404 would surface a different exception, not a 4403-bearing WebSocketException.
-    """
     app, _ = _make_app(cors_allow_origins=["https://allowed.com"])
     token = _create_token()
     async with AsyncTestClient(app) as client:
@@ -184,14 +163,7 @@ async def test_websocket_forbidden_origin():
 
 
 async def test_websocket_per_user_limit():
-    """Test per-user connection limit enforcement.
-
-    The handler at /ws/events accepts, then closes with 4429 (Too Many).
-    A 404 would not exercise the active_websockets counter — this test
-    pre-seeds active_ws and asserts the limit path in the real handler.
-    """
     active_ws: dict[object, int] = {}
-    # Pre-fill with one connection for user 42
     fake_socket = MagicMock()
     active_ws[fake_socket] = 42
 
@@ -223,13 +195,8 @@ async def test_websocket_per_user_limit():
         assert active_ws[fake_socket] == 42
 
 
-# ---------------------------------------------------------------------------
-# Relay loop (_relay_events) — XREAD stream delivery
-# ---------------------------------------------------------------------------
-
-
 def _disconnect() -> WebSocketDisconnect:
-    """Build a WebSocketDisconnect (the detail kwarg is required)."""
+    # The detail kwarg is required by WebSocketDisconnect.
     return WebSocketDisconnect(detail="client disconnected")
 
 
@@ -247,7 +214,6 @@ def _stream_response(channel: str, entries: list[tuple[str, dict[str, str]]]):
 
 
 async def test_relay_delivers_id_bearing_events():
-    """Each delivered frame carries the stream entry id plus decoded fields."""
     import json
 
     entries = [
@@ -288,14 +254,11 @@ async def test_relay_delivers_id_bearing_events():
     assert sent[0]["channel_id"] == "ch-1"
     assert sent[1]["id"] == "1607477697867-0"
     assert sent[1]["status"] == "done"
-    # No frame is a non-event control message (e.g. a heartbeat ping).
     assert all(frame.get("type") != "ping" for frame in sent)
     assert all("id" in frame for frame in sent)
 
 
 async def test_relay_increments_send_error_metric():
-    """A send failure emits ws_client_send_error (1:1 with the sidecar) and
-    still propagates so the handler tears the connection down."""
     import json
     from unittest.mock import patch
 
@@ -315,7 +278,6 @@ async def test_relay_increments_send_error_metric():
 
 
 async def test_relay_exclusive_last_id_cursor():
-    """With last_id supplied, the first xread starts from increment_id(last_id)."""
     redis = AsyncMock()
     redis.xread = AsyncMock(side_effect=[[], _disconnect()])
     socket = MagicMock()
@@ -335,7 +297,6 @@ async def test_relay_exclusive_last_id_cursor():
 
 
 async def test_relay_only_new_cursor_without_last_id():
-    """Without last_id, the read starts from the only-new sentinel '$'."""
     redis = AsyncMock()
     redis.xread = AsyncMock(side_effect=[_disconnect()])
     socket = MagicMock()
@@ -350,7 +311,6 @@ async def test_relay_only_new_cursor_without_last_id():
 
 
 async def test_relay_advances_cursor_after_delivery():
-    """After delivering entries, the next read resumes from the last id."""
     import json
 
     entries = [
@@ -371,13 +331,11 @@ async def test_relay_advances_cursor_after_delivery():
             socket, _relay_state(redis), "ch-1", None
         )
 
-    # First read: "$"; second read resumes from the last delivered id.
     assert redis.xread.call_args_list[0].args[0] == {"async-events-ch-1": "$"}
     assert redis.xread.call_args_list[1].args[0] == {"async-events-ch-1": "100-0"}
 
 
 async def test_relay_retries_on_transient_redis_error():
-    """A transient (non-disconnect) Redis error backs off and retries."""
     redis = AsyncMock()
     redis.xread = AsyncMock(side_effect=[RuntimeError("boom"), _disconnect()])
     socket = MagicMock()
@@ -388,13 +346,11 @@ async def test_relay_retries_on_transient_redis_error():
             socket, _relay_state(redis), "ch-1", None
         )
 
-    # The transient error did not kill the loop; it read again.
     assert redis.xread.call_count == 2
     socket.send_json.assert_not_called()
 
 
 async def test_relay_idle_when_no_channel():
-    """An empty channel has no stream; the relay idles without reading."""
     redis = AsyncMock()
     redis.xread = AsyncMock()
     socket = MagicMock()
@@ -406,14 +362,8 @@ async def test_relay_idle_when_no_channel():
             timeout=0.1,
         )
 
-    # Never read the bare-prefix key, never sent a frame.
     redis.xread.assert_not_called()
     socket.send_json.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Receiver loop (_receiver) — disconnect detection
-# ---------------------------------------------------------------------------
 
 
 async def test_receiver_propagates_disconnect():
@@ -425,14 +375,11 @@ async def test_receiver_propagates_disconnect():
     _receiver must treat that as a disconnect without needing a second call.
     """
     socket = MagicMock()
-    # Simulate Litestar's real behaviour: first call returns a disconnect dict,
-    # second call would raise — but _receiver should raise on the first.
     socket.receive = AsyncMock(return_value={"type": "websocket.disconnect"})
 
     with pytest.raises(WebSocketDisconnect):
         await AsyncQueryWebSocket._receiver(socket)
 
-    # Only one receive() call should have been made (detected on first message).
     socket.receive.assert_called_once()
 
 
@@ -467,29 +414,18 @@ async def test_relay_skips_malformed_entry_keeps_connection():
             socket, _relay_state(redis), "ch-1", None
         )
 
-    # Only the good entry should have been sent; bad entry is silently skipped.
     assert socket.send_json.call_count == 1
     sent = socket.send_json.call_args_list[0].args[0]
     assert sent["id"] == "200-0"
     assert sent["status"] == "done"
 
 
-# ---------------------------------------------------------------------------
-# Teardown test — socket removed from active_websockets on disconnect
-# ---------------------------------------------------------------------------
-
-
 async def test_teardown_removes_socket_from_active_websockets():
-    """When _receiver detects a disconnect, the relay is cancelled AND the
-    socket is removed from active_websockets.
-
-    Drives on_event directly as an unbound coroutine (bypassing Litestar's
+    """Drives on_event directly as an unbound coroutine (bypassing Litestar's
     Controller.__init__ which requires an ``owner``) with:
     - a fake socket whose receive() returns a websocket.disconnect dict
     - an idle channel so the relay idles (xread returns [])
     - active_websockets pre-seeded with the fake socket
-    Then asserts the socket is gone from active_websockets after the handler
-    returns.
     """
     from litestar.datastructures import State
 
@@ -542,11 +478,9 @@ async def test_teardown_removes_socket_from_active_websockets():
             fake_self, socket=fake_socket, state=state
         )
 
-    # The socket must be removed from active_websockets after teardown.
     assert fake_socket not in active_ws, (
         "Socket was not removed from active_websockets after disconnect teardown"
     )
-    # The accepted connection emitted ws_connected_client (1:1 with the sidecar).
     stats.incr.assert_any_call("ws_connected_client")
 
 
@@ -573,7 +507,6 @@ async def test_idle_relay_is_cancellable():
     await asyncio.sleep(0)
 
     task.cancel()
-    # The task should complete (raise CancelledError) promptly.
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
 
@@ -582,7 +515,6 @@ async def test_idle_relay_is_cancellable():
 
 
 async def test_no_heartbeat_method():
-    """The JSON heartbeat has been removed entirely."""
     assert not hasattr(AsyncQueryWebSocket, "_heartbeat")
     from superset.websocket import events
 

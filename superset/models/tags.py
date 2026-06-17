@@ -38,10 +38,6 @@ from sqlalchemy.orm import relationship
 
 from superset.models.helpers import AuditMixinNullable, Base, metadata
 
-# ---------------------------------------------------------------------------
-# Enums
-# ---------------------------------------------------------------------------
-
 
 class TagType(enum.Enum):
     """Category of tag."""
@@ -61,21 +57,12 @@ class ObjectType(enum.Enum):
     dataset = 4
 
 
-# ---------------------------------------------------------------------------
-# Association tables
-# ---------------------------------------------------------------------------
-
 user_favorite_tag_table = Table(
     "user_favorite_tag",
     metadata,
     Column("user_id", Integer, ForeignKey("ab_user.id")),
     Column("tag_id", Integer, ForeignKey("tag.id")),
 )
-
-
-# ---------------------------------------------------------------------------
-# Models
-# ---------------------------------------------------------------------------
 
 
 class Tag(Base, AuditMixinNullable):
@@ -100,8 +87,8 @@ class Tag(Base, AuditMixinNullable):
     objects = relationship(
         "TaggedObject",
         back_populates="tag",
-        # 1:1 superset_old/tags/models.py:99 — silences the SA overlap
-        # warning with SavedQuery.tags (secondary="tagged_object").
+        # Silences the SA overlap warning with SavedQuery.tags
+        # (secondary="tagged_object").
         overlaps="objects,tags",
     )
     users_favorited = relationship(

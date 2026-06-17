@@ -28,9 +28,9 @@ BABEL_DEFAULT_LOCALE``.  This is what keeps the backend English when only
 English is enabled: without it a French/Chinese browser would get a
 half-translated UI (translated backend strings, English React frontend) even
 though the deployment never enabled those languages.  With the default
-English-only ``LANGUAGES`` the resolved locale is always ``en`` — 1:1 with
-upstream's default (where ``LANGUAGES = {}`` makes ``best_match`` return
-``None`` -> ``BABEL_DEFAULT_LOCALE``).
+English-only ``LANGUAGES`` the resolved locale is always ``en``
+(``LANGUAGES = {}`` makes ``best_match`` return ``None`` ->
+``BABEL_DEFAULT_LOCALE``).
 """
 
 from __future__ import annotations
@@ -56,20 +56,17 @@ class LocaleMiddleware(ASGIMiddleware):
 
             allowed, default = _resolve_language_config(scope)
 
-            # 1. Chosen-language cookie (ASGI analogue of session["locale"]).
             locale = _extract_cookie_locale(
                 headers.get(b"cookie", b""),
                 self.LANGUAGE_COOKIE_NAME,
                 allowed,
             )
 
-            # 2. Accept-Language best match against the configured languages.
             if locale is None:
                 raw = headers.get(b"accept-language", b"")
                 accept = raw.decode("utf-8", errors="replace")
                 locale = _best_match(accept, allowed)
 
-            # 3. Default (BABEL_DEFAULT_LOCALE).
             if locale is None:
                 locale = default
 
@@ -82,11 +79,9 @@ class LocaleMiddleware(ASGIMiddleware):
 
 
 def _resolve_language_config(scope: Scope) -> tuple[set[str], str]:
-    """Return ``(allowed_languages, default_locale)`` from app settings.
+    """Return (allowed_languages, default_locale) from app settings.
 
-    ``allowed_languages`` is the set of *configured* ``LANGUAGES`` keys
-    (``settings.languages``); ``default_locale`` is ``BABEL_DEFAULT_LOCALE``.
-    Falls back to ``(set(), "en")`` when settings are unavailable, which
+    Falls back to (set(), "en") when settings are unavailable, which
     resolves every request to the default — never a half-translated UI.
     """
     default = "en"
@@ -104,11 +99,8 @@ def _resolve_language_config(scope: Scope) -> tuple[set[str], str]:
 
 
 def _match_allowed(value: str, allowed: set[str]) -> str | None:
-    """Match a single language tag against the allowed set.
-
-    Tries the normalized tag (``fr-FR`` -> ``fr_FR``) then its primary subtag
-    (``fr``), case-insensitively, returning the canonical configured key.
-    """
+    """Match a language tag against the allowed set, trying normalized
+    form then primary subtag."""
     if not value or not allowed:
         return None
     allowed_lower = {a.lower(): a for a in allowed}
@@ -123,7 +115,6 @@ def _match_allowed(value: str, allowed: set[str]) -> str | None:
 def _extract_cookie_locale(
     raw_cookie: bytes, cookie_name: str, allowed: set[str]
 ) -> str | None:
-    """Return the ``language`` cookie value if it is an allowed locale."""
     if not raw_cookie:
         return None
     cookie_str = raw_cookie.decode("utf-8", errors="replace")
@@ -138,12 +129,7 @@ def _extract_cookie_locale(
 
 
 def _best_match(header: str, allowed: set[str]) -> str | None:
-    """Best-match an ``Accept-Language`` header against the allowed set.
-
-    Mirrors the upstream ``accept_languages.best_match(languages)``: parse
-    every ``tag;q=`` pair, sort by quality (descending, stable on header
-    order), and return the first tag that maps to an allowed locale.
-    """
+    """Return the highest-quality allowed locale from an Accept-Language header."""
     if not header or not allowed:
         return None
     parsed: list[tuple[float, int, str]] = []
@@ -157,7 +143,6 @@ def _best_match(header: str, allowed: set[str]) -> str | None:
         except ValueError:
             quality = 1.0
         parsed.append((quality, index, tag.strip()))
-    # Highest quality first; ties keep the original header order.
     parsed.sort(key=lambda item: (-item[0], item[1]))
     for _quality, _index, tag in parsed:
         hit = _match_allowed(tag, allowed)

@@ -35,11 +35,11 @@ from superset.utils.core import set_current_user
 
 logger = logging.getLogger(__name__)
 
-_USER_CACHE_TTL: int = 300  # 5 minutes — long enough that a bot or load
-# generator does not re-hit the DB every minute, short enough that
-# permission/role changes propagate within a reasonable window.
+# long enough to absorb bot/load-generator bursts, short enough that
+# permission changes propagate within a reasonable window
+_USER_CACHE_TTL: int = 300
 _PUBLIC_ROLE_CACHE_KEY: str = "auth:public_role_perms"
-_PUBLIC_ROLE_CACHE_TTL: int = 300  # 5 minutes
+_PUBLIC_ROLE_CACHE_TTL: int = 300
 
 
 @dataclass
@@ -64,11 +64,7 @@ class UnauthenticatedUser:
 
 @dataclass
 class CachedUser:
-    """User object reconstituted from Redis cache.
-
-    Provides the same attribute interface as ORM User objects so that
-    downstream code (SecurityManager, guards) works uniformly.
-    """
+    """User reconstituted from Redis cache; same interface as ORM User."""
 
     id: int
     username: str
@@ -113,14 +109,11 @@ class CachedUser:
 
 @dataclass
 class _CachedRole:
-    """Lightweight role for CachedUser — supports .id and .name access."""
-
     id: int
     name: str
 
 
 def _get_secret_key(settings: Any) -> str:
-    """Extract secret key string from settings."""
     secret_key = settings.secret_key
     if hasattr(secret_key, "get_secret_value"):
         secret_key = secret_key.get_secret_value()
@@ -128,7 +121,6 @@ def _get_secret_key(settings: Any) -> str:
 
 
 def _safe_int(value: Any) -> int | None:
-    """Safely convert a value to int, returning None on failure."""
     if value is None:
         return None
     try:
@@ -151,30 +143,23 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
     async def authenticate_request(
         self, connection: ASGIConnection[Any, Any, Any, Any]
     ) -> AuthenticationResult:
-        # 1. Try cookie session auth
         user = await self._authenticate_cookie(connection)
         if user:
             set_current_user(user)
             return AuthenticationResult(user=user, auth="cookie")
 
-        # 2. Try guest token header (X-GuestToken or configured header name).
-        #    Must be checked BEFORE the generic JWT Bearer path so that
-        #    embedded dashboard requests are recognised correctly.
-        #    Also checks form data ``guest_token`` field for sendBeacon API.
+        # Must be checked BEFORE the generic JWT Bearer path so that
+        # embedded dashboard requests are recognised correctly.
         user = await self._authenticate_guest_token(connection)
         if user:
             set_current_user(user)
             return AuthenticationResult(user=user, auth="guest_token")
 
-        # 3. Try JWT Bearer token (API access tokens)
         user = await self._authenticate_jwt(connection)
         if user:
             set_current_user(user)
             return AuthenticationResult(user=user, auth="jwt")
 
-        # Return anonymous user with Public role permissions (if configured).
-        # This allows public routes (health checks, SPA assets, public dashboards)
-        # to work without authentication.
         anon = await self._build_anonymous_user(connection)
         set_current_user(anon)
         return AuthenticationResult(user=anon, auth=None)
@@ -182,12 +167,8 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
     async def _build_anonymous_user(
         self, connection: ASGIConnection[Any, Any, Any, Any]
     ) -> UnauthenticatedUser:
-        """Build an anonymous user, optionally with Public role permissions.
-
-        When ``auth_role_public`` is set in config, the anonymous user
-        receives that role's permissions so RBAC guards can allow access
-        to public endpoints without requiring login.
-        """
+        """Build an anonymous user, loading Public role permissions when
+        auth_role_public is configured."""
         settings = connection.app.state.settings
         role_name = getattr(settings, "auth_role_public", "")
         if not role_name:
@@ -196,7 +177,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         permissions: set[tuple[str, str]] = set()
         redis = getattr(connection.app.state, "redis", None)
 
-        # Try Redis cache first
         if redis is not None:
             try:
                 cached = await redis.get(_PUBLIC_ROLE_CACHE_KEY)
@@ -212,10 +192,8 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
             except Exception:
                 logger.debug("Redis error reading public role cache")
 
-        # Cache miss -- resolve from DB
         permissions = await self._resolve_public_permissions(connection, role_name)
 
-        # Populate cache (best-effort)
         if redis is not None:
             try:
                 await redis.set(
@@ -234,7 +212,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         connection: ASGIConnection[Any, Any, Any, Any],
         role_name: str,
     ) -> set[tuple[str, str]]:
-        """Load permissions for the named Public role from DB."""
         from superset.security.dao import AsyncSecurityDAO
 
         session_factory = connection.app.state.session_factory
@@ -249,14 +226,12 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
     async def _authenticate_cookie(  # noqa: C901
         self, connection: ASGIConnection[Any, Any, Any, Any]
     ) -> Any | None:
-        """Authenticate via session cookie (JWT or itsdangerous)."""
         settings = connection.app.state.settings
         cookie_name = getattr(settings, "session_cookie_name", "session")
         cookie = connection.cookies.get(cookie_name)
         if not cookie:
             return None
 
-        # Try JWT decode first (Liteset auth controller)
         import jwt as pyjwt
 
         secret_key = _get_secret_key(settings)
@@ -269,14 +244,12 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
                 algorithms=["HS256"],
             )
             user_id = payload.get("user_id")
-            # Extract issued-at timestamp for blacklist check
             iat_raw = payload.get("iat")
             if iat_raw is not None:
                 token_iat = int(iat_raw)
         except Exception:  # noqa: S110
             pass
 
-        # Fallback: itsdangerous (legacy session cookie)
         if user_id is None:
             decoder = self._get_or_create_decoder(connection)
             user_id = decoder.get_user_id(cookie)
@@ -297,7 +270,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
                 )
                 return None
 
-        # Try Redis cache first
         if redis is not None:
             try:
                 cached = await self._get_cached_user(redis, f"auth:user:{user_id}")
@@ -307,7 +279,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
             except Exception:
                 logger.debug("Redis cache miss/error for user %d", user_id)
 
-        # Cache miss — resolve from DB
         try:
             user = await self._resolve_user_from_db(
                 connection,
@@ -322,14 +293,12 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         if user is None:
             return None
 
-        # Populate cache (best-effort)
         if redis is not None:
             try:
                 await self._cache_user(redis, user)
             except Exception:
                 logger.debug("Failed to cache user %d in Redis", user_id)
 
-        # Set sentry user context
         self._set_sentry_user(user)
 
         return user
@@ -338,7 +307,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
     def _get_or_create_decoder(
         connection: ASGIConnection[Any, Any, Any, Any],
     ) -> Any:
-        """Cache FlaskSessionDecoder on app.state to avoid per-request creation."""
         from superset.security.session_decoder import FlaskSessionDecoder
 
         decoder = getattr(connection.app.state, "_session_decoder", None)
@@ -355,19 +323,15 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
     ) -> Any | None:
         """Authenticate via the guest token header or form field.
 
-        Mirrors the original ``get_guest_user_from_request`` in
-        ``SupersetSecurityManager``:
         1. Reads the header named by ``GUEST_TOKEN_HEADER_NAME``
            (default ``X-GuestToken``).
         2. Falls back to ``guest_token`` in POST form body (used by the
            browser ``sendBeacon`` API which cannot set custom headers).
-           Mirrors the original ``req.form.get("guest_token")``.
         3. Only active when the ``EMBEDDED_SUPERSET`` feature flag or
            ``embedded_superset`` setting is enabled.
         """
         settings = connection.app.state.settings
 
-        # Check feature flag or settings
         feature_flags = getattr(settings, "feature_flags", {})
         embedded_enabled = getattr(
             settings, "embedded_superset", False
@@ -375,14 +339,11 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         if not embedded_enabled:
             return None
 
-        # Read the configurable header name (default: X-GuestToken)
         header_name = getattr(settings, "guest_token_header_name", "X-GuestToken")
         raw_token = connection.headers.get(header_name.lower(), "")
 
-        # Fallback: POST form data ``guest_token`` (sendBeacon API).
-        # The original uses ``req.form.get("guest_token")`` which reads
-        # from URL-encoded POST body.  In Litestar middleware, we read
-        # the raw body and parse form data manually.
+        # Fallback: POST form data ``guest_token``
+        # (sendBeacon API cannot set custom headers).
         if not raw_token:
             raw_token = await self._read_guest_token_from_body(connection)
 
@@ -394,13 +355,8 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
     async def _authenticate_jwt(
         self, connection: ASGIConnection[Any, Any, Any, Any]
     ) -> Any | None:
-        """Authenticate via JWT Bearer token (API access tokens only).
-
-        Guest token authentication is handled separately by
-        ``_authenticate_guest_token`` which reads the dedicated guest
-        token header. This method handles ``Authorization: Bearer``
-        API access tokens (type=access).
-        """
+        """Authenticate via ``Authorization: Bearer`` API access tokens
+        (type=access)."""
         auth_header = connection.headers.get("authorization", "")
         if not auth_header.startswith("Bearer "):
             return None
@@ -408,7 +364,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         if not token:
             return None
 
-        # Try API access token
         return await self._resolve_user_from_access_token(connection, token)
 
     async def _resolve_user_from_access_token(  # noqa: C901
@@ -441,13 +396,10 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
 
         token_iat = _safe_int(payload.get("iat"))
 
-        # Check token blacklist: if the user logged out after this token
-        # was issued, reject it.
         redis = getattr(connection.app.state, "redis", None)
         if await self._check_blacklist(redis, user_id, token_iat):
             return None
 
-        # Try Redis cache first
         if redis is not None:
             try:
                 cached = await self._get_cached_user(redis, f"auth:user:{user_id}")
@@ -456,7 +408,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
             except Exception:
                 logger.debug("Redis cache miss/error for access token user %d", user_id)
 
-        # Resolve from DB
         user = await self._resolve_user_from_db(connection, user_id)
         if user is None:
             return None
@@ -513,12 +464,10 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
             user = await dao.get_user_by_id(user_id)
             if user is None:
                 return None
-            # Upstream uses an Integer column for active (0/1)
             active = getattr(user, "active", None)
             if active is not None and not active:
                 return None
             permissions = await dao.get_all_permissions_for_user_with_groups(user_id)
-            # Serialize created_on to ISO string for cache/bootstrap compat
             created_on_raw = getattr(user, "created_on", None)
             created_on_str = ""
             if created_on_raw is not None:
@@ -546,16 +495,9 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
     async def _read_guest_token_from_body(
         connection: ASGIConnection[Any, Any, Any, Any],
     ) -> str:
-        """Read ``guest_token`` from POST form body.
-
-        Mirrors the original ``req.form.get("guest_token")``.  Supports
-        both ``application/x-www-form-urlencoded`` and ``multipart/form-data``
-        content types (url-encoded only; multipart is best-effort).
-        Returns empty string if not found or not applicable.
-        """
+        """Read ``guest_token`` from URL-encoded POST body (sendBeacon fallback)."""
         from urllib.parse import parse_qs
 
-        # Only attempt for POST/PUT/PATCH methods that may have a body
         method = str(connection.scope.get("method", "GET")).upper()
         if method not in {"POST", "PUT", "PATCH"}:
             return ""
@@ -565,7 +507,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
             return ""
 
         try:
-            # ASGIConnection doesn't expose .body(); read via scope
             body_bytes: bytes = b""
             if hasattr(connection, "body"):
                 body_bytes = await connection.body()
@@ -583,16 +524,9 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         connection: ASGIConnection[Any, Any, Any, Any],
         token: str,
     ) -> Any | None:
-        """Resolve guest user from JWT token.
-
-        Mirrors the original ``get_guest_user_from_request`` +
-        ``parse_jwt_guest_token`` logic: decodes the JWT with the
-        configured secret, algorithm, and audience claim.
-        """
         from superset.security.guest import GuestUser, parse_guest_token
 
         settings = connection.app.state.settings
-        # Use dedicated guest token secret if configured, otherwise fall back
         guest_secret = getattr(settings, "guest_token_jwt_secret", "")
         if guest_secret:
             secret_key = guest_secret
@@ -602,8 +536,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         algo = getattr(settings, "guest_token_jwt_algo", "HS256")
 
         # Resolve audience: GUEST_TOKEN_JWT_AUDIENCE config or WEBDRIVER_BASEURL.
-        # Mirrors original _get_guest_token_jwt_audience():
-        #   audience = get_conf()["GUEST_TOKEN_JWT_AUDIENCE"] or get_url_host()
         # get_url_host() returns app.config["WEBDRIVER_BASEURL"] — a configured
         # base URL, NOT the attacker-controllable Host request header.
         audience_setting = getattr(settings, "guest_token_jwt_audience", None)
@@ -612,7 +544,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
                 audience_setting() if callable(audience_setting) else audience_setting
             )
         else:
-            # Fallback: WEBDRIVER_BASEURL (matches original get_url_host())
             audience = getattr(settings, "webdriver_baseurl", "")
         audience = str(audience) if audience else ""
 
@@ -622,7 +553,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         if payload is None:
             return None
 
-        # Validate required claims (mirrors original get_guest_user_from_request)
         if payload.get("user") is None:
             logger.warning("Guest token does not contain a user claim")
             return None
@@ -635,9 +565,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
 
         guest_user = GuestUser.from_token_payload(payload)
 
-        # Load the Guest role from DB and merge its permissions.
-        # Mirrors the original ``get_guest_user_from_token``:
-        #   roles=[self.find_role(get_conf()["GUEST_ROLE_NAME"])]
         guest_role_name = getattr(settings, "guest_role_name", "Guest")
         try:
             await self._load_guest_role_permissions(
@@ -658,13 +585,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         guest_user: Any,
         role_name: str,
     ) -> None:
-        """Load Guest role from DB and merge its permissions into the GuestUser.
-
-        Mirrors the original ``get_guest_user_from_token`` which sets:
-            roles=[self.find_role(get_conf()["GUEST_ROLE_NAME"])]
-        The Guest role contains permissions like ``can_read`` on ``Dashboard``,
-        ``Chart``, etc. These are merged into the guest user's permission set.
-        """
         from superset.security.dao import AsyncSecurityDAO
 
         session_factory = connection.app.state.session_factory
@@ -675,12 +595,9 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
                 logger.warning("Guest role '%s' not found in database", role_name)
                 return
 
-            # Set the role on the guest user
             guest_user.roles = [_CachedRole(id=role.id, name=role.name)]
 
-            # Load and merge permissions from the Guest role
             role_perms = await dao.get_permissions_for_role_name(role_name)
-            # Merge DB role permissions with the derived resource permissions
             guest_user.permissions = guest_user.permissions | role_perms
 
     @staticmethod
@@ -736,11 +653,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         return blacklisted
 
     async def _get_cached_user(self, redis: Any, cache_key: str) -> CachedUser | None:
-        """Try to load user from Redis cache.
-
-        Returns a CachedUser dataclass with the same attribute interface
-        as ORM User objects, including roles and active status.
-        """
         data = await redis.get(cache_key)
         if data is None:
             return None
@@ -751,17 +663,11 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         user = CachedUser.from_dict(parsed)
         if user is None:
             return None
-        # Reject inactive users from cache
         if not user.active:
             return None
         return user
 
     async def _cache_user(self, redis: Any, user: Any) -> None:
-        """Cache resolved user in Redis (TTL ``_USER_CACHE_TTL``, 300s).
-
-        Stores roles and active status so that cached users retain
-        their permission context and deactivated users are rejected.
-        """
         roles = [
             {"id": r.id, "name": r.name}
             for r in getattr(user, "roles", [])
@@ -792,7 +698,6 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
 
     @staticmethod
     def _set_sentry_user(user: Any) -> None:
-        """Set Sentry user context after successful auth."""
         try:
             import sentry_sdk
 

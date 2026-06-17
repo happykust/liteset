@@ -55,12 +55,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ===========================================================================
-# Async path — used by chart data pipeline (query_context_processor,
-# controllers/datasource, controllers/chart preview/samples).
-# ===========================================================================
-
-
 async def compose_rls_where_clauses(  # noqa: C901  # complex business logic
     table: Any,
     *,
@@ -70,17 +64,15 @@ async def compose_rls_where_clauses(  # noqa: C901  # complex business logic
 ) -> list[ClauseElement]:
     """Build SQLAlchemy clause objects for RLS filters on ``table``.
 
-    Ports the business logic of
-    ``superset_old.connectors.sqla.models.BaseDatasource.get_sqla_row_level_filters``
-    (lines 654-697) **including the return type**: each clause is a
-    SQLAlchemy ``TextClause`` (standalone filter) or ``BooleanClauseList``
-    (``or_(...)`` of grouped filters), both subclasses of ``ClauseElement``.
+    Each clause is a SQLAlchemy ``TextClause`` (standalone filter) or
+    ``BooleanClauseList`` (``or_(...)`` of grouped filters), both
+    subclasses of ``ClauseElement``.
 
     The caller integrates them via ``query.where(and_(*clauses))`` (or by
     compiling each one against the database's dialect for raw-SQL
     pipelines such as ``SqlaTable._build_sql``).  Compiling through the
     target dialect gives automatic identifier quoting and dialect-specific
-    translation — exactly what the original SQLAlchemy AST path provides.
+    translation.
 
     - filters with the same ``group_key`` are OR-ed together within their
       group via ``or_(*clauses)``; each group becomes one ``BooleanClauseList``
@@ -154,14 +146,6 @@ def _embedded_superset_enabled() -> bool:
     except ImportError:
         return False
     return bool(feature_flag_manager.is_feature_enabled("EMBEDDED_SUPERSET"))
-
-
-# ===========================================================================
-# Sync path — used by SQL Lab pipeline (validate_adhoc_subquery,
-# _get_virtual_from_clause). Original Superset uses the upstream
-# ``db.session``; in Liteset we open a dedicated sync session against the
-# metadata DB, mirroring ``jinja_context._sync_find_dataset``.
-# ===========================================================================
 
 
 # Map async SQLAlchemy drivers to their sync equivalents. Mirrors
@@ -255,18 +239,14 @@ def _metadata_sync_session() -> Iterator[Session]:
 
 
 def _sync_resolve_user_role_ids(user: Any) -> list[int] | None:
-    """Sync mirror of upstream ``get_rls_filters`` role resolution.
+    """Return the list of role IDs to use for RLS filter selection.
 
-    Returns the list of role ids to use for RLS filter selection, 1:1 with
-    ``superset_old/security/manager.py:2588-2598`` + ``get_user_roles``:
-
-    * ``None`` user → ``None`` (caller skips RLS entirely — upstream
-      returns ``[]`` when there is no request-scoped current user).
+    * ``None`` user → ``None`` (caller skips RLS entirely).
     * Anonymous user → ``[AUTH_ROLE_PUBLIC role id]`` when that setting is
       configured, else ``[]``. An EMPTY list is meaningful: with no roles
       the user matches no REGULAR filter and is exempt from no BASE filter,
       so ALL BASE filters on the table apply — returning ``None`` here
-      (the old behaviour) silently disabled RLS for anonymous traffic.
+      silently disabled RLS for anonymous traffic.
     * Authenticated user → ids of their roles.
     """
     if user is None:
@@ -312,9 +292,9 @@ def _sync_resolve_user_role_ids(user: Any) -> list[int] | None:
                         )
                     ).scalars()
                 }
-            # Group-inherited roles — 1:1 with upstream ``get_user_roles`` (direct +
-            # group roles). Omitting them let a REGULAR RLS filter scoped to a
-            # group-assigned role slip through (row restriction skipped).
+            # Group-inherited roles (direct + group roles): omitting them
+            # lets a REGULAR RLS filter scoped to a group-assigned role
+            # slip through (row restriction skipped).
             group_role_ids = session.execute(
                 select(ab_group_role.c.role_id)
                 .select_from(
@@ -329,10 +309,9 @@ def _sync_resolve_user_role_ids(user: Any) -> list[int] | None:
         return list(role_ids)
 
     settings = _cached_settings()
-    # 1:1 with upstream ``get_user_roles``: the public role is granted to
-    # anonymous users ONLY when AUTH_ROLE_PUBLIC is explicitly configured
-    # — no implicit "Public" fallback (that would exempt anonymous traffic
-    # from BASE filters the upstream still applies).
+    # The public role is granted to anonymous users ONLY when
+    # AUTH_ROLE_PUBLIC is explicitly configured — no implicit "Public"
+    # fallback (that would exempt anonymous traffic from BASE filters).
     public_role_name = settings.auth_role_public
 
     if not public_role_name:
@@ -360,15 +339,13 @@ def _sync_get_rls_filters_for_user(
     table_id: int,
     user_role_ids: list[int],
 ) -> list[Any]:
-    """Synchronous port of
-    ``superset_old.security.manager.SupersetSecurityManager.get_rls_filters``.
+    """Return ``RowLevelSecurityFilter`` rows matching the user's role set.
 
-    Returns a list of ``RowLevelSecurityFilter`` objects matching:
     - REGULAR filters where ``user_role_ids`` ∩ filter.roles ≠ ∅
     - BASE filters where ``user_role_ids`` ∩ filter.roles = ∅
 
     Anonymous users (no roles) get no REGULAR filters and *all* BASE filters
-    that target the table — exactly as in the original.
+    that target the table.
     """
     from superset.models.connectors import (
         RLSFilterRoles,
@@ -438,15 +415,14 @@ def compose_rls_text_clauses(  # noqa: C901  # complex business logic
     table: Any,
     template_processor: Any | None = None,
 ) -> list[Any]:
-    """Synchronous port of
-    ``superset_old.connectors.sqla.models.BaseDatasource.get_sqla_row_level_filters``.
+    """Synchronous RLS clause builder for SQL Lab and virtual-dataset injection.
 
     Returns a list of SQLAlchemy ``TextClause`` / ``ColumnElement`` objects
     that can be AND-ed together at the call site (``where(and_(*clauses))``)
     or compiled to literal SQL strings for the SQL-AST RLS injection
     (``apply_rls`` → ``parse_predicate``).
 
-    Logic mirrors :func:`compose_rls_where_clauses` exactly:
+    Same logic as :func:`compose_rls_where_clauses`:
     - ``group_key`` filters OR-ed within group, AND-ed across groups
     - Jinja ``process_template`` applied to every clause
     - ``EMBEDDED_SUPERSET`` guest RLS appended when feature flag is on
@@ -530,15 +506,10 @@ def compose_rls_text_clauses(  # noqa: C901  # complex business logic
 def _sync_get_guest_rls_clauses(user: Any, table: Any) -> list[str]:
     """Extract guest-token RLS clauses for the dataset.
 
-    Mirrors
-    ``superset_old.security.manager.SupersetSecurityManager.get_guest_rls_filters``
-    but in sync context — the guest user's RLS rules live on the user
-    object itself (decoded from the guest token by auth middleware).
-
-    Original ``get_guest_rls_filters`` short-circuits if the current user
-    is not a guest user (``get_current_guest_user_if_guest`` returns
-    ``None``); we mirror that gate here. ``user.is_guest`` is the
-    canonical marker (see :class:`superset.security.guest.GuestUser` and
+    The guest user's RLS rules live on the user object itself (decoded
+    from the guest token by auth middleware).  Short-circuits when the
+    current user is not a guest; ``user.is_guest`` is the canonical
+    marker (see :class:`superset.security.guest.GuestUser` and
     ``AsyncSecurityManager.is_guest_user``).
     """
     if not getattr(user, "is_guest", False):
@@ -554,11 +525,6 @@ def _sync_get_guest_rls_clauses(user: Any, table: Any) -> list[str]:
     ]
 
 
-# ===========================================================================
-# SQL-AST RLS injection — used by SQL Lab for adhoc/virtual SQL.
-# ===========================================================================
-
-
 def apply_rls(
     database: Database,
     catalog: str | None,
@@ -568,8 +534,7 @@ def apply_rls(
     """Modify ``parsed_statement`` inplace to inject RLS predicates.
 
     ``schema`` is the default schema for non-qualified table names and may be
-    ``None`` (engines without a default schema) — 1:1 with
-    ``superset_old/utils/rls.py::apply_rls``. It is passed straight to
+    ``None`` (engines without a default schema). It is passed straight to
     :meth:`Table.qualify`; ``None`` matches a dataset stored with ``schema
     IS NULL``, whereas an empty string would not — do not coerce it.
 

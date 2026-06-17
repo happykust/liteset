@@ -40,11 +40,6 @@ def test_db() -> None:
     """Database diagnostic commands."""
 
 
-# ------------------------------------------------------------------
-# connectivity
-# ------------------------------------------------------------------
-
-
 @test_db.command()
 @click.argument("sqlalchemy_uri")
 @click.option(
@@ -73,7 +68,6 @@ def connectivity(
     if engine_kwargs:
         console.print(f"[bold]Engine kwargs:[/bold] {engine_kwargs}")
 
-    # --- create engine ---------------------------------------------------
     try:
         engine = create_engine(sqlalchemy_uri, **engine_kwargs)
     except NoSuchModuleError:
@@ -83,13 +77,11 @@ def connectivity(
         console.print(f"[red]Failed to create engine: {exc}")
         sys.exit(1)
 
-    # --- connect ---------------------------------------------------------
     console.print("\n[bold]Connecting to database...")
     try:
         with engine.connect() as conn:
             console.print(":thumbs_up: [green]Connected successfully!")
 
-            # --- SELECT 1 ------------------------------------------------
             console.print("[bold]Running:[/bold] SELECT 1")
             result = conn.execute(text("SELECT 1"))
             value = result.scalar()
@@ -106,11 +98,6 @@ def connectivity(
 
     console.print(":thumbs_up: [green]All connectivity checks passed!")
     engine.dispose()
-
-
-# ------------------------------------------------------------------
-# engine-spec
-# ------------------------------------------------------------------
 
 
 @test_db.command("engine-spec")
@@ -133,7 +120,6 @@ def engine_spec(sqlalchemy_uri: str) -> None:
     backend = url.get_backend_name()
     console.print(f"[bold]Detected backend:[/bold] {backend}")
 
-    # --- check native async specs ---------------------------------------
     from superset.db.engine_specs import _NATIVE_SPECS
 
     if backend in _NATIVE_SPECS:
@@ -144,7 +130,6 @@ def engine_spec(sqlalchemy_uri: str) -> None:
         )
         return
 
-    # --- check sync fallback specs from superset.db_engine_specs --------
     from superset.db.engine_specs import _get_sync_spec_map
 
     sync_map = _get_sync_spec_map()
@@ -164,11 +149,6 @@ def engine_spec(sqlalchemy_uri: str) -> None:
     )
 
 
-# ------------------------------------------------------------------
-# full (combined: engine-spec + dialect check + connectivity)
-# ------------------------------------------------------------------
-
-
 @test_db.command()
 @click.argument("sqlalchemy_uri")
 @click.option(
@@ -185,7 +165,7 @@ def full(
     """Run all diagnostic tests against a database.
 
     Combines engine-spec detection, SQLAlchemy dialect inspection, and
-    connectivity testing in a single command (mirrors original test-db).
+    connectivity testing in a single command.
     """
     console = Console()
     console.clear()
@@ -196,7 +176,6 @@ def full(
 
     console.print(f"[bold]SQLAlchemy URI:[/bold] {sqlalchemy_uri}")
 
-    # --- engine spec -----------------------------------------------------
     console.print("\n[bold]Checking for engine spec...")
     try:
         url = make_url_safe(sqlalchemy_uri)
@@ -219,7 +198,6 @@ def full(
     else:
         console.print(":thumbs_down: [red]No engine spec found.")
 
-    # --- dialect ---------------------------------------------------------
     console.print("\n[bold]Testing SQLAlchemy dialect...")
     try:
         engine = create_engine(sqlalchemy_uri, **engine_kwargs)
@@ -252,7 +230,6 @@ def full(
     for attr in ("name", "driver", "supports_multivalues_insert"):
         console.print(f"  - {attr}: {getattr(dialect, attr, None)}")
 
-    # --- connectivity ----------------------------------------------------
     console.print("\n[bold]Testing database connectivity...")
     try:
         with engine.connect() as conn:

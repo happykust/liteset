@@ -14,8 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Tests for LogController."""
-
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
@@ -25,15 +23,8 @@ import pytest
 from superset.controllers.log import LogController
 from superset.exceptions import ObjectNotFoundError
 
-# ---------------------------------------------------------------------------
-# Helpers — Litestar decorators wrap methods; access the raw fn for unit tests.
-# ---------------------------------------------------------------------------
-
 
 def _get_raw_method(controller_cls: type, method_name: str):
-    """Return the underlying async function from a Litestar-decorated controller
-    method.
-    """
     handler = getattr(controller_cls, method_name)
     if hasattr(handler, "fn"):
         return handler.fn
@@ -44,11 +35,6 @@ _get_list = _get_raw_method(LogController, "get_list")
 _get_single = _get_raw_method(LogController, "get_single")
 _create_log = _get_raw_method(LogController, "create_log")
 _recent_activity = _get_raw_method(LogController, "recent_activity")
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -67,11 +53,6 @@ def mock_user():
 @pytest.fixture
 def controller():
     return LogController(owner=MagicMock())
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 async def test_get_list(controller, mock_dao):
@@ -112,23 +93,18 @@ async def test_get_list(controller, mock_dao):
     assert result["count"] == 2
     assert len(result["result"]) == 2
 
-    # Verify user nested fields
     assert result["result"][0]["user"]["first_name"] == "Test"
     assert result["result"][0]["user"]["username"] == "testuser"
     assert result["result"][0]["duration_ms"] == 100
     assert result["result"][0]["referrer"] == "http://localhost"
 
-    # Verify null user
     assert result["result"][1]["user"] is None
     assert result["result"][1]["duration_ms"] is None
 
-    # The controller also passes filters/order_by/options; check the relevant
-    # pagination kwargs rather than an exact-call match.
     mock_dao.find_all.assert_awaited_once()
     call_kwargs = mock_dao.find_all.call_args.kwargs
     assert call_kwargs["page"] == 0
-    # ``LogRestApi.page_size = 20`` (superset_old/views/log/api.py:76) — the
-    # list default is 20, not FAB's generic 25.
+    # LogRestApi.page_size = 20, not FAB's generic 25.
     assert call_kwargs["page_size"] == 20
     mock_dao.count.assert_awaited_once()
 
@@ -156,8 +132,6 @@ async def test_get_single(controller, mock_dao):
 
     result = await _get_single(controller, pk=1, dao=mock_dao)
 
-    # The handler serializes the ORM instance to a dict (msgspec can't dump
-    # the SA model directly), matching the original LogModelView dump shape.
     assert result["id"] == 1
     # show_columns = list_columns upstream — no "id" inside "result".
     assert "id" not in result["result"]
@@ -192,8 +166,6 @@ async def test_recent_activity(controller, mock_dao, mock_user):
     assert len(result["result"]) == 1
     assert result["result"][0]["action"] == "mount_explorer"
     assert result["result"][0]["item_type"] == "slice"
-    # Matches Slice.build_explore_url in superset_old/models/slice.py:309-316:
-    # f"{base_url}/?slice_id={id_}&form_data={params}" — form_data IS included.
     import json
     from urllib import parse as _parse
 
@@ -208,8 +180,6 @@ async def test_recent_activity(controller, mock_dao, mock_user):
         actions=["mount_explorer", "mount_dashboard"],
         distinct=True,
         page=0,
-        # Original ``LogRestApi.page_size = 20`` (superset_old/views/log/api.py:76)
-        # is the default for recent_activity when no page_size arg is supplied.
         page_size=20,
     )
 

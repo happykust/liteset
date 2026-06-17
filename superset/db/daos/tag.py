@@ -28,11 +28,9 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
     model_cls = Tag
 
     async def find_by_name(self, name: str) -> Tag | None:
-        """Find a tag by name."""
         return await self.find_one_or_none(name=name)
 
     async def find_by_names(self, names: list[str]) -> list[Tag]:
-        """Find tags by a list of names."""
         if not names:
             return []
         stmt = select(Tag).where(Tag.name.in_(names))
@@ -42,13 +40,10 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
     async def get_by_name(self, name: str, type_name: str = "custom") -> Tag:
         """Get tag by name, creating it if it doesn't exist.
 
-        1:1 with the original ``TagDAO.get_by_name``
-        (superset_old/daos/tag.py:113-126), which on a cache miss delegates
-        to ``superset.tags.models.get_tag`` — the savepoint-protected
-        fetch-or-create. Reuse the async port at
-        ``superset.tags.core.get_tag`` so a concurrent identical-name insert
-        only rolls back the SAVEPOINT instead of poisoning the outer
-        transaction with a UniqueViolation.
+        Delegates to ``superset.tags.core.get_tag`` — the savepoint-protected
+        fetch-or-create — so a concurrent identical-name insert only rolls back
+        the SAVEPOINT instead of poisoning the outer transaction with a
+        UniqueViolation.
         """
         from superset.models.tags import TagType
         from superset.tags.core import get_tag
@@ -64,14 +59,12 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
     ) -> None:
         """Create TaggedObject entries for the given tag names.
 
-        Stores ``object_type`` as the Enum *name* (string) — the
-        ``tagged_object.object_type`` column is VARCHAR after migration
-        ``07f9a902af1b`` which dropped the Postgres ENUM constraint.
+        ``object_type`` is stored as the Enum name (string) — the column is
+        VARCHAR after migration ``07f9a902af1b`` dropped the Postgres ENUM constraint.
         """
         from superset.models.tags import ObjectType
 
         obj_type = ObjectType[object_type]
-        # striping and de-dupping (mirrors superset_old/daos/tag.py)
         clean_tag_names: set[str] = {tag.strip() for tag in tag_names}
         for name in clean_tag_names:
             tag = await self.get_by_name(name, "custom")
@@ -106,7 +99,6 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         object_id: int,
         tag_id: int,
     ) -> TaggedObject | None:
-        """Find a specific tagged object entry."""
         return await self._find_tagged_object(object_type, object_id, tag_id)
 
     async def delete_tagged_object(
@@ -117,13 +109,8 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
     ) -> None:
         """Delete a tagged object by tag name.
 
-        1:1 with the original validation flow of
-        ``DeleteTaggedObjectCommand`` (superset_old/commands/tag/delete.py)
-        + ``TagRestApi.delete_object`` (superset_old/tags/api.py:459-467):
-        a missing tag (``TagNotFoundError``) or a missing tagged-object link
-        (``TaggedObjectNotFoundError``) surfaces as **404**, not a silent
-        no-op. The original ``TagDAO.delete_tagged_object`` raises
-        ``NoResultFound`` for both cases.
+        A missing tag or a missing tagged-object link surfaces as **404**,
+        not a silent no-op.
         """
         from superset.exceptions import ObjectNotFoundError
 
@@ -139,7 +126,6 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         await self.session.flush()
 
     async def delete_tags(self, tag_names: list[str]) -> None:
-        """Delete tags and their tagged objects by names."""
         if not tag_names:
             return
         tags = await self.find_by_names(tag_names)
@@ -164,9 +150,8 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         for the contract (including the access scoping applied when
         ``security_manager``/``user`` are supplied).
 
-        If ``tag_names`` is empty/absent, returns all tagged objects (mirrors
-        superset_old/daos/tag.py:254 — ``find_by_names(tag_names) if tag_names
-        else find_all()``).
+        If ``tag_names`` is empty/absent, returns all tagged objects
+        (``find_by_names(tag_names) if tag_names else find_all()``).
         """
         tags = (
             await self.find_by_names(tag_names) if tag_names else await self.find_all()
@@ -184,8 +169,7 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
     ) -> None:
         """Reconcile TaggedObject entries linking objects to a tag.
 
-        1:1 with ``superset_old/daos/tag.py::create_tag_relationship``: adds
-        rows for objects not yet tagged and — unless ``bulk_create`` — DELETES
+        Adds rows for objects not yet tagged and — unless ``bulk_create`` — DELETES
         rows for objects no longer in ``objects_to_tag`` (the diff against the
         current set). This is what makes tag EDIT (PUT) actually reconcile the
         tagged-object set instead of being a no-op.
@@ -232,22 +216,10 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
                     )
                 )
 
-    # ------------------------------------------------------------------
-    # Serialisation helpers — produce the same shapes that the original
-    # Marshmallow schemas (TagGetResponseSchema, UserSchema) would emit
-    # when dumping raw SQLAlchemy model objects.  The liteset controller
-    # returns these dicts directly (no Marshmallow step), so the DAO
-    # must produce the final response shape.
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _serialize_tag(tag: Any) -> dict[str, Any]:
-        """Serialize a Tag model to ``{id, name, type}``.
-
-        Matches ``TagGetResponseSchema`` (superset_old/tags/schemas.py:42-45).
-        ``type`` is ``str(tag.type)`` which produces e.g. ``"TagType.custom"``
-        — the exact value the original Marshmallow ``fields.String()`` emits.
-        """
+        """Serialize a Tag to ``{id, name, type}``; ``type`` is
+        ``str(tag.type)`` e.g. ``"TagType.custom"``."""
         return {
             "id": tag.id,
             "name": tag.name,
@@ -256,10 +228,6 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
 
     @staticmethod
     def _serialize_user(user: Any) -> dict[str, Any]:
-        """Serialize a User model to ``{id, username, first_name, last_name}``.
-
-        Matches ``UserSchema`` (superset_old/dashboards/schemas.py:189-193).
-        """
         return {
             "id": getattr(user, "id", None),
             "username": getattr(user, "username", None),
@@ -288,8 +256,6 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         if user is None:
             return None
         if not hasattr(user, "id"):
-            # Raw integer FK or any other non-User value: Marshmallow 3 would
-            # dump it through UserSchema and get {} since every getattr misses.
             return {}
         return {
             "id": getattr(user, "id", None),
@@ -306,31 +272,25 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
     ) -> list[dict[str, Any]]:
         """Get the *entities* tagged by the given tag ids.
 
-        Mirrors ``superset_old/daos/tag.py::TagDAO.get_tagged_objects_by_tag_ids``:
-        returns Dashboard / Chart / SavedQuery (and Dataset where wired)
+        Returns Dashboard / Chart / SavedQuery (and Dataset where wired)
         rows shaped as
         ``{id, type, name, url, changed_on, created_by, creator, tags,
         owners}`` — *not* the raw ``TaggedObject`` link rows.
 
         When ``security_manager`` and ``user`` are supplied, each entity load
-        is scoped by the same access filters the upstream DAOs apply as
-        ``base_filter`` in ``find_by_ids`` (superset_old/daos/tag.py:195/218/241
-        → DashboardAccessFilter / ChartFilter / SavedQueryFilter): users only
-        see dashboards/charts they can access and ONLY their own saved
-        queries. Without them the load is unscoped — callers serving user
-        requests MUST pass both.
+        is scoped by access filters (DashboardAccessFilter / ChartFilter /
+        SavedQueryFilter): users only see dashboards/charts they can access
+        and ONLY their own saved queries. Without them the load is unscoped —
+        callers serving user requests MUST pass both.
 
-        Response shape matches what the original Marshmallow
-        ``TaggedObjectEntityResponseSchema`` (superset_old/tags/schemas.py:48-57)
-        produces when dumping the dicts from the original DAO:
+        Response shape:
 
-        - ``tags``: ``[{id, name, type}]`` via ``TagGetResponseSchema``
-        - ``owners``: ``[{id, username, first_name, last_name}]`` via ``UserSchema``
-        - ``created_by``: ``{id, first_name, last_name}`` via
-          ``UserSchema(exclude=["username"])``
+        - ``tags``: ``[{id, name, type}]``
+        - ``owners``: ``[{id, username, first_name, last_name}]``
+        - ``created_by``: ``{id, first_name, last_name}``
 
-        The liteset controller returns these dicts directly (no Marshmallow),
-        so the serialisation happens here.
+        The controller returns these dicts directly (no Marshmallow), so
+        serialisation happens here.
         """
         if not tag_ids:
             return []
@@ -344,7 +304,6 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         result = await self.session.execute(stmt)
         links = list(result.scalars().all())
 
-        # Group by type, then bulk-load each entity class once.
         from collections import defaultdict
 
         by_type: dict[str, list[int]] = defaultdict(list)
@@ -373,7 +332,6 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
             )
             return list(q.scalars().all())
 
-        # Dashboards
         if not obj_types or "dashboard" in obj_types:
             from superset.models.dashboard import Dashboard
 
@@ -408,7 +366,6 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
                     }
                 )
 
-        # Charts (Slice)
         if not obj_types or "chart" in obj_types:
             from superset.models.slice import Slice
 
@@ -439,10 +396,6 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
                     }
                 )
 
-        # Saved queries — mirrors superset_old/daos/tag.py:221-242 exactly.
-        # ``created_by`` stores the integer FK; ``owners`` is ``[obj.creator()]``
-        # (a one-element string list).  Both are serialised through Marshmallow 3
-        # in the original, producing ``{}`` and ``[{}]`` respectively.
         if (not obj_types or "query" in obj_types) and by_type.get("query"):
             sq_ids = by_type["query"]
             try:
@@ -464,9 +417,6 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
                     .where(_SavedQuery.id.in_(sq_ids), *saved_query_filters)
                     .options(
                         selectinload(_SavedQuery.tags),
-                        # ``sq.creator()`` below reads the lazy ``created_by``
-                        # relationship — without the preload it raises
-                        # MissingGreenlet on the async session (R13-06).
                         selectinload(_SavedQuery.created_by),
                     )
                 )
@@ -482,8 +432,6 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
                                 else getattr(sq, "url", None)
                             ),
                             "changed_on": getattr(sq, "changed_on", None),
-                            # Original stores created_by_fk (integer FK); Marshmallow 3
-                            # dumps an int through UserSchema → {} (all attrs missing).
                             "created_by": self._serialize_created_by(
                                 getattr(sq, "created_by_fk", None)
                             ),
@@ -494,8 +442,6 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
                                 self._serialize_tag(t)
                                 for t in getattr(sq, "tags", []) or []
                             ],
-                            # Original: [obj.creator()] — a string list — through
-                            # Marshmallow UserSchema → [{}].  Always one element.
                             "owners": [{}],
                         }
                     )
@@ -507,15 +453,10 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         tag_id: int,
         user_id: int,
     ) -> bool:
-        """Mark a tag as favorite for a user.
-
-        Returns True if the tag was found and favorited.
-        """
         tag = await self.find_by_id(tag_id)
         if not tag:
             return False
 
-        # Check if already favorited to avoid duplicate insert
         existing = await self.favorited_ids([tag_id], user_id)
         if existing:
             return True
@@ -532,10 +473,6 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         tag_id: int,
         user_id: int,
     ) -> bool:
-        """Remove a tag from user's favorites.
-
-        Returns True if the tag was found.
-        """
         tag = await self.find_by_id(tag_id)
         if not tag:
             return False
@@ -552,7 +489,6 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         tag_ids: list[int],
         user_id: int,
     ) -> list[int]:
-        """Return IDs of tags that the user has favorited."""
         if not tag_ids:
             return []
         stmt = select(user_favorite_tag_table.c.tag_id).where(

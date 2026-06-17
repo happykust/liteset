@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/database/importers/v1/__init__.py``."""
+"""Command for importing database connections from a ZIP bundle."""
 
 from __future__ import annotations
 
@@ -34,7 +34,6 @@ if TYPE_CHECKING:
 
 
 class ImportDatabasesCommand(AsyncImportModelsCommand):
-    # 1:1 with upstream metadata-type validation (``Database``).
     _expected_type = "Database"
 
     def __init__(
@@ -64,21 +63,15 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
         from superset.utils.feature_flags import feature_flag_manager
 
         for name, config in configs.items():
-            # A bundled YAML file may parse to a non-dict (list/scalar); guard
-            # before ``.get`` so a malformed file is skipped (matching ``run()``'s
-            # ``isinstance`` checks) rather than raising AttributeError → HTTP 500.
+            # A malformed YAML may parse to a list/scalar; guard before .get
+            # so it is skipped rather than raising AttributeError → HTTP 500.
             if not (name.startswith("databases/") and isinstance(config, dict)):
                 continue
             if not config.get("database_name"):
                 raise CommandInvalidError(f"Missing database_name in {name}")
 
-            # Credential validation — 1:1 with upstream
-            # ``ImportV1DatabaseSchema.validate_password`` /
-            # ``validate_ssh_tunnel_credentials``: only for NEW databases (an
-            # existing one by uuid keeps its stored secrets), require a real
-            # password when the URI carries the mask, and enforce the SSH-tunnel
-            # feature flag + login-method mutual-exclusion + masked-credential
-            # checks. The port previously validated only ``database_name``.
+            # Validate credentials for NEW databases only; existing ones by UUID
+            # keep their stored secrets.
             uuid_str = config.get("uuid")
             existing = None
             if uuid_str and self._dao is not None:
@@ -106,7 +99,7 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
                 private_key = ssh_tunnel.get("private_key")
                 private_key_password = ssh_tunnel.get("private_key_password")
                 if ssh_password is not None:
-                    # Login method #1 (password) — must not mix with key method.
+                    # Password auth must not mix with private-key auth.
                     if private_key is not None or private_key_password is not None:
                         raise SSHTunnelInvalidCredentials()
                     if ssh_password == PASSWORD_MASK:
@@ -114,7 +107,6 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
                             "Must provide a password for the ssh tunnel"
                         )
                 else:
-                    # Login method #2 (private key + key password).
                     if private_key is None and private_key_password is None:
                         raise SSHTunnelMissingCredentials()
                     msgs: list[str] = []
@@ -131,13 +123,7 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
                         raise CommandInvalidError("; ".join(msgs))
 
     async def run(self) -> None:
-        """Run the import in dependency order: databases first, then related datasets.
-
-        Mirrors ``ImportDatabasesCommand._import`` from the original
-        which iterates the bundle twice: once for databases (honouring
-        ``overwrite``) and once for any ``datasets/`` entries that
-        reference a just-imported database.
-        """
+        """Import databases first, then related datasets that reference them."""
         if self._configs is None:
             raise CommandInvalidError("validate() must be called before run()")
         if self._dao is None:
@@ -151,7 +137,6 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
         configs = self._configs
         session = self._dao.session
 
-        # 1. Databases (with caller's overwrite flag).
         database_ids: dict[str, int] = {}
         for file_name, config in configs.items():
             if file_name.startswith("databases/") and isinstance(config, dict):
@@ -164,8 +149,7 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
                 )
                 database_ids[str(db.uuid)] = db.id
 
-        # 2. Related datasets (overwrite=False so existing columns/metrics
-        #    are preserved — matches the original).
+        # overwrite=False for datasets so existing columns/metrics are preserved.
         for file_name, config in configs.items():
             if (
                 file_name.startswith("datasets/")
@@ -196,16 +180,7 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
         file_name: str,
         content: dict[str, Any],
     ) -> None:
-        """Import a single database config — 1:1 port of import_database().
-
-        Logic ported from superset_old/commands/database/importers/v1/utils.py:
-        1. UUID-based dedup: query existing by UUID, skip or update
-        2. All fields (cache_timeout, expose_in_sqllab, allow_run_async, etc.)
-        3. ``extra`` JSON serialization
-        4. ``allow_csv_upload`` -> ``allow_file_upload`` rename
-        5. SSH tunnel import
-        6. Password masking via set_sqlalchemy_uri equivalent
-        """
+        """Import a single database config entry from the bundle."""
         if not file_name.startswith("databases/"):
             return
         if self._dao is None:
@@ -215,13 +190,10 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
 
         from superset.models.core import Database
 
-        config = dict(content)  # shallow copy to avoid mutating caller's data
+        config = dict(content)  # shallow copy
 
-        # --- Permission check ---
-        # ``AsyncSecurityManager.can_access`` takes the user explicitly
-        # (keyword-only) — the upstream manager reads the request-scoped
-        # current user inside ``can_access`` instead. No user in context →
-        # deny, like upstream (same fix as the dataset importer).
+        # ``AsyncSecurityManager.can_access`` takes the user explicitly;
+        # no user in context → deny (matches upstream behaviour).
         can_write = self._ignore_permissions
         if not can_write and self._security_manager is not None:
             if hasattr(self._security_manager, "can_access"):
@@ -238,7 +210,6 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
         elif self._security_manager is None:
             can_write = True
 
-        # --- UUID-based dedup ---
         uuid_str = config.get("uuid")
         existing: Database | None = None
         if uuid_str:
@@ -246,7 +217,7 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
 
         if existing:
             if not self._overwrite or not can_write:
-                return  # skip — already exists
+                return
             config["id"] = existing.id
         elif not can_write:
             raise CommandInvalidError(
@@ -254,11 +225,9 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
                 "to create databases"
             )
 
-        # --- ``allow_csv_upload`` -> ``allow_file_upload`` rename ---
         if "allow_csv_upload" in config:
             config["allow_file_upload"] = config.pop("allow_csv_upload")
 
-        # --- extra JSON: legacy rename + serialize ---
         extra = config.get("extra")
         if isinstance(extra, dict):
             if "schemas_allowed_for_csv_upload" in extra:
@@ -269,17 +238,11 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
         elif extra is None:
             config["extra"] = "{}"
 
-        # --- Extract SSH tunnel config before creating the database ---
         ssh_tunnel_config = config.pop("ssh_tunnel", None)
-
-        # --- Extract sqlalchemy_uri for masked password handling ---
         sqlalchemy_uri = config.pop("sqlalchemy_uri", "")
-
-        # --- Remove non-model fields ---
         config.pop("version", None)
         config.pop("database_uuid", None)
 
-        # --- Build attribute dict for the Database model ---
         db_attrs: dict[str, Any] = {}
         db_columns = {
             "database_name",
@@ -306,18 +269,15 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
             if key in config:
                 db_attrs[key] = config[key]
 
-        # Set the sqlalchemy_uri (the password gets stored in the URI)
         db_attrs["sqlalchemy_uri"] = sqlalchemy_uri
 
         if existing:
-            # Update existing database
             for key, value in db_attrs.items():
                 setattr(existing, key, value)
             if uuid_str:
                 existing.uuid = _UUID(uuid_str)  # type: ignore[assignment]
             database = existing
         else:
-            # Create new database
             database = Database(**db_attrs)
             if uuid_str:
                 database.uuid = _UUID(uuid_str)  # type: ignore[assignment]
@@ -325,7 +285,6 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
 
         await self._dao.session.flush()
 
-        # --- SSH tunnel import ---
         if ssh_tunnel_config:
             await self._import_ssh_tunnel(
                 self._dao.session, database.id, ssh_tunnel_config
@@ -344,11 +303,8 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
 
         config = dict(config)  # shallow copy
         config["database_id"] = database_id
-
-        # Remove non-model fields
         config.pop("id", None)
 
-        # Check if an SSH tunnel already exists for this database
         stmt = select(SSHTunnel).where(SSHTunnel.database_id == database_id)
         result = await session.execute(stmt)
         existing = result.scalars().one_or_none()
@@ -367,13 +323,11 @@ class ImportDatabasesCommand(AsyncImportModelsCommand):
             for key in tunnel_attrs:
                 if key in config:
                     value = config[key]
-                    # Don't overwrite passwords with mask values
                     if key in ("password", "private_key", "private_key_password"):
                         if value == PASSWORD_MASK:
                             continue
                     setattr(existing, key, value)
         else:
-            # Filter to only known columns
             filtered = {k: v for k, v in config.items() if k in tunnel_attrs}
             tunnel = SSHTunnel(**filtered)
             session.add(tunnel)

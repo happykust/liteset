@@ -16,17 +16,12 @@
 # under the License.
 """Constants and enums used by pandas post-processing functions.
 
-Ported from ``superset.utils.core`` and ``superset.constants`` so that the
-superset pandas_postprocessing package has zero superset imports.
+Defined here so that the pandas_postprocessing package has zero superset imports.
 """
 
 from __future__ import annotations
 
 from enum import Enum, StrEnum
-
-# ---------------------------------------------------------------------------
-# From superset.utils.core
-# ---------------------------------------------------------------------------
 
 DTTM_ALIAS = "__timestamp"
 TIME_COMPARISON = "__"
@@ -42,10 +37,6 @@ class PostProcessingContributionOrientation(StrEnum):
     ROW = "row"
     COLUMN = "column"
 
-
-# ---------------------------------------------------------------------------
-# From superset.constants
-# ---------------------------------------------------------------------------
 
 NULL_STRING = "<NULL>"
 

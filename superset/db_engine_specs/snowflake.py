@@ -15,12 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Snowflake engine spec -- synchronous.
-
-Ported 1:1 from ``superset_old/db_engine_specs/snowflake.py`` with the legacy
-WSGI-stack imports removed.  Only overridden methods and attributes are
-included.
-"""
+"""Snowflake database engine spec."""
 
 from __future__ import annotations
 
@@ -47,10 +42,6 @@ if TYPE_CHECKING:
     from superset.models.sql_lab import Query
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Regular expressions to catch custom errors
-# ---------------------------------------------------------------------------
 
 OBJECT_DOES_NOT_EXIST_REGEX = re.compile(
     r"Object (?P<object>.*?) does not exist or not authorized."
@@ -156,9 +147,6 @@ class SnowflakeEngineSpec(PostgresBaseEngineSpec):
 
     @staticmethod
     def get_extra_params(database: Database, source: Any = None) -> dict[str, Any]:
-        """
-        Add a user agent to be used in the requests.
-        """
         from superset.utils.core import get_user_agent
 
         extra: dict[str, Any] = BaseEngineSpec.get_extra_params(database)
@@ -250,9 +238,7 @@ class SnowflakeEngineSpec(PostgresBaseEngineSpec):
 
     @staticmethod
     def mutate_db_for_connection_test(database: Database) -> None:
-        """By default, snowflake doesn't validate if the user/role has access
-        to the chosen database.
-        """
+        # Snowflake skips role/database validation by default; force it via connect arg.
         extra = json_utils.loads(database.extra or "{}")
         engine_params = extra.get("engine_params", {})
         connect_args = engine_params.get("connect_args", {})
@@ -339,9 +325,6 @@ class SnowflakeEngineSpec(PostgresBaseEngineSpec):
 
     @classmethod
     def parameters_json_schema(cls) -> Any:
-        """
-        Return configuration parameters as OpenAPI.
-        """
         if not cls.parameters_schema:
             return None
 
@@ -389,9 +372,7 @@ class SnowflakeEngineSpec(PostgresBaseEngineSpec):
             )
             connect_args["private_key"] = pkb
         else:
-            # Custom auth: consult ALLOWED_EXTRA_AUTHENTICATIONS config
-            # (1:1 with superset_old: app.config["ALLOWED_EXTRA_AUTHENTICATIONS"]
-            # -> SupersetSettings().allowed_extra_authentications).
+            # Custom auth: must be listed in ALLOWED_EXTRA_AUTHENTICATIONS["snowflake"].
             from superset.config import SupersetSettings
 
             _settings = SupersetSettings()  # type: ignore[call-arg]

@@ -14,18 +14,14 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Audit event logging for Superset (Liteset port).
+"""Audit event logging for Superset.
 
-1:1 port of ``superset_old/utils/log.py``.  The original module used
-the request-scoped ``g.user`` / ``request`` / ``has_request_context`` to
-walk the incoming HTTP request and resolve the authenticated user; this
-module
-replaces those primitives with the ``ContextVar``-based equivalents
+Replaces Flask's request-scoped ``g.user`` / ``request`` /
+``has_request_context`` primitives with ``ContextVar``-based equivalents
 defined in :mod:`superset.utils.core` (``get_current_user``,
-``get_logs_context``) and Litestar-shaped requests passed in
-explicitly.
+``get_logs_context``) and Litestar-shaped requests passed in explicitly.
 
-The class hierarchy mirrors the original exactly:
+Class hierarchy:
 
 * :class:`EventLogger` (``AbstractEventLogger`` in the original) — the
   abstract base class that drives every event-logger implementation.
@@ -79,21 +75,13 @@ logger = logging.getLogger(__name__)
 API_URI_RIS_KEY = "q"
 
 
-# ---------------------------------------------------------------------------
-# EventLogger -- abstract base (was ``AbstractEventLogger`` in the original).
-# ---------------------------------------------------------------------------
-
-
 class EventLogger(ABC):
     """Abstract event logger.
 
-    Direct port of ``superset_old/utils/log.py:AbstractEventLogger`` —
-    the class hierarchy is named :class:`EventLogger` here for
-    consistency with prior Liteset code; ``AbstractEventLogger`` is a
-    re-export alias in :mod:`superset.utils.log`.
+    Named :class:`EventLogger` for consistency with prior Liteset code;
+    ``AbstractEventLogger`` is a re-export alias in :mod:`superset.utils.log`.
     """
 
-    # Parameters that flow through ``curate_payload`` (whitelist).
     curated_payload_params: set[str] = {
         "force",
         "standalone",
@@ -104,7 +92,6 @@ class EventLogger(ABC):
         "select_as_cta",
     }
 
-    # Parameters that flow through ``curate_form_data`` (whitelist).
     curated_form_data_params: set[str] = {
         "dashboardId",
         "sliceId",
@@ -118,10 +105,6 @@ class EventLogger(ABC):
         "show_legend",
         "time_grain_sqla",
     }
-
-    # ------------------------------------------------------------------
-    # context-manager interface (matches ``AbstractEventLogger.__call__``)
-    # ------------------------------------------------------------------
 
     def __call__(
         self,
@@ -144,9 +127,6 @@ class EventLogger(ABC):
         self.start = datetime.now()
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        # Log data w/ arguments being passed in.  ``log_with_context`` is
-        # safe to call from sync land — it transparently bridges to the
-        # async implementation via :func:`_dispatch_log_with_context`.
         self.log_with_context(
             action=getattr(self, "action", "event"),
             object_ref=getattr(self, "object_ref", None),
@@ -155,29 +135,13 @@ class EventLogger(ABC):
             **getattr(self, "payload_override", {}),
         )
 
-    # ------------------------------------------------------------------
-    # payload curation -- 1:1 with the original.
-    # ------------------------------------------------------------------
-
     @classmethod
     def curate_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
-        """Return only the whitelisted keys from *payload*.
-
-        Mirrors ``AbstractEventLogger.curate_payload``.
-        """
         return {k: v for k, v in payload.items() if k in cls.curated_payload_params}
 
     @classmethod
     def curate_form_data(cls, payload: dict[str, Any]) -> dict[str, Any]:
-        """Return only the whitelisted form-data keys from *payload*.
-
-        Mirrors ``AbstractEventLogger.curate_form_data``.
-        """
         return {k: v for k, v in payload.items() if k in cls.curated_form_data_params}
-
-    # ------------------------------------------------------------------
-    # collect_request_payload — async port of the original helper.
-    # ------------------------------------------------------------------
 
     async def collect_request_payload(  # noqa: C901  # complex business logic
         self, request: Any | None = None
@@ -185,7 +149,7 @@ class EventLogger(ABC):
         """Build the audit payload from a Litestar :class:`Request`.
 
         Async equivalent of the original
-        ``collect_request_payload`` (``superset_old/utils/log.py:43``)::
+        ``collect_request_payload``::
 
             payload = {
                 "path": request.path,
@@ -205,14 +169,12 @@ class EventLogger(ABC):
 
         payload: dict[str, Any] = {}
 
-        # ---- path / url ----
         url = getattr(request, "url", None)
         if url is not None:
             payload["path"] = getattr(url, "path", str(url))
         elif hasattr(request, "path"):
             payload["path"] = request.path
 
-        # ---- form data (sync-friendly + async fallback) ----
         # Litestar exposes ``request.form()`` as a coroutine; tests that
         # pass plain dict-shaped objects may instead expose
         # ``request.form`` as a property returning a dict.  Handle both.
@@ -229,8 +191,7 @@ class EventLogger(ABC):
             for key, value in form_attr.items():
                 payload[key] = value
 
-        # ---- query / search params (overwrite POST body, mirroring
-        # the original behaviour of ``request.args.to_dict()``) ----
+        # query params overwrite POST body, mirroring ``request.args.to_dict()``
         query_params = getattr(request, "query_params", None)
         if query_params:
             try:
@@ -248,7 +209,6 @@ class EventLogger(ABC):
                 except Exception:  # noqa: BLE001, S110
                     pass
 
-        # ---- JSON body ----
         is_json_request = bool(
             getattr(request, "is_json", False)
             or "json"
@@ -270,9 +230,8 @@ class EventLogger(ABC):
             elif isinstance(json_fn, dict):
                 payload.update(json_fn)
 
-        # ---- url_rule (route name) ----
-        # Litestar equivalent: ``request.route_handler``; fall back to
-        # ``request.url_rule`` for tests that use mock objects.
+        # ``request.route_handler`` is the Litestar equivalent of Flask's
+        # ``request.url_rule``; fall back for tests that use mock objects.
         route_handler = getattr(request, "route_handler", None)
         if route_handler is not None:
             url_rule = getattr(route_handler, "name", None) or str(route_handler)
@@ -285,30 +244,20 @@ class EventLogger(ABC):
                 if rule_str and rule_str != payload.get("path"):
                     payload["url_rule"] = rule_str
 
-        # ---- rison cleanup (1:1 with original) ----
-        # Remove the raw rison string when an already-decoded ``rison``
-        # object has been merged in via ``payload_override``.
+        # Remove the raw rison ``q=`` string when the decoded ``rison`` object
+        # has already been merged in via ``payload_override`` (avoid duplicates).
         if "rison" in payload and API_URI_RIS_KEY in payload:
             del payload[API_URI_RIS_KEY]
-        # Drop empty rison object.
         if "rison" in payload and not payload["rison"]:
             del payload["rison"]
 
         return payload
-
-    # ------------------------------------------------------------------
-    # get_logger_from_status — maps HTTP status codes → log methods.
-    # ------------------------------------------------------------------
 
     @classmethod
     def get_logger_from_status(
         cls,
         status: int,
     ) -> tuple[Callable[..., None], str]:
-        """Return ``(logger_method, level_name)`` for the given HTTP status.
-
-        Mirrors ``superset_old.utils.log.get_logger_from_status``.
-        """
         log_map = {
             "2": LoggerLevel.INFO,
             "3": LoggerLevel.INFO,
@@ -317,10 +266,6 @@ class EventLogger(ABC):
         }
         log_level = log_map[str(status)[0]]
         return getattr(logger, log_level), log_level
-
-    # ------------------------------------------------------------------
-    # log -- subclass hook.
-    # ------------------------------------------------------------------
 
     @abstractmethod
     def log(  # pylint: disable=too-many-arguments
@@ -338,15 +283,6 @@ class EventLogger(ABC):
     ) -> None:
         """Persist a single audit event (subclasses implement)."""
 
-    # ------------------------------------------------------------------
-    # log_with_context -- builds the full payload and dispatches to log().
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # log_with_context  — sync entry-point (matches the original signature)
-    # alog_with_context — async entry-point used by async controllers.
-    # ------------------------------------------------------------------
-
     def log_with_context(  # pylint: disable=too-many-arguments
         self,
         action: str,
@@ -357,36 +293,16 @@ class EventLogger(ABC):
         request: Any | None = None,
         **payload_override: Any,
     ) -> None:
-        """Build and dispatch a fully-populated audit event (sync entry).
+        """Sync entry-point: build and dispatch a fully-populated audit event.
 
-        Direct port of ``AbstractEventLogger.log_with_context`` with the
-        Liteset adjustments:
+        ``g.user`` / ``request`` are replaced by ContextVars populated by
+        RequestContextMiddleware; ``request=`` kwarg is an escape hatch for
+        callers that already have one in scope.
 
-        * the request-scoped ``g.user`` is replaced by
-          :func:`superset.utils.core.get_current_user`.
-        * the request-scoped ``request`` is replaced by
-          :func:`superset.utils.core.get_current_request` (a
-          :class:`ContextVar` populated by
-          :class:`superset.middleware.request_context.RequestContextMiddleware`),
-          with an explicit ``request=`` kwarg as escape hatch for
-          callers that already have one in scope.
-        * Statsd counters go through
-          :class:`superset.stats_logger.StatsLoggerManager`.
-
-        Bridges sync→async automatically: if no event loop is running,
-        we ``asyncio.run`` the underlying coroutine and block on the
-        result; if we're already on an event loop we schedule the
-        underlying coroutine via ``loop.create_task`` (fire-and-forget),
-        matching the original ``DBEventLogger`` behaviour where
-        the SQLAlchemy commit happened on the request's own thread but
-        was discoverable via the request-scoped global.
+        No event loop → ``asyncio.run`` (Celery/CLI).
+        Running loop → ``loop.create_task`` fire-and-forget (Litestar handler).
         """
         if request is None:
-            # Fallback to the ContextVar populated by the
-            # RequestContextMiddleware.  The middleware sets the active
-            # Litestar Request on every inbound HTTP request, so any
-            # call-site that didn't thread the request through still
-            # gets the same payload as the original code path.
             request = get_current_request()
 
         coro = self._alog_with_context(
@@ -405,18 +321,10 @@ class EventLogger(ABC):
             running = None
 
         if running is None:
-            # No event loop — Celery worker / CLI / alembic.  Block on the
-            # coroutine.  We swallow exceptions because audit logging
-            # MUST NOT break the surrounding business logic (matches the
-            # original ``except SQLAlchemyError`` swallow in
-            # ``DBEventLogger.log``).
-            #
-            # IMPORTANT: implementations schedule the actual DB write as a
-            # fire-and-forget task (see ``AsyncDBEventLogger.log``); the
-            # original sync ``DBEventLogger.log`` always committed before
-            # returning, so the temporary loop must drain those tasks —
-            # ``asyncio.run`` CANCELS still-pending tasks on exit, which
-            # silently dropped every Celery/CLI audit record.
+            # Celery/CLI: block on the coroutine.  Must also drain pending
+            # fire-and-forget tasks before ``asyncio.run`` exits — the runtime
+            # cancels still-pending tasks on teardown, silently dropping every
+            # Celery/CLI audit record.
             async def _run_and_drain() -> None:
                 await coro
                 drain = getattr(self, "drain_pending_logs", None)
@@ -429,10 +337,6 @@ class EventLogger(ABC):
                 logger.warning("Audit log dispatch failed", exc_info=True)
             return
 
-        # We're on an event loop already (Litestar handler or async
-        # Command).  Schedule the coroutine fire-and-forget; the caller
-        # returns immediately so the request's response time isn't
-        # blocked by audit-log persistence.
         try:
             running.create_task(coro)
         except Exception:  # noqa: BLE001
@@ -452,14 +356,7 @@ class EventLogger(ABC):
         request: Any | None = None,
         **payload_override: Any,
     ) -> None:
-        """Async entry-point — preferred for async controllers.
-
-        Identical semantics to :meth:`log_with_context` but ``await``-able:
-        callers that are already on an event loop get back-pressure on
-        the audit log dispatch (the underlying ``self.log()`` call still
-        schedules its own DB write fire-and-forget; this method just
-        avoids the ``create_task`` indirection used by the sync entry).
-        """
+        """Async entry-point — preferred for async controllers."""
         if request is None:
             request = get_current_request()
         await self._alog_with_context(
@@ -483,9 +380,6 @@ class EventLogger(ABC):
         request: Any | None,
         **payload_override: Any,
     ) -> None:
-        """Real implementation — async-only.  Wrapped by both the sync and
-        async public entry-points above.
-        """
         # Lazy imports so ``superset.events`` stays importable without a
         # configured app (CLI, alembic, etc.).
         from superset.extensions import stats_logger_manager
@@ -503,7 +397,6 @@ class EventLogger(ABC):
             int(duration.total_seconds() * 1000) if duration is not None else None
         )
 
-        # request-scoped ``g.user`` → :func:`get_current_user` (ContextVar).
         user = get_current_user()
         user_id = getattr(user, "id", None) if user is not None else None
         if user_id is not None:
@@ -552,8 +445,7 @@ class EventLogger(ABC):
         if log_to_statsd:
             stats_logger_manager.instance.incr(action)
 
-        # Bulk-insert support: when callers pass ``explode=<key>`` and
-        # ``<key>`` is a JSON-encoded list, log one record per entry.
+        # ``explode=<key>`` with a JSON-encoded list → log one record per entry.
         records: list[dict[str, Any]]
         try:
             explode_by = payload.get("explode")
@@ -574,10 +466,6 @@ class EventLogger(ABC):
             **database_params,
         )
 
-    # ------------------------------------------------------------------
-    # log_context -- generator-based context manager.
-    # ------------------------------------------------------------------
-
     @contextmanager
     def log_context(
         self,
@@ -588,17 +476,13 @@ class EventLogger(ABC):
     ) -> Iterator[Callable[..., None]]:
         """Time a block and dispatch ``log_with_context`` on exit.
 
-        Direct port of ``AbstractEventLogger.log_context``.  Yields a
-        callable that callers may use to update the payload before the
-        block exits.
+        Yields a callable that callers may use to update the payload before
+        the block exits.
         """
         payload_override = kwargs.copy()
         start = datetime.now()
-        # yield a helper that lets callers attach extra payload fields.
         yield lambda **kw: payload_override.update(kw)
         duration = datetime.now() - start
-
-        # Pull the action override out of ``payload_override`` if present.
         action_str = payload_override.pop("action", action)
         self.log_with_context(
             action_str,
@@ -608,10 +492,6 @@ class EventLogger(ABC):
             **payload_override,
         )
 
-    # ------------------------------------------------------------------
-    # decorators -- log_this, log_this_with_context, log_this_with_extra_payload.
-    # ------------------------------------------------------------------
-
     def _wrapper(
         self,
         f: Callable[..., Any],
@@ -620,11 +500,7 @@ class EventLogger(ABC):
         allow_extra_payload: bool | None = False,
         **wrapper_kwargs: Any,
     ) -> Callable[..., Any]:
-        """Build the actual decorator -- shared by all ``log_this*`` flavours.
-
-        Direct port of ``AbstractEventLogger._wrapper`` with sync/async
-        detection so the decorator works for both flavours of handler.
-        """
+        """Build the actual decorator — shared by all ``log_this*`` flavours."""
         is_async = inspect.iscoroutinefunction(f)
 
         @functools.wraps(f)
@@ -670,40 +546,22 @@ class EventLogger(ABC):
         return async_wrapper if is_async else sync_wrapper
 
     def log_this(self, f: Callable[..., Any]) -> Callable[..., Any]:
-        """Decorator that uses the wrapped function's name as the action."""
         return self._wrapper(f)
 
     def log_this_with_context(self, **kwargs: Any) -> Callable[..., Any]:
-        """Decorator factory that overrides ``log_context`` kwargs."""
-
         def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
             return self._wrapper(f, **kwargs)
 
         return decorator
 
     def log_this_with_extra_payload(self, f: Callable[..., Any]) -> Callable[..., Any]:
-        """Decorator that exposes ``add_extra_log_payload`` to the wrapped function.
-
-        1:1 port of ``AbstractEventLogger.log_this_with_extra_payload``:
-        the wrapped function receives an ``add_extra_log_payload``
-        callable as a keyword argument and may use it to push extra
-        fields into the audit payload before the function returns.
-        """
+        """Inject ``add_extra_log_payload`` kwarg into the wrapped function."""
         return self._wrapper(f, allow_extra_payload=True)
 
 
-# ---------------------------------------------------------------------------
-# Default fallback EventLogger (uses ``logger.debug``).
-# ---------------------------------------------------------------------------
-
-
 class _StructuredLoggerLogger(EventLogger):
-    """Default ``EventLogger`` implementation -- emits ``logger.debug``.
-
-    Used until :func:`configure_event_logger` is called at app startup.
-    Faithful to the prior Liteset behaviour where ``event_logger.log(...)``
-    just emitted a structured ``debug`` line via ``logging``.
-    """
+    """Default fallback — emits ``logger.debug`` until
+    ``configure_event_logger`` is called."""
 
     def log(  # pylint: disable=too-many-arguments  # noqa: C901  # complex business logic
         self,
@@ -716,9 +574,6 @@ class _StructuredLoggerLogger(EventLogger):
         curated_payload: dict[str, Any] | None = None,
         curated_form_data: dict[str, Any] | None = None,
         *args: Any,
-        # The legacy controller call sites use ``object_ref`` /
-        # ``user_id`` / ``extra`` kwargs, so accept them and fold them
-        # into the payload.
         object_ref: str | None = None,
         extra: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -747,20 +602,8 @@ class _StructuredLoggerLogger(EventLogger):
         logger.debug("event_log %s", payload)
 
 
-# ---------------------------------------------------------------------------
-# StdOutEventLogger -- prints every event to stdout (1:1 with the original).
-# ---------------------------------------------------------------------------
-
-
 class StdOutEventLogger(EventLogger):
-    """Event logger that prints every event to stdout.
-
-    Direct port of ``superset_old/utils/log.py:StdOutEventLogger`` —
-    used in development and from Celery worker logs where DB
-    persistence is not desirable.  Distinct from :class:`EventLogger`
-    so callers can swap in this concrete class via the ``EVENT_LOGGER``
-    setting.
-    """
+    """Event logger that prints every event to stdout."""
 
     def log(  # pylint: disable=too-many-arguments
         self,
@@ -775,7 +618,7 @@ class StdOutEventLogger(EventLogger):
         *args: Any,
         **kwargs: Any,
     ) -> None:
-        data: dict[str, Any] = dict(  # noqa: C408 - mirrors original
+        data: dict[str, Any] = dict(  # noqa: C408
             user_id=user_id,
             action=action,
             dashboard_id=dashboard_id,
@@ -789,15 +632,9 @@ class StdOutEventLogger(EventLogger):
         print("StdOutEventLogger: ", data)
 
 
-# ---------------------------------------------------------------------------
-# AsyncDBEventLogger -- persists Log records to the database
-# ---------------------------------------------------------------------------
-
-
 class AsyncDBEventLogger(EventLogger):
     """Event logger that persists ``Log`` records to the metadata DB.
 
-    Async equivalent of ``superset_old/utils/log.py:DBEventLogger``.
     Each :meth:`log` call schedules a fire-and-forget
     ``asyncio.Task`` that opens a short-lived ``AsyncSession``, inserts
     the ``Log`` rows, commits, and closes — guaranteeing audit logging
@@ -809,15 +646,10 @@ class AsyncDBEventLogger(EventLogger):
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         self._session_factory = session_factory
-        # Strong references to in-flight ``_persist`` tasks: prevents the
-        # event loop from garbage-collecting fire-and-forget tasks
-        # mid-write, and lets ``drain_pending_logs`` block the sync
-        # (Celery/CLI) entrypoint until every row is committed.
+        # Strong refs to in-flight tasks: prevents GC of fire-and-forget
+        # writes mid-execution, and lets ``drain_pending_logs`` block until
+        # every row is committed before the Celery/CLI loop closes.
         self._pending_persists: set[asyncio.Task[None]] = set()
-
-    # ------------------------------------------------------------------
-    # public interface
-    # ------------------------------------------------------------------
 
     def log(  # pylint: disable=too-many-arguments
         self,
@@ -830,9 +662,7 @@ class AsyncDBEventLogger(EventLogger):
         curated_payload: dict[str, Any] | None = None,
         curated_form_data: dict[str, Any] | None = None,
         *args: Any,
-        # ``records`` comes from log_with_context's bulk-insert path.
         records: list[dict[str, Any]] | None = None,
-        # ``extra`` is the prior Liteset-style single-record entrypoint.
         extra: dict[str, Any] | None = None,
         object_ref: str | None = None,
         **kwargs: Any,
@@ -877,19 +707,9 @@ class AsyncDBEventLogger(EventLogger):
         task.add_done_callback(self._pending_persists.discard)
 
     async def drain_pending_logs(self) -> None:
-        """Await every in-flight ``_persist`` task.
-
-        Called by the sync ``log_with_context`` bridge before its
-        temporary ``asyncio.run`` loop closes — without this, the loop
-        teardown cancels the fire-and-forget persists and Celery/CLI
-        audit records never reach the ``Log`` table.
-        """
+        """Await every in-flight ``_persist`` task before the sync loop closes."""
         while self._pending_persists:
             await asyncio.gather(*list(self._pending_persists), return_exceptions=True)
-
-    # ------------------------------------------------------------------
-    # private persistence
-    # ------------------------------------------------------------------
 
     async def _persist(  # pylint: disable=too-many-arguments
         self,
@@ -903,29 +723,21 @@ class AsyncDBEventLogger(EventLogger):
         records: list[dict[str, Any]] | None,
         extra: dict[str, Any] | None,
     ) -> None:
-        """Insert ``Log`` rows inside a dedicated short-lived session.
+        """Bulk-insert ``Log`` rows in a dedicated short-lived session.
 
-        Uses a bulk ``INSERT`` statement (one round-trip per call,
-        regardless of how many records ``records`` contains) — the
-        async equivalent of the original
-        ``db.session.bulk_save_objects(logs)`` in Apache Superset's
-        :class:`DBEventLogger`.  We pass dicts (not ORM instances) to
-        :meth:`AsyncSession.execute` so SQLAlchemy can compile a single
-        executemany-style statement instead of issuing one INSERT per
-        :class:`~superset.models.core.Log` instance.
+        Passes dicts (not ORM instances) to ``AsyncSession.execute`` so
+        SQLAlchemy compiles a single executemany-style statement.
         """
         from superset.models.core import Log
 
         if not records:
             records = [extra] if extra else [{}]
 
-        # Naive UTC timestamp — matches ``Log.dttm`` (TIMESTAMP WITHOUT
-        # TIME ZONE, ``default=datetime.utcnow`` on the ORM class).
+        # Naive UTC — matches ``Log.dttm`` (TIMESTAMP WITHOUT TIME ZONE).
         dttm = datetime.now(tz=timezone.utc).replace(tzinfo=None)
 
-        # Use Superset's JSON serializer (datetime / NaN-aware), 1:1 with the
-        # original ``DBEventLogger`` — stdlib ``json.dumps`` raises on a
-        # datetime in the audit payload, silently dropping the JSON detail.
+        # Superset's JSON serializer is datetime/NaN-aware; stdlib json.dumps
+        # raises on a datetime in the audit payload.
         from superset.utils import json as superset_json
 
         rows: list[dict[str, Any]] = []
@@ -967,18 +779,8 @@ class AsyncDBEventLogger(EventLogger):
             await session.close()
 
 
-# ---------------------------------------------------------------------------
-# get_event_logger_from_cfg_value -- back-compat config validator.
-# ---------------------------------------------------------------------------
-
-
 def get_event_logger_from_cfg_value(cfg_value: Any) -> EventLogger:
-    """Validate / resolve ``EVENT_LOGGER`` config to an :class:`EventLogger`.
-
-    Direct port of the original — supports the legacy ``EVENT_LOGGER =
-    DBEventLogger`` (class assignment) syntax and raises ``TypeError``
-    when the resolved value isn't a concrete :class:`EventLogger`.
-    """
+    """Validate ``EVENT_LOGGER`` config; supports legacy class-assignment syntax."""
     result: Any = cfg_value
     if inspect.isclass(cfg_value):
         logging.warning(
@@ -1005,24 +807,13 @@ def get_event_logger_from_cfg_value(cfg_value: Any) -> EventLogger:
     return cast(EventLogger, result)
 
 
-# ---------------------------------------------------------------------------
-# Module-level singleton & configuration
-# ---------------------------------------------------------------------------
-
-# Default to the ``logger.debug`` fallback so nothing crashes if
-# ``configure_event_logger`` is never called (CLI / tests / migrations).
 event_logger: EventLogger = _StructuredLoggerLogger()
 
 
 def configure_event_logger(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> None:
-    """Replace the module-level ``event_logger`` singleton.
-
-    Called once during Litestar app startup (after the async engine and
-    session factory have been created).  Pass ``session_factory=None``
-    to keep the default fallback (useful in tests / migrations).
-    """
+    """Replace the module-level ``event_logger`` singleton at app startup."""
     global event_logger  # noqa: PLW0603
     if session_factory is not None:
         event_logger = AsyncDBEventLogger(session_factory)
@@ -1032,27 +823,14 @@ def configure_event_logger(
         logger.info("Event logger configured: structured logger fallback")
 
 
-# ---------------------------------------------------------------------------
-# log_this_with_context — module-level decorator that delegates to whichever
-# ``event_logger`` is configured at call time.  Kept for back-compat with
-# call sites that ``from superset.events import log_this_with_context``.
-# ---------------------------------------------------------------------------
-
-
 def log_this_with_context(
     *,
     action: str | Callable[..., str] | None = None,
     object_ref: str | Callable[..., str] | None = None,
     log_to_statsd: bool = True,
 ) -> Callable[..., Any]:
-    """Decorator that times a function call and dispatches an audit event.
-
-    Module-level convenience wrapper around the bound
-    ``event_logger.log_this_with_context``: defers the resolution of
-    ``event_logger`` until the decorator actually runs, so it picks up
-    :class:`AsyncDBEventLogger` once :func:`configure_event_logger`
-    swaps in the concrete impl.
-    """
+    """Module-level wrapper: defers ``event_logger`` resolution until
+    decoration time."""
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         is_async = inspect.iscoroutinefunction(fn)

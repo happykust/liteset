@@ -51,7 +51,6 @@ from litestar.types import ASGIApp, Message, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
 
-# Paths excluded from the application rate limit (health probes).
 _EXCLUDED_PATHS: frozenset[str] = frozenset(
     {
         "/api/v1/health",
@@ -62,14 +61,10 @@ _EXCLUDED_PATHS: frozenset[str] = frozenset(
     }
 )
 
-# Login endpoint paths subject to the AUTH_RATE_LIMIT (POST only).  Mirrors
-# the upstream auth_view blueprint which exposes ``/login/`` (see
-# superset.controllers.auth.AuthController).
 _LOGIN_PATHS: frozenset[str] = frozenset({"/login", "/login/"})
 
 _REDIS_KEY_PREFIX = "ratelimit:"
 
-# Map an upstream-limiter / ``limits`` granularity word to its length in seconds.
 _GRANULARITY_SECONDS: dict[str, int] = {
     "second": 1,
     "sec": 1,
@@ -83,11 +78,9 @@ _GRANULARITY_SECONDS: dict[str, int] = {
     "d": 86400,
 }
 
-# ``"50 per second"`` / ``"10 per 20 second"`` / ``"100 per hour"``
 _PER_RE = re.compile(
     r"^\s*(\d+)\s*per\s*(\d+)?\s*([a-zA-Z]+)\s*$",
 )
-# ``"50/second"`` / ``"5/s"`` / ``"100/hour"``
 _SLASH_RE = re.compile(r"^\s*(\d+)\s*/\s*(\d+)?\s*([a-zA-Z]+)\s*$")
 
 
@@ -129,7 +122,7 @@ class RateLimitMiddleware(ASGIMiddleware):
     Reads from ``app.state.settings``:
 
     * ``ratelimit_enabled`` (bool) — master switch; when False the middleware
-      passes through unconditionally (mirrors the upstream ``RATELIMIT_ENABLED``).
+      passes through unconditionally.
     * ``ratelimit_application`` (str) — application-wide limit (all requests).
     * ``auth_rate_limited`` (bool) + ``auth_rate_limit`` (str) — login POST limit.
 
@@ -145,8 +138,6 @@ class RateLimitMiddleware(ASGIMiddleware):
 
         settings = getattr(getattr(scope.get("app"), "state", None), "settings", None)
 
-        # Master kill switch — the upstream limiter disables every limit
-        # (application and per-route) when RATELIMIT_ENABLED is False.
         if settings is None or not getattr(settings, "ratelimit_enabled", False):
             await next_app(scope, receive, send)
             return
@@ -154,11 +145,8 @@ class RateLimitMiddleware(ASGIMiddleware):
         path: str = scope.get("path", "")
         method: str = str(scope.get("method", "GET")).upper()
 
-        # Build the list of limits that apply to this request.
-        # Each entry: (redis_namespace, count, window_seconds).
         checks: list[tuple[str, int, int]] = []
 
-        # Application limit — every request except health probes.
         if path not in _EXCLUDED_PATHS:
             app_limit = parse_rate_limit(
                 getattr(settings, "ratelimit_application", None)
@@ -166,7 +154,6 @@ class RateLimitMiddleware(ASGIMiddleware):
             if app_limit is not None:
                 checks.append(("app", app_limit[0], app_limit[1]))
 
-        # Auth limit — POST to the login endpoint, when AUTH_RATE_LIMITED.
         if (
             method == "POST"
             and path in _LOGIN_PATHS
@@ -181,13 +168,10 @@ class RateLimitMiddleware(ASGIMiddleware):
             return
 
         redis = getattr(getattr(scope.get("app"), "state", None), "redis", None)
-        # No Redis — fail open.
         if redis is None:
             await next_app(scope, receive, send)
             return
 
-        # Identity = client IP (upstream ``get_remote_address``), resolved
-        # after ProxyFixMiddleware has applied the trusted X-Forwarded-For.
         identity = _resolve_identity(scope)
 
         rl_headers: list[tuple[bytes, bytes]] | None = None
@@ -208,7 +192,6 @@ class RateLimitMiddleware(ASGIMiddleware):
                 await _send_429(send, max_requests, reset_at, retry_after)
                 return
 
-            # Surface headers from the tightest (lowest-remaining) limit.
             if rl_headers is None or remaining < int(rl_headers[1][1]):
                 rl_headers = [
                     (b"x-ratelimit-limit", str(max_requests).encode()),
@@ -229,12 +212,6 @@ class RateLimitMiddleware(ASGIMiddleware):
 
 
 def _resolve_identity(scope: Scope) -> str:
-    """Resolve the rate-limit key from the client IP.
-
-    Mirrors the upstream default ``key_func=get_remote_address`` which
-    returns ``request.remote_addr`` — the client IP (already corrected by
-    ProxyFixMiddleware from a trusted ``X-Forwarded-For`` when configured).
-    """
     client = scope.get("client")
     if client:
         return f"ip:{client[0]}"
@@ -250,22 +227,16 @@ async def _sliding_window_check(
 ) -> tuple[int, float]:
     """Execute a sliding-window rate-limit check using Redis sorted sets.
 
-    Returns ``(remaining, reset_timestamp)``. ``remaining`` is negative
-    when the limit has been exceeded.
+    Returns ``(remaining, reset_timestamp)``; remaining is negative when exceeded.
     """
     window_start = now - window
     reset_at = now + window
 
-    # Use a transactional pipeline (MULTI/EXEC) for atomicity
     pipe = redis.pipeline(transaction=True)  # type: ignore[attr-defined]
-    # Remove entries outside the current window
     pipe.zremrangebyscore(key, 0, window_start)
-    # Add current request with a unique member to avoid score collisions
     member = f"{now}:{uuid.uuid4().hex[:8]}"
     pipe.zadd(key, {member: now})
-    # Count requests in current window
     pipe.zcard(key)
-    # Set TTL so keys auto-expire
     pipe.expire(key, window + 1)
 
     results = await pipe.execute()
@@ -281,7 +252,6 @@ async def _send_429(
     reset_at: float,
     retry_after: str,
 ) -> None:
-    """Send a 429 Too Many Requests response."""
     body = b'{"message": "Rate limit exceeded. Please try again later.", "status": 429}'
     headers: list[tuple[bytes, bytes]] = [
         (b"content-type", b"application/json"),

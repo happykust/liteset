@@ -16,20 +16,15 @@
 # under the License.
 """Prune execution logs across all report schedules.
 
-Direct port of
-``superset_old/commands/report/log_prune.py::AsyncPruneReportScheduleLogCommand``.
-
 For every :class:`~superset.models.reports.ReportSchedule` that defines a
 ``log_retention`` window, deletes :class:`~superset.models.reports.ReportExecutionLog`
 rows whose ``end_dttm`` is older than that window.  Schedules with a ``NULL``
-``log_retention`` are skipped entirely (their logs are kept indefinitely),
-matching the original behaviour exactly.
+``log_retention`` are skipped entirely (their logs are kept indefinitely).
 
 The command runs synchronously against a regular SQLAlchemy ``Session``
-because it is invoked from the ``reports.prune_log`` Celery beat task.  The
-original wrapped ``run`` in ``@transaction()`` — i.e. the whole prune is
-atomic: if any schedule errors the entire operation is rolled back and a
-:class:`ReportSchedulePruneLogError` is raised.  That semantics is preserved.
+because it is invoked from the ``reports.prune_log`` Celery beat task.
+The whole prune is atomic: if any schedule errors the entire operation is
+rolled back and a :class:`ReportSchedulePruneLogError` is raised.
 """
 
 from __future__ import annotations
@@ -103,7 +98,7 @@ class PruneReportScheduleLogCommand:
         session.commit()
 
     def validate(self) -> None:
-        """No-op validation — kept for API compatibility with the original."""
+        pass
 
 
 __all__ = ["PruneReportScheduleLogCommand"]

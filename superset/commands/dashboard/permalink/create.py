@@ -14,18 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/dashboard/permalink/create.py``.
-
-The store layout matches the original Superset:
-
-* Internally the entry is keyed by a deterministic UUID
-  (``uuid3(salt, (user_id, value))``) so the same dashboard+state for
-  the same user always reuses the same row.
-* Externally the URL key is the auto-generated integer ``id`` of the
-  entry, encoded with hashids using a per-install salt persisted in
-  the ``app`` resource. ``GET /dashboard/permalink/{key}`` decodes
-  that hashids string back to the integer id and looks the entry up.
-"""
+"""Create command for dashboard permalinks."""
 
 from __future__ import annotations
 
@@ -44,10 +33,9 @@ if TYPE_CHECKING:
 
 
 class CreateDashboardPermalinkCommand(AsyncBaseCommand[str]):
-    """Get or create a permalink key for the dashboard.
-
-    The same dashboard_id and state for the same user will return the
-    same permalink — 1:1 with the original sync command.
+    """
+    Get or create a permalink; same dashboard+state+user always
+    returns the same key.
     """
 
     def __init__(
@@ -68,7 +56,7 @@ class CreateDashboardPermalinkCommand(AsyncBaseCommand[str]):
         pass
 
     async def run(self) -> str:
-        # Use UUID when available; fall back to int id for backwards compat
+        # Prefer UUID over int id for backwards compat when UUID is absent.
         dash_id_value: str | int = (
             self._dashboard_uuid if self._dashboard_uuid else self._dashboard_id
         )
@@ -78,10 +66,6 @@ class CreateDashboardPermalinkCommand(AsyncBaseCommand[str]):
         }
         session: AsyncSession = self._dao.session
         salt = await get_permalink_salt(session, SharedKey.DASHBOARD_PERMALINK_SALT)
-        # Deterministic UUID derived from (salt, (user_id, value)) so the
-        # same payload for the same user always upserts the same row —
-        # matches CreateDashboardPermalinkCommand at
-        # superset_old/commands/dashboard/permalink/create.py:74-80.
         deterministic_uuid = get_deterministic_uuid(salt, (self._user_id, payload))
 
         existing = await self._dao.get_entry_by_key(

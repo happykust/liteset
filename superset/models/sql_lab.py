@@ -54,9 +54,8 @@ from superset.models.helpers import (
 if TYPE_CHECKING:
     from superset.models.connectors import TableColumn
 
-# ---------------------------------------------------------------------------
+
 # Enums
-# ---------------------------------------------------------------------------
 
 
 class LimitingFactor(str, enum.Enum):
@@ -77,9 +76,7 @@ class CTASMethod(str, enum.Enum):
     VIEW = "VIEW"
 
 
-# ---------------------------------------------------------------------------
 # Query
-# ---------------------------------------------------------------------------
 
 
 class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
@@ -88,12 +85,10 @@ class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
     In addition to being the persistence model for SQL Lab executions, a
     ``Query`` can act as a chart datasource (``datasource_type="query"``):
     it mixes in :class:`ExploreMixin` (the AST query builder) and
-    :class:`AsyncQueryExecutionMixin` (the async build/execute pipeline),
-    exactly as upstream's
-    ``Query(SqlTablesMixin, ExtraJSONMixin, ExploreMixin, Model)`` does in
-    ``superset_old/models/sql_lab.py``. The chart-data ``columns`` are
-    synthesized from ``self.extra["columns"]`` (populated by SQL Lab on
-    execution) rather than from a ``table_columns`` relationship.
+    :class:`AsyncQueryExecutionMixin` (the async build/execute pipeline).
+    The chart-data ``columns`` are synthesized from ``self.extra["columns"]``
+    (populated by SQL Lab on execution) rather than from a ``table_columns``
+    relationship.
     """
 
     __tablename__ = "query"
@@ -150,7 +145,6 @@ class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
     database = relationship(
         "Database",
         foreign_keys=[database_id],
-        # 1:1 with superset_old/models/sql_lab.py:156-160 — ORM cascade.
         backref=sa_backref("queries", cascade="all, delete-orphan"),
     )
     user = relationship(
@@ -160,8 +154,7 @@ class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
 
     @property
     def tracking_url(self) -> str | None:
-        """Transform the tracking URL via ``TRACKING_URL_TRANSFORMER`` at read
-        time — 1:1 with ``superset_old/models/sql_lab.py::Query.tracking_url``.
+        """Transform the tracking URL via ``TRACKING_URL_TRANSFORMER`` at read time.
 
         The exact URL may depend on query properties (execution/finish time),
         so the transform runs on read, not on store. For backward compatibility
@@ -174,9 +167,7 @@ class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
 
         url = self.tracking_url_raw
         # Common case: no tracking URL (only Hive/Presto/Trino set one) —
-        # skip the settings construction entirely.  Mirrors upstream's
-        # ``if url and transform:`` guard semantics; the previous version
-        # built a full SupersetSettings on EVERY ``to_dict()`` poll.
+        # skip the settings construction entirely.
         if not url:
             return url
         try:
@@ -259,18 +250,16 @@ class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
     # ------------------------------------------------------------------
     # Datasource interface (datasource_type="query")
     #
-    # Ported 1:1 from ``superset_old/models/sql_lab.py::Query`` (lines
-    # 96-386). These shims let a SQL Lab result act as a chart datasource
-    # via the inherited :class:`ExploreMixin` query builder and
-    # :class:`AsyncQueryExecutionMixin` execution pipeline.
+    # These shims let a SQL Lab result act as a chart datasource via the inherited
+    # :class:`ExploreMixin` query builder and :class:`AsyncQueryExecutionMixin`
+    # execution pipeline.
     # ------------------------------------------------------------------
 
     def get_template_processor(self, **kwargs: Any) -> Any:
         """Return a Jinja template processor bound to this query.
 
-        1:1 with ``superset_old/models/sql_lab.py::Query.get_template_processor``
-        — passes ``query=self`` (not ``table=self``) so the
-        ``{{ query }}`` Jinja context resolves to this SQL Lab query.
+        Passes ``query=self`` (not ``table=self``) so the ``{{ query }}`` Jinja
+        context resolves to this SQL Lab query.
         """
         from superset.jinja_context import get_template_processor
 
@@ -280,26 +269,11 @@ class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
     def columns(self) -> list["TableColumn"]:
         """Synthesize transient ``TableColumn`` objects from ``extra``.
 
-        1:1 with ``superset_old/models/sql_lab.py::Query.columns``: SQL Lab
-        stores the result-set column metadata in ``extra["columns"]`` on
-        execution, and we materialise one ``TableColumn`` per entry.
-
-        Async-safety / port deltas:
-        - The objects are **transient** — never added to a session, so no
-          flush is ever triggered.
-        - The port's :class:`TableColumn.database` is a *read-only*
-          computed property derived from ``self.table`` (unlike upstream's
-          settable relationship), so ``database`` is NOT passed to the
-          constructor. The inherited :class:`ExploreMixin` resolves the
-          engine spec via ``self`` (the ``Query``) — see
-          ``ExploreMixin.convert_tbl_column_to_sqla_col`` — so the column's
-          own ``database`` is not needed for chart-data SQL building.
-        - For a transient ``TableColumn`` the unset ``table`` relationship
-          returns ``None`` without a lazy SELECT, so ``.database`` /
-          ``.db_engine_spec`` are safe to touch under asyncpg (no
-          MissingGreenlet).
-        - Keys are read defensively (``dict.get``) so a query whose stored
-          ``extra`` predates a column-metadata field does not 500.
+        SQL Lab stores the result-set column metadata in ``extra["columns"]`` on
+        execution; one ``TableColumn`` is materialised per entry. The objects are
+        transient — never added to a session, so no flush is ever triggered. Keys are
+        read defensively (``dict.get``) so a query whose stored ``extra`` predates a
+        column-metadata field does not 500.
         """
         from superset.models.connectors import TableColumn
 
@@ -427,10 +401,7 @@ class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
         force_type_check: bool = False,
         template_processor: Any | None = None,
     ) -> Any:
-        """Turn an adhoc column into a SQLAlchemy column.
-
-        1:1 with ``superset_old/models/sql_lab.py::Query.adhoc_column_to_sqla``.
-        """
+        """Turn an adhoc column into a SQLAlchemy column."""
         from sqlalchemy.sql.elements import literal_column
 
         from superset.utils.column import get_column_name
@@ -447,9 +418,7 @@ class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
         return self.make_sqla_column_compatible(sqla_column, label)
 
 
-# ---------------------------------------------------------------------------
 # SavedQuery
-# ---------------------------------------------------------------------------
 
 
 class SavedQuery(Base, AuditMixinNullable, ExtraJSONMixin, ImportExportMixin):
@@ -470,7 +439,6 @@ class SavedQuery(Base, AuditMixinNullable, ExtraJSONMixin, ImportExportMixin):
     last_run = Column(DateTime)
 
     def __repr__(self) -> str:
-        # 1:1 superset_old/models/sql_lab.py:439 — /related/ dropdown text.
         return str(self.label)
 
     # -- relationships --------------------------------------------------------
@@ -478,13 +446,11 @@ class SavedQuery(Base, AuditMixinNullable, ExtraJSONMixin, ImportExportMixin):
     user = relationship(
         "User",
         foreign_keys=[user_id],
-        # 1:1 with superset_old/models/sql_lab.py:408-410 — ORM cascade.
         backref=sa_backref("saved_queries", cascade="all, delete-orphan"),
     )
     database = relationship(
         "Database",
         foreign_keys=[db_id],
-        # 1:1 with superset_old/models/sql_lab.py:413-416 — ORM cascade.
         backref=sa_backref("saved_queries", cascade="all, delete-orphan"),
     )
     tags = relationship(
@@ -515,9 +481,7 @@ class SavedQuery(Base, AuditMixinNullable, ExtraJSONMixin, ImportExportMixin):
         return f"/sqllab?savedQueryId={self.id}"
 
 
-# ---------------------------------------------------------------------------
 # TabState
-# ---------------------------------------------------------------------------
 
 
 class TabState(AuditMixinNullable, ExtraJSONMixin, Base):
@@ -594,9 +558,7 @@ class TabState(AuditMixinNullable, ExtraJSONMixin, Base):
         }
 
 
-# ---------------------------------------------------------------------------
 # TableSchema
-# ---------------------------------------------------------------------------
 
 
 class TableSchema(AuditMixinNullable, ExtraJSONMixin, Base):

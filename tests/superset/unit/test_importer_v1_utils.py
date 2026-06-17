@@ -16,22 +16,21 @@
 # under the License.
 """Unit tests for superset.commands.importers.v1.utils.
 
-Covers the two medium-severity audit findings verified against the original
-superset_old behaviour:
+Covers two audit findings:
 
 Finding 1 — zip-bomb zero-guard:
-  The original check_is_safe_zip (superset_old/utils/core.py:1897) performs an
-  unconditional division ``compress_ratio = uncompress_size / compress_size``
-  which raises ZeroDivisionError for empty/directory-only ZIPs.  That is a bug,
-  not intended behaviour.  The liteset implementation correctly guards against
-  it; for a pathologically empty ZIP the bundle is effectively treated as having
-  no valid entries (get_contents_from_bundle returns {}).  Verdict: false_positive.
+  The original check_is_safe_zip performs an unconditional division
+  ``compress_ratio = uncompress_size / compress_size`` which raises
+  ZeroDivisionError for empty/directory-only ZIPs.  That is a bug, not
+  intended behaviour.  The liteset implementation correctly guards against it;
+  for a pathologically empty ZIP the bundle is effectively treated as having no
+  valid entries (get_contents_from_bundle returns {}).  Verdict: false_positive.
 
 Finding 2 — timestamp datetime acceptance:
-  The original MetadataSchema uses ``fields.DateTime()`` which, contrary to the
-  audit claim, does NOT accept Python datetime objects.  When YAML safe_load
-  produces a datetime from an unquoted timestamp literal the original also raises
-  a ValidationError('Not a valid datetime.').  Liteset behaviour is identical:
+  MetadataSchema uses ``fields.DateTime()`` which, contrary to the audit claim,
+  does NOT accept Python datetime objects.  When YAML safe_load produces a
+  datetime from an unquoted timestamp literal the original also raises a
+  ValidationError('Not a valid datetime.').  Liteset behaviour is identical:
   the same validation error is raised.  Verdict: false_positive.
 """
 
@@ -92,13 +91,12 @@ def test_load_metadata_rejects_yaml_datetime_object() -> None:
     ``yaml.safe_load`` parses ``timestamp: 2024-01-15T00:00:00`` (no quotes)
     into a Python datetime object.
 
-    Original behaviour (superset_old/commands/importers/v1/utils.py):
-      ``MetadataSchema().load(metadata)`` → Marshmallow DateTime._deserialize
-      calls ``from_iso_datetime(datetime_obj)`` → regex.match raises TypeError
-      → caught → ValidationError({'timestamp': ['Not a valid datetime.']}).
-      Since 'version' is NOT in ex.messages the ValidationError propagates.
+    ``MetadataSchema().load(metadata)`` → Marshmallow DateTime._deserialize
+    calls ``from_iso_datetime(datetime_obj)`` → regex.match raises TypeError
+    → caught → ValidationError({'timestamp': ['Not a valid datetime.']}).
+    Since 'version' is NOT in ex.messages the ValidationError propagates.
 
-    Liteset behaviour mirrors this: a non-string timestamp triggers
+    Liteset behaviour: a non-string timestamp triggers
     ``errors["timestamp"] = ["Not a valid datetime."]`` → CommandInvalidError.
     Both produce a 422 with the same message.
     """
@@ -155,8 +153,8 @@ def test_load_metadata_raises_incorrect_version_error_for_wrong_version() -> Non
 def test_get_contents_from_bundle_returns_empty_for_empty_zip() -> None:
     """An empty ZIP (no entries) returns an empty dict without crashing.
 
-    Original behaviour (superset_old/utils/core.py check_is_safe_zip):
-      ZeroDivisionError when compress_size == 0 (unintentional bug).
+    check_is_safe_zip raised ZeroDivisionError when compress_size == 0
+    (unintentional bug).
 
     Liteset behaviour: compress_size guard skips the ratio check; the ZIP has
     no YAML entries so get_contents_from_bundle returns {}.  This is strictly

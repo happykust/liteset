@@ -17,10 +17,8 @@
 """SIP-40 compatible exception hierarchy for Superset.
 
 Maps to Superset exceptions for frontend compatibility.
-Ref: superset_old/exceptions.py, superset_old/views/error_handling.py
 
-The hierarchy is ported 1:1 from the original codebase so that
-every ``except SomeException`` in business-logic modules keeps working.
+Every ``except SomeException`` in business-logic modules keeps working.
 The Litestar-specific exception handlers live at the bottom of this file.
 """
 
@@ -37,11 +35,6 @@ if TYPE_CHECKING:
     from superset.errors import ErrorLevel, SupersetError
 
 logger = logging.getLogger(__name__)
-
-
-# ======================================================================
-# Base exception
-# ======================================================================
 
 
 class SupersetException(Exception):  # noqa: N818
@@ -80,7 +73,6 @@ class SupersetException(Exception):  # noqa: N818
         return self.status_code
 
     def to_sip40(self) -> dict[str, Any]:
-        """Convert to SIP-40 error dict for JSON response."""
         return {
             "message": self.message,
             "error_type": self.error_type,
@@ -89,19 +81,12 @@ class SupersetException(Exception):  # noqa: N818
         }
 
 
-# ======================================================================
-# Generic / mid-level exceptions
-# ======================================================================
-
-
 class SupersetErrorException(SupersetException):
     """Exceptions with a single :class:`SupersetError` payload.
 
-    Ported 1:1 from ``superset_old/exceptions.py::SupersetErrorException``:
-    accepts a ``SupersetError`` instance (the SIP-40 error dataclass) plus
+    Accepts a ``SupersetError`` instance (the SIP-40 error dataclass) plus
     an optional HTTP ``status`` override. The full error object is kept on
-    ``self.error`` so callers can inspect ``error_type`` / ``level`` / ``extra``,
-    matching the original behaviour.
+    ``self.error`` so callers can inspect ``error_type`` / ``level`` / ``extra``.
     """
 
     def __init__(self, error: SupersetError, status: int | None = None) -> None:
@@ -118,11 +103,9 @@ class SupersetErrorException(SupersetException):
             self.status_code = status
 
     def to_sip40(self) -> dict[str, Any]:
-        """Return the SIP-40 error dict matching original
-        ``dataclasses.asdict()`` shape.
+        """Return the SIP-40 error dict using ``dataclasses.asdict()``.
 
-        The original ``json_error_response`` used ``dataclasses.asdict(error)``
-        (superset_old/views/error_handling.py:78) which unconditionally serialises
+        Uses ``dataclasses.asdict(error)`` which unconditionally serialises
         ALL dataclass fields, including ``extra=None``.  Using ``to_dict()`` instead
         would silently drop the ``extra`` key when it is ``None`` or ``{}``, producing
         ``{message, error_type, level}`` instead of ``{message, error_type, level,
@@ -137,11 +120,6 @@ class SupersetErrorException(SupersetException):
 
 
 class SupersetGenericErrorException(SupersetErrorException):
-    """Exceptions that are too generic to have their own type.
-
-    Direct port of ``superset_old/exceptions.py::SupersetGenericErrorException``.
-    """
-
     def __init__(self, message: str, status: int | None = None) -> None:
         from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 
@@ -156,11 +134,6 @@ class SupersetGenericErrorException(SupersetErrorException):
 
 
 class SupersetErrorFromParamsException(SupersetErrorException):
-    """Exceptions that pass in parameters to construct a SupersetError.
-
-    Direct port of ``superset_old/exceptions.py::SupersetErrorFromParamsException``.
-    """
-
     def __init__(
         self,
         error_type: Any,
@@ -183,7 +156,6 @@ class SupersetErrorFromParamsException(SupersetErrorException):
 class SupersetErrorsException(SupersetException):
     """Exceptions with multiple :class:`SupersetError` payloads.
 
-    Ported 1:1 from ``superset_old/exceptions.py::SupersetErrorsException``.
     The constructor accepts a list of ``SupersetError`` (preferred) but also
     tolerates pre-converted dicts so existing call-sites keep working.
     """
@@ -193,19 +165,15 @@ class SupersetErrorsException(SupersetException):
         errors: list[Any] | None = None,
         status: int | None = None,
         message: str = "",
-        # Backwards-compat alias for callers that still pass the old kwarg.
-        status_code: int | None = None,
+        status_code: int | None = None,  # back-compat alias
     ) -> None:
         self.errors = errors or []
         chosen = status if status is not None else status_code
         if chosen is not None:
             self.status_code = chosen
-        # Pick the first error's message for ``self.message`` (upstream compat
-        # — most consumers display this in a toast). Falls back to
-        # ``str(self.errors)`` only when no errors were supplied at all,
-        # not when the list has structured dict/SupersetError elements
-        # (otherwise the user sees the Python repr of the list, e.g.
-        # ``"[{'error_type': '...', 'message': '...', 'level': '...'}]"``).
+        # Use the first error's message for ``self.message`` — most consumers
+        # display this in a toast.  Do not fall back to ``str(self.errors)``
+        # when structured errors are present or the user sees the Python repr.
         if not message:
             from superset.errors import SupersetError as _SupersetError
 
@@ -248,16 +216,8 @@ class SupersetErrorsException(SupersetException):
         return super().to_sip40()
 
 
-# ======================================================================
-# Specific exception classes  (ported 1:1 from original)
-# ======================================================================
-
-
 class SupersetSyntaxErrorException(SupersetErrorsException):
-    """Raised when Jinja2 template processing finds a syntax error.
-
-    Ported 1:1 from ``superset_old/exceptions.py::SupersetSyntaxErrorException``.
-    """
+    """Raised when Jinja2 template processing finds a syntax error."""
 
     status_code = 422
 
@@ -317,9 +277,8 @@ class SupersetTemplateParamsErrorException(SupersetErrorFromParamsException):
 class SupersetSecurityException(SupersetErrorException):
     """Security failure with an attached SIP-40 error.
 
-    Direct port of ``superset_old/exceptions.py::SupersetSecurityException``.
     The optional ``payload`` field carries datasource/role context that
-    the original ``raise_for_access`` flow attaches.
+    the ``raise_for_access`` flow attaches.
     """
 
     status_code = 403
@@ -378,9 +337,8 @@ class SupersetValidationException(SupersetException):
 
 
 class DatasourceTypeNotSupportedError(SupersetException):
-    """1:1 with upstream ``daos.exceptions.DatasourceTypeNotSupportedError``
-    (status 422) — raised for datasource types without a backing model
-    ("view"/"dataset")."""
+    """Raised for datasource types that have no backing model
+    (e.g. "view"/"dataset")."""
 
     status_code = 422
     message = "DAO datasource query source type is not supported"
@@ -418,9 +376,7 @@ class DashboardImportException(SupersetException):
 
 
 class DatasetInvalidPermissionEvaluationException(SupersetException):
-    """
-    When a dataset can't compute its permission name.
-    """
+    pass
 
 
 class SerializationError(SupersetException):
@@ -471,10 +427,6 @@ class ColumnNotFoundException(SupersetException):
 
 
 class SupersetMarshmallowValidationError(SupersetErrorException):
-    """
-    Exception to be raised for Marshmallow validation errors.
-    """
-
     status_code = 422
 
     def __init__(
@@ -497,10 +449,9 @@ class SupersetMarshmallowValidationError(SupersetErrorException):
 class SupersetParseError(SupersetErrorException):
     """Exception raised when we fail to parse SQL.
 
-    Ported 1:1 from ``superset_old/exceptions.py::SupersetParseError``:
-    extends ``SupersetErrorException`` and constructs a ``SupersetError``
-    with ``error_type=SupersetErrorType.INVALID_SQL_ERROR`` so the
-    frontend receives ``"INVALID_SQL_ERROR"`` in the SIP-40 payload.
+    Constructs a ``SupersetError`` with
+    ``error_type=SupersetErrorType.INVALID_SQL_ERROR`` so the frontend
+    receives ``"INVALID_SQL_ERROR"`` in the SIP-40 payload.
     """
 
     status_code = 422
@@ -539,11 +490,7 @@ class SupersetParseError(SupersetErrorException):
 
 
 class OAuth2RedirectError(SupersetErrorException):
-    """
-    Exception used to start OAuth2 dance for personal tokens.
-
-    Direct port of ``superset_old/exceptions.py::OAuth2RedirectError``.
-    """
+    """Exception used to start OAuth2 dance for personal tokens."""
 
     def __init__(self, url: str, tab_id: str, redirect_uri: str) -> None:
         from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
@@ -559,11 +506,7 @@ class OAuth2RedirectError(SupersetErrorException):
 
 
 class OAuth2Error(SupersetErrorException):
-    """
-    Exception for when OAuth2 goes wrong.
-
-    Direct port of ``superset_old/exceptions.py::OAuth2Error``.
-    """
+    """Exception for when OAuth2 goes wrong."""
 
     def __init__(self, error: str) -> None:
         from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
@@ -579,12 +522,7 @@ class OAuth2Error(SupersetErrorException):
 
 
 class SupersetDisallowedSQLFunctionException(SupersetErrorException):
-    """
-    Disallowed function found on SQL statement.
-
-    Direct port of
-    ``superset_old/exceptions.py::SupersetDisallowedSQLFunctionException``.
-    """
+    """Disallowed function found on SQL statement."""
 
     def __init__(self, functions: set[str]) -> None:
         from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
@@ -599,15 +537,11 @@ class SupersetDisallowedSQLFunctionException(SupersetErrorException):
 
 
 class CreateKeyValueDistributedLockFailedException(Exception):  # noqa: N818
-    """
-    Exception to signalize failure to acquire lock.
-    """
+    pass
 
 
 class DeleteKeyValueDistributedLockFailedException(Exception):  # noqa: N818
-    """
-    Exception to signalize failure to delete lock.
-    """
+    pass
 
 
 class DatabaseNotFoundException(SupersetErrorException):
@@ -708,11 +642,6 @@ class ScreenshotImageNotAvailableException(SupersetException):
     status_code = 404
 
 
-# ======================================================================
-# Command-layer exceptions (replaces commands/base.py::CommandException)
-# ======================================================================
-
-
 class CommandException(SupersetException):
     """Base for command-layer errors.
 
@@ -735,7 +664,6 @@ class CommandException(SupersetException):
             self.extra["errors"] = message
 
     def to_sip40(self) -> dict[str, Any]:
-        """Convert to SIP-40 error dict, including sub-errors."""
         payload = super().to_sip40()
         if self.exceptions:
             payload["errors"] = [str(e) for e in self.exceptions]
@@ -745,7 +673,6 @@ class CommandException(SupersetException):
 class CommandInvalidError(CommandException):
     """Base class for command validation errors.
 
-    Ported 1:1 from ``superset_old/commands/exceptions.py::CommandInvalidError``.
     Provides ``append``, ``extend``, ``get_list_classnames`` and
     ``normalized_messages`` so that the ``show_command_errors`` handler
     (``superset_exception_handler``) can produce structured per-field error
@@ -765,11 +692,9 @@ class CommandInvalidError(CommandException):
             message=message,
             exceptions=self._exceptions,
         )
-        # CommandException.__init__ does ``self.exceptions = exceptions or []``;
-        # when ``self._exceptions`` is empty that ``or`` yields a *new* list, so
-        # ``self.exceptions`` and ``self._exceptions`` desync — later ``append()``
-        # (which only mutates ``_exceptions``) would be invisible to ``exceptions``
-        # and thus to ``to_sip40()``.  Re-alias to the single backing list.
+        # ``CommandException.__init__`` sets ``self.exceptions = exceptions or []``;
+        # when ``_exceptions`` is empty the ``or`` yields a new list, desyncing the
+        # two; ``append()`` mutations would be invisible to ``to_sip40()``.
         self.exceptions = self._exceptions
 
     def append(self, exception: Exception) -> None:
@@ -785,9 +710,8 @@ class CommandInvalidError(CommandException):
         """Return per-field validation messages.
 
         Base implementation iterates ``self._exceptions`` calling
-        ``normalized_messages()`` on each (mirrors original marshmallow
-        ``ValidationError.normalized_messages()`` behaviour). Subclasses
-        that accumulate domain-specific validation errors override this.
+        ``normalized_messages()`` on each. Subclasses that accumulate
+        domain-specific validation errors override this.
         """
         errors: dict[Any, Any] = {}
         for exception in self._exceptions:
@@ -817,21 +741,13 @@ class ForbiddenError(CommandException):
 
 
 class DashboardsForbiddenError(ForbiddenError):
-    """Raised when user is not allowed to modify one of the target dashboards.
-
-    Ported 1:1 from ``DashboardsForbiddenError`` in
-    ``superset_old/commands/chart/exceptions.py``.
-    """
+    """Raised when user is not allowed to modify one of the target dashboards."""
 
     message = "Changing one or more of these dashboards is forbidden"
 
 
 class DashboardsNotFoundValidationError(CommandInvalidError):
-    """Raised when one or more requested dashboard ids don't exist.
-
-    Ported 1:1 from
-    ``superset_old/commands/chart/exceptions.py::DashboardsNotFoundValidationError``.
-    """
+    """Raised when one or more requested dashboard ids don't exist."""
 
     status_code = 422
     message = "Dashboards do not exist"
@@ -840,12 +756,9 @@ class DashboardsNotFoundValidationError(CommandInvalidError):
 class OwnersNotFoundValidationError(CommandInvalidError):
     """Raised when one or more requested owner ids can't be resolved.
 
-    Ported 1:1 from
-    ``superset_old/commands/exceptions.py::OwnersNotFoundValidationError``,
-    which subclasses ``marshmallow.ValidationError`` with
-    ``field_name="owners"`` so that ``normalized_messages()`` returns
-    ``{"owners": ["Owners are invalid"]}``.  Here we override
-    ``normalized_messages()`` to produce the same field-keyed payload.
+    Overrides ``normalized_messages()`` to return
+    ``{"owners": ["Owners are invalid"]}`` so that error payloads are
+    keyed by field name.
     """
 
     status_code = 422
@@ -858,12 +771,9 @@ class OwnersNotFoundValidationError(CommandInvalidError):
 class RolesNotFoundValidationError(CommandInvalidError):
     """Raised when one or more requested role ids can't be resolved.
 
-    Ported 1:1 from
-    ``superset_old/commands/exceptions.py::RolesNotFoundValidationError``,
-    which subclasses ``marshmallow.ValidationError`` with
-    ``field_name="roles"`` so that ``normalized_messages()`` returns
-    ``{"roles": ["Some roles do not exist"]}``.  Here we override
-    ``normalized_messages()`` to produce the same field-keyed payload.
+    Overrides ``normalized_messages()`` to return
+    ``{"roles": ["Some roles do not exist"]}`` so that error payloads are
+    keyed by field name.
     """
 
     status_code = 422
@@ -876,19 +786,11 @@ class RolesNotFoundValidationError(CommandInvalidError):
 class DatasourceNotFoundValidationError(CommandInvalidError):
     """Raised when one or more requested datasource (table) ids can't be resolved.
 
-    Ported 1:1 from
-    ``superset_old/commands/exceptions.py::DatasourceNotFoundValidationError``.
-
-    The original exception class had ``status=404``, but it was NEVER used as
-    a direct HTTP response — every call-site in the original accumulated it
-    inside ``ChartInvalidError`` (a ``CommandInvalidError``, effective status
-    422) before propagating to the API layer
-    (``superset_old/commands/chart/create.py:64-65,82``).  In liteset the
-    exception is raised directly from the chart commands (no intermediate
-    ``ChartInvalidError`` wrapper), so ``status_code`` here IS the HTTP
-    response.  Setting it to 422 preserves the client-observable behaviour of
-    the original (POST /api/v1/chart/ and PUT /api/v1/chart/<pk> return 422
-    for an invalid ``datasource_id``).  The RLS controller
+    Status 422 rather than 404: the exception is raised directly from chart
+    commands without an intermediate ``ChartInvalidError`` wrapper, so
+    ``status_code`` here IS the HTTP response.  Setting it to 422 ensures that
+    ``POST /api/v1/chart/`` and ``PUT /api/v1/chart/<pk>`` return 422 for an
+    invalid ``datasource_id``.  The RLS controller
     (``controllers/rls.py:309,370``) explicitly overrides the status to 422
     anyway, so it is unaffected.
     """
@@ -898,11 +800,7 @@ class DatasourceNotFoundValidationError(CommandInvalidError):
 
 
 class DatasourceTypeUpdateRequiredValidationError(CommandInvalidError):
-    """Raised when ``datasource_id`` is updated without a ``datasource_type``.
-
-    Ported 1:1 from
-    ``superset_old/commands/exceptions.py::DatasourceTypeUpdateRequiredValidationError``.
-    """
+    """Raised when ``datasource_id`` is updated without a ``datasource_type``."""
 
     status_code = 422
     message = "Datasource type is required when datasource_id is updated"
@@ -911,11 +809,7 @@ class DatasourceTypeUpdateRequiredValidationError(CommandInvalidError):
 class TagNotFoundValidationError(CommandInvalidError):
     """Raised when a requested tag id can't be resolved during an update.
 
-    Ported 1:1 from
-    ``superset_old/commands/tag/exceptions.py``-adjacent
-    ``superset_old/commands/exceptions.py::TagNotFoundValidationError``
-    (a ``ValidationError`` on the ``tags`` field, status 422). The message
-    is supplied by the caller (e.g. ``f"Tag ID {tag_id} not found"``).
+    The message is supplied by the caller (e.g. ``f"Tag ID {tag_id} not found"``).
     """
 
     status_code = 422
@@ -927,10 +821,7 @@ class TagNotFoundValidationError(CommandInvalidError):
 class TagForbiddenError(ForbiddenError):
     """Raised when the user lacks permission to manage tags on an object.
 
-    Ported 1:1 from
-    ``superset_old/commands/exceptions.py::TagForbiddenError`` (a
-    ``ForbiddenError`` subclass, status 403). The message is supplied by
-    the caller.
+    The message is supplied by the caller.
     """
 
     def __init__(self, message: str) -> None:
@@ -938,22 +829,14 @@ class TagForbiddenError(ForbiddenError):
 
 
 class RLSRuleNotFoundError(CommandException):
-    """Raised when an RLS rule lookup by id returns nothing.
-
-    Ported 1:1 from
-    ``superset_old/commands/security/exceptions.py::RLSRuleNotFoundError``.
-    """
+    """Raised when an RLS rule lookup by id returns nothing."""
 
     status_code = 404
     message = "RLS Rule not found."
 
 
 class RuleDeleteFailedError(CommandException):
-    """Raised when bulk-delete of RLS rules fails inside the transaction.
-
-    Ported 1:1 from
-    ``superset_old/commands/security/exceptions.py::RuleDeleteFailedError``.
-    """
+    """Raised when bulk-delete of RLS rules fails inside the transaction."""
 
     status_code = 500
     message = "RLS rules could not be deleted."
@@ -977,11 +860,9 @@ class DeleteFailedError(CommandException):
 class CssTemplateDeleteFailedError(DeleteFailedError):
     """Raised when bulk-delete of CSS templates fails inside the transaction.
 
-    Ported 1:1 from
-    ``superset_old/commands/css/exceptions.py::CssTemplateDeleteFailedError``.
-    The original ``DeleteCssTemplateCommand`` wraps with
-    ``@transaction(on_error=partial(on_error, reraise=CssTemplateDeleteFailedError))``
-    and the API catches it with ``response_422``.
+    ``DeleteCssTemplateCommand`` uses ``@transaction(on_error=partial(on_error,
+    reraise=CssTemplateDeleteFailedError))``; the API catches it with
+    ``response_422``.
     """
 
     status_code = 422
@@ -994,8 +875,6 @@ class DatasetNotFoundError(CommandException):
 
 
 class ChartNotFoundError(CommandException):
-    # Upstream maps it to 404 at the API layer
-    # (superset_old/explore/permalink/api.py:163-164).
     status_code = 404
     message = "Chart not found."
 
@@ -1003,12 +882,6 @@ class ChartNotFoundError(CommandException):
 class ImportFailedError(CommandException):
     status_code = 500
     message = "Import failed"
-
-
-# ======================================================================
-# Database command exceptions (ported 1:1 from
-# superset_old/commands/database/exceptions.py)
-# ======================================================================
 
 
 class DatabaseCreateFailedError(CreateFailedError):
@@ -1027,11 +900,7 @@ class DatabaseConnectionFailedError(  # pylint: disable=too-many-ancestors
 
 
 class DatabaseTestConnectionFailedError(SupersetErrorsException):
-    """Raised when a database connection test fails.
-
-    Ported from superset_old/commands/database/exceptions.py:162-164.
-    Original has ``status = 422``.
-    """
+    """Raised when a database connection test fails."""
 
     status_code = 422
     message = "Connection failed, please check your connection settings"
@@ -1046,17 +915,7 @@ class DatabaseTestConnectionUnexpectedError(SupersetErrorsException):
     message = "Unexpected error occurred, please check your logs for details"
 
 
-# ======================================================================
-# Litestar exception handlers
-# ======================================================================
-
-
 def _get_error_level_from_status(status_code: int) -> "ErrorLevel":
-    """Map HTTP status code to SIP-40 error level.
-
-    Ported 1:1 from
-    ``superset_old/views/error_handling.py::get_error_level_from_status``.
-    """
     from superset.errors import ErrorLevel
 
     if status_code < 400:
@@ -1074,18 +933,16 @@ def superset_exception_handler(
     Includes both ``message`` (upstream compat) and ``detail`` (Litestar
     compat) keys in the response body for backward compatibility.
 
-    Mirrors ``superset_old/views/error_handling.py::set_app_error_handlers``:
+    Exception routing:
+
     - ``CommandException`` → ``GENERIC_COMMAND_ERROR`` with status-derived level,
       including normalized per-field messages for ``CommandInvalidError``
-      (``show_command_errors`` in original).
+      (``show_command_errors`` handler).
     - ``SupersetErrorsException`` → list of SIP-40 error dicts.
     - All other ``SupersetException`` → single SIP-40 error dict.
     """
     from superset.errors import SupersetError, SupersetErrorType
 
-    # CommandException: produce GENERIC_COMMAND_ERROR with status-dependent
-    # level and optional normalized per-field messages for CommandInvalidError.
-    # Mirrors original ``show_command_errors`` handler in error_handling.py:184-212.
     if isinstance(exc, CommandException):
         extra = (
             exc.normalized_messages() if isinstance(exc, CommandInvalidError) else {}
@@ -1108,9 +965,6 @@ def superset_exception_handler(
             media_type=MediaType.JSON,
         )
 
-    # SupersetErrorsException carries a *list* of SIP-40 errors — serialize
-    # via _errors_as_dicts() to match original dataclasses.asdict() behaviour
-    # (always includes all fields, including extra=None).
     if isinstance(exc, SupersetErrorsException) and exc.errors:
         import dataclasses
 
@@ -1181,14 +1035,12 @@ def integrity_error_handler(
 ) -> Response[Any]:
     """Translate SQLAlchemy IntegrityError to a 422 response.
 
-    Mirrors original Superset behaviour where unique-constraint
-    or foreign-key violations surface as ``422 Unprocessable Entity``
-    rather than ``500 Internal Server Error``.
+    Unique-constraint or foreign-key violations surface as
+    ``422 Unprocessable Entity`` rather than ``500 Internal Server Error``.
     """
     detail = str(getattr(exc, "orig", exc)) or "Integrity error"
-    # Sanitize ``<class 'X'>: msg`` prefixes that some SQLAlchemy 2.0 +
-    # asyncpg combos produce — they leak the DBAPI exception class repr into
-    # the user-visible toast (e.g. ``<class 'asyncpg.exceptions.ForeignKey…``).
+    # Strip ``<class 'asyncpg.exceptions.…'>: …`` prefixes that SA 2.0 +
+    # asyncpg leaks into the user-visible toast.
     import re as _re
 
     detail = _re.sub(r"^<class '[^']+'>:\s*", "", detail)
@@ -1236,16 +1088,12 @@ def data_error_handler(
     sqlstate = str(getattr(orig, "sqlstate", "") or "")
     client_classes = ("22", "42")
     if not any(sqlstate.startswith(c) for c in client_classes):
-        # Non-client DBAPI error (08xxx connection, 53xxx insufficient
-        # resources, real server bugs) — defer to the generic 500 path.
         return generic_exception_handler(request, exc)
     detail = str(orig) if orig else str(exc) or "Data error"
     import re as _re
 
     detail = _re.sub(r"^<class '[^']+'>:\s*", "", detail)
-    # Strip the long ``[SQL: …] [parameters: …]`` block SQLAlchemy 2.0 appends
-    # to ``str(exc)``; ``orig`` already gives the bare DBAPI message but the
-    # repr-prefix regex above might miss multi-line payloads, so do it again.
+    # Strip the ``[SQL: …] [parameters: …]`` block SA 2.0 appends to str(exc).
     detail = detail.split("\n[SQL:")[0].strip()
     logger.warning(
         "DataError sqlstate=%s on %s %s: %s",
@@ -1299,7 +1147,7 @@ def statement_error_handler(
 
     detail = detail.split("\n[SQL:")[0].strip()
     detail = _re.sub(r"<class '[^']+'>:\s*", "", detail)
-    # ``(builtins.ValueError) msg`` → just ``msg``.
+    # Strip ``(builtins.ValueError) msg`` → ``msg``.
     detail = _re.sub(r"^\(builtins\.[A-Za-z_]+\)\s*", "", detail)
     logger.warning("StatementError on %s %s: %s", request.method, request.url, detail)
     return Response(
@@ -1361,7 +1209,6 @@ def generic_exception_handler(
             )
 
     if isinstance(exc, HTTPException):
-        # Only expose detail for 4xx errors; mask 5xx internals
         if exc.status_code >= 500:
             logger.exception(
                 "Unhandled HTTP %d on %s %s",

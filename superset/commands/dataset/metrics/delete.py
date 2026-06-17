@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dataset/metrics/delete.py``."""
+"""Command to delete a metric from a dataset."""
 
 from __future__ import annotations
 
@@ -47,13 +47,9 @@ class DeleteDatasetMetricCommand(AsyncBaseCommand[None]):
         self._metric: Any | None = None
 
     async def validate(self) -> None:
-        # 1:1 with upstream ``DeleteDatasetMetricCommand.validate``: resolve
-        # the metric scoped to the dataset FIRST (missing dataset or metric →
-        # 404 ``DatasetMetricNotFoundError``), THEN check ownership on the
-        # METRIC itself.  ``SqlMetric`` has no ``owners`` relationship, so
-        # ``raise_for_ownership`` denies every non-admin — effectively
-        # admin-only, exactly like upstream (R14-07); dataset owners manage
-        # metrics through ``PUT /dataset/{pk}`` instead.
+        # ``SqlMetric`` has no ``owners`` relationship, so raise_for_ownership
+        # denies every non-admin — effectively admin-only; dataset owners manage
+        # metrics through ``PUT /dataset/{pk}``.
         self._metric = await self._metric_dao.find_by_dataset_and_id(
             self._dataset_id, self._metric_id
         )

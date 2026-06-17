@@ -115,10 +115,6 @@ def _safe_drop_constraint(name: str, table: str, type_: str | None = None) -> No
 
 
 def upgrade() -> None:
-    # ------------------------------------------------------------------
-    # annotation.layer_id NOT NULL (matches Annotation model in
-    # ``superset_old/models/annotations.py``).
-    # ------------------------------------------------------------------
     _safe_alter_column_nullable(
         "annotation",
         "layer_id",
@@ -251,7 +247,7 @@ def upgrade() -> None:
     )
 
     # ab_permission_view -- (permission_id, view_menu_id) UNIQUE +
-    # supporting indexes (1:1 with FAB's ``__table_args__``).
+    # supporting indexes (matches FAB's ``__table_args__``).
     _safe_create_unique_constraint(
         "uq_ab_permission_view_permission_view_menu",
         "ab_permission_view",
@@ -261,7 +257,7 @@ def upgrade() -> None:
     _safe_create_index("idx_view_menu_id", "ab_permission_view", ["view_menu_id"])
 
     # ------------------------------------------------------------------
-    # ab_user -- self-referential audit columns (1:1 with FAB).
+    # ab_user -- self-referential audit columns (matches FAB schema).
     # ------------------------------------------------------------------
     _add_user_audit_fk_if_missing("created_by_fk")
     _add_user_audit_fk_if_missing("changed_by_fk")
@@ -311,7 +307,6 @@ def downgrade() -> None:
             except Exception:  # noqa: BLE001, S110
                 pass
 
-    # ab_permission_view
     _safe_drop_index("idx_view_menu_id", "ab_permission_view")
     _safe_drop_index("idx_permission_id", "ab_permission_view")
     _safe_drop_constraint(
@@ -336,20 +331,17 @@ def downgrade() -> None:
         "uq_ab_user_role_user_id_role_id", "ab_user_role", type_="unique"
     )
 
-    # report_schedule_user
     _safe_drop_constraint(
         "uq_report_schedule_user_user_id_report_schedule_id",
         "report_schedule_user",
         type_="unique",
     )
 
-    # report_execution_log indexes
     _safe_drop_index("ix_report_execution_log_start_dttm", "report_execution_log")
     _safe_drop_index(
         "ix_report_execution_log_report_schedule_id", "report_execution_log"
     )
 
-    # report_recipient index
     _safe_drop_index("ix_report_recipient_report_schedule_id", "report_recipient")
 
     # tagged_object.object_type — revert to VARCHAR on PG

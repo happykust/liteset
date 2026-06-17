@@ -15,13 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""BaseEngineSpec — synchronous engine spec base class.
-
-Ported 1:1 from ``superset_old/db_engine_specs/base.py`` with the legacy
-WSGI-stack imports removed.  Only the methods/attributes actually
-referenced by the liteset codebase are included; OAuth2, file-upload,
-impersonation, and other legacy-only helpers are intentionally omitted.
-"""
+"""Base database engine spec with shared functionality for all database backends."""
 
 from __future__ import annotations
 
@@ -68,16 +62,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# When connecting to a database it's hard to catch specific exceptions, since
-# we support more than 50 different database drivers.  Usually the try/except
-# block will catch the generic ``Exception`` class.  To make it clear that we
-# know this is a necessary evil we create an alias and catch it instead.
+# Alias used in broad exception catches across the engine spec layer.
+# We support 50+ drivers so catching the generic Exception is unavoidable;
+# the alias makes it intentional rather than accidental.
 GenericDBException = Exception
 
-
-# ---------------------------------------------------------------------------
-# Column-type mapping helpers
-# ---------------------------------------------------------------------------
 
 ColumnTypeMapping = tuple[
     Pattern[str],
@@ -94,8 +83,6 @@ class ColumnSpec(NamedTuple):
 
 
 class MetricType(TypedDict, total=False):
-    """Type for metrics returned by ``get_metrics``."""
-
     metric_name: str
     expression: str
     verbose_name: str | None
@@ -107,13 +94,8 @@ class MetricType(TypedDict, total=False):
     extra: str | None
 
 
-# ---------------------------------------------------------------------------
-# Time grains (ported 1:1 from superset_old/db_engine_specs/base.py:117-144)
-# ---------------------------------------------------------------------------
-
-
 class TimeGrain(NamedTuple):
-    name: str  # TODO: redundant field, remove
+    name: str  # TODO: remove redundant field
     label: str
     function: str
     duration: str | None
@@ -168,28 +150,20 @@ def _time_grain_config() -> tuple[
         return {}, (), {}
 
 
-# ---------------------------------------------------------------------------
-# Timestamp expression
-# ---------------------------------------------------------------------------
-
-
 class TimestampExpression(ColumnClause):  # type: ignore[type-arg]
     def __init__(self, expr: str, col: ColumnClause, **kwargs: Any) -> None:
-        """SQLAlchemy class that renders native column elements respecting
-        engine-specific quoting rules as part of a string-based expression.
+        """Renders native column elements inside a string SQL expression.
 
-        :param expr: SQL expression with ``{col}`` denoting locations where
-            the *col* object will be rendered.
-        :param col: The target column.
+        :param expr: SQL expression with ``{col}`` placeholders.
+        :param col: The target column (rendered with engine-specific quoting).
         """
         super().__init__(expr, **kwargs)
         self.col = col
 
     @property
     def _constructor(self) -> type[ColumnClause]:
-        # Needed to ensure that the column label is rendered correctly when
-        # proxied to the outer query.
-        # See https://github.com/sqlalchemy/sqlalchemy/issues/4730
+        # Ensures the column label renders correctly when proxied to the outer
+        # query. See https://github.com/sqlalchemy/sqlalchemy/issues/4730
         return ColumnClause
 
 
@@ -200,16 +174,10 @@ def compile_timegrain_expression(
     return element.name.replace("{col}", compiler.process(element.col, **kwargs))
 
 
-# ---------------------------------------------------------------------------
-# ResultSetColumnType — dict shape returned by inspector/cursor
-# ---------------------------------------------------------------------------
-
-
 class ResultSetColumnType(TypedDict, total=False):
     column_name: str
     name: str
     type: Any
-    # 1:1 with upstream superset_typing.py:73-82
     type_generic: Any
     is_dttm: bool | None
     nullable: bool
@@ -241,15 +209,7 @@ def convert_inspector_columns(
     return result_set_columns
 
 
-# ---------------------------------------------------------------------------
-# GenericDataType re-export (canonical location: superset.typing)
-# ---------------------------------------------------------------------------
-
 from superset.typing import GenericDataType  # noqa: E402
-
-# ---------------------------------------------------------------------------
-# BaseEngineSpec
-# ---------------------------------------------------------------------------
 
 
 class BaseEngineSpec:  # noqa: PLR0904
@@ -400,11 +360,8 @@ class BaseEngineSpec:  # noqa: PLR0904
 
     # Engine-specific type mappings to check prior to the defaults.
     column_type_mappings: tuple[ColumnTypeMapping, ...] = ()
-
-    # Type-specific functions to mutate values received from the database.
     column_type_mutators: dict[TypeEngine, Callable[[Any], Any]] = {}
 
-    # Does database support join-free timeslot grouping
     time_groupby_inline = False
     limit_method = LimitMethod.FORCE_LIMIT
     supports_multivalues_insert = False
@@ -415,28 +372,15 @@ class BaseEngineSpec:  # noqa: PLR0904
     allows_sql_comments = True
     allows_escaped_colons = True
 
-    # Whether ORDER BY clause can use aliases created in SELECT that are the
-    # same as a source column.
     allows_alias_to_source_column = True
-
-    # Whether ORDER BY clause must appear in SELECT
-    # (if True, then it doesn't have to).
     allows_hidden_orderby_agg = True
-
-    # Whether ORDER BY clause can use sql calculated expression
     allows_hidden_cc_in_orderby = False
-
-    # Whether allow CTE as subquery or regular CTE
     allows_cte_in_subquery = True
     cte_alias = "__cte"
 
     # Disallowed connection query parameters by driver name
     disallow_uri_query_params: dict[str, set[str]] = {}
-
-    # Whether to use equality operators (= true/false) instead of IS operators
-    # for boolean filters.
     use_equality_for_boolean_filters = False
-
     # Query parameters that will always be used on every connection by driver name
     enforce_uri_query_params: dict[str, dict[str, Any]] = {}
 
@@ -450,23 +394,11 @@ class BaseEngineSpec:  # noqa: PLR0904
 
     # List of JSON path to fields in ``encrypted_extra`` that should be masked.
     encrypted_extra_sensitive_fields: set[str] = {"$.*"}
-
-    # Whether the engine supports file uploads.
     supports_file_upload = True
-
-    # Is the DB engine spec able to change the default schema?
     supports_dynamic_schema = False
-
-    # Does the DB support catalogs?
     supports_catalog = False
-
-    # Can the catalog be changed on a per-query basis?
     supports_dynamic_catalog = False
-
-    # Does the DB engine spec support cross-catalog queries?
     supports_cross_catalog_queries = False
-
-    # Does the engine support OAuth 2.0?
     supports_oauth2 = False
     oauth2_scope: str = ""
     oauth2_authorization_request_uri: str | None = None
@@ -480,12 +412,7 @@ class BaseEngineSpec:  # noqa: PLR0904
         "_NoOAuth2Exception", (BaseException,), {}
     )
 
-    # Does the query id relate to the connection?
     has_query_id_before_execute = True
-
-    # ------------------------------------------------------------------
-    # OAuth2 (1:1 with superset_old/db_engine_specs/base.py)
-    # ------------------------------------------------------------------
 
     @classmethod
     def is_oauth2_enabled(cls) -> bool:
@@ -496,13 +423,7 @@ class BaseEngineSpec:  # noqa: PLR0904
 
     @classmethod
     def get_oauth2_config(cls) -> "Any | None":
-        """Build the engine-spec-level OAuth2 client config.
-
-        Returns ``None`` when no OAuth2 client is registered for this
-        engine.  The config dict matches :class:`OAuth2ClientConfig` and
-        is validated via :class:`OAuth2ClientConfigSchema` (1:1 with the
-        marshmallow schema in the original).
-        """
+        """Return OAuth2 client config dict, or ``None`` if not registered."""
         from superset.utils.oauth2 import (
             get_oauth2_clients,
             validate_oauth2_client_config,
@@ -542,7 +463,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         config: dict[str, Any],
         state: dict[str, Any],
     ) -> str:
-        """Build the URL the browser should open to start the OAuth2 dance."""
         from urllib.parse import urlencode, urljoin
 
         from superset.utils.oauth2 import encode_oauth2_state
@@ -565,11 +485,8 @@ class BaseEngineSpec:  # noqa: PLR0904
         config: dict[str, Any],
         code: str,
     ) -> dict[str, Any]:
-        """Exchange an authorization ``code`` for refresh/access tokens.
-
-        Async port of the original — uses :class:`httpx.AsyncClient` instead
-        of ``requests``.
-        """
+        """Exchange an authorization code for refresh/access tokens
+        (async, uses httpx)."""
         import httpx
 
         from superset.utils.oauth2 import get_oauth2_timeout
@@ -595,7 +512,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         config: dict[str, Any],
         refresh_token: str,
     ) -> dict[str, Any]:
-        """Refresh an expired access token."""
         import httpx
 
         from superset.utils.oauth2 import get_oauth2_timeout
@@ -620,15 +536,10 @@ class BaseEngineSpec:  # noqa: PLR0904
         config: dict[str, Any],
         refresh_token: str,
     ) -> dict[str, Any]:
-        """Refresh an expired access token (synchronous).
+        """Sync sibling of :meth:`get_oauth2_fresh_token`.
 
-        Sync sibling of :meth:`get_oauth2_fresh_token` — 1:1 with upstream
-        ``superset_old/db_engine_specs/base.py:get_oauth2_fresh_token`` (which
-        is originally synchronous and uses ``requests``). Used by the sync
-        OAuth2 refresh path (:func:`superset.utils.oauth2.sync_refresh_oauth2_token`)
-        that runs from the (psycopg2) impersonation connection flow. Uses
-        :class:`httpx.Client` rather than ``requests`` (not installed); mirrors
-        the async one's body otherwise.
+        Used from the psycopg2 impersonation path; uses ``httpx.Client``
+        (not ``requests`` which is not installed).
         """
         import httpx
 
@@ -650,13 +561,10 @@ class BaseEngineSpec:  # noqa: PLR0904
 
     @classmethod
     def needs_oauth2(cls, ex: Exception) -> bool:
-        """Return True if *ex* indicates OAuth2 authorization is required.
+        """Return True if *ex* is the engine's OAuth2 exception.
 
-        Mirrors the original ``g and hasattr(g, "user") and isinstance(ex,
-        cls.oauth2_exception)`` — the user-bound guard keeps Celery workers
-        (no request user) from supplanting the original driver error with an
-        OAuth2 dance no one can complete.  The async equivalent of the
-        upstream ``g.user`` check is the request-scoped ContextVar.
+        The current-user guard prevents Celery workers (which have no request
+        user) from triggering an OAuth2 dance that can't be completed.
         """
         from superset.utils.core import get_current_user
 
@@ -669,27 +577,12 @@ class BaseEngineSpec:  # noqa: PLR0904
         user_id: int | None = None,
         default_redirect_uri: str | None = None,
     ) -> None:
-        """Raise :class:`OAuth2RedirectError` to start the OAuth2 dance.
+        """Raise :class:`OAuth2RedirectError` to trigger the browser OAuth2 flow.
 
-        1:1 with ``start_oauth2_dance`` in
-        ``superset_old/db_engine_specs/base.py``
-        — the original takes only ``database`` and reads ``user_id`` from
-        the request-scoped ``g`` global plus the redirect URI from
-        ``url_for("DatabaseRestApi.oauth2", _external=True)``.
-
-        In liteset the user identity lives in a :class:`ContextVar` (set by
-        :class:`AuthMiddleware`) and the absolute redirect URI is
-        configurable via ``WEBDRIVER_BASEURL`` / ``DATABASE_OAUTH2_REDIRECT_URI``.
-        Both can also be supplied explicitly by callers that have them in
-        scope (e.g. :class:`DatabaseTestConnectionCommand`).
-
-        The frontend catches the resulting :class:`OAuth2RedirectError`,
-        opens a popup at the returned ``url``, and waits for the popup to
-        ``postMessage`` back the auth code.  Once the user authorizes the
-        access, the popup is redirected to ``/api/v1/database/oauth2/``
-        (handled by :class:`DatabaseController.oauth2`), which exchanges
-        the code for a token and stores it in
-        ``database_user_oauth2_tokens``.
+        User identity comes from the request-scoped ContextVar (set by
+        AuthMiddleware).  The redirect URI defaults to
+        ``WEBDRIVER_BASEURL`` / ``DATABASE_OAUTH2_REDIRECT_URI`` but can be
+        supplied explicitly by callers (e.g. ``DatabaseTestConnectionCommand``).
         """
         from uuid import uuid4
 
@@ -721,38 +614,23 @@ class BaseEngineSpec:  # noqa: PLR0904
         url = cls.get_oauth2_authorization_uri(config, state)
         raise OAuth2RedirectError(url, tab_id, default_redirect_uri)
 
-    # ------------------------------------------------------------------
-    # RLS
-    # ------------------------------------------------------------------
-
     @classmethod
     def get_rls_method(cls) -> RLSMethod:
-        """Return the RLS method to be used for this engine.
-
-        There are two ways to insert RLS: either replacing the table with a
-        subquery that has the RLS, or appending the RLS to the ``WHERE``
-        clause. The former is safer, but not supported in all databases.
-        """
+        """Return AS_SUBQUERY (safer) or AS_PREDICATE based on dialect capabilities."""
         return (
             RLSMethod.AS_SUBQUERY
             if cls.allows_subqueries and cls.allows_alias_in_select
             else RLSMethod.AS_PREDICATE
         )
 
-    # ------------------------------------------------------------------
-    # URL / backend matching
-    # ------------------------------------------------------------------
-
     @classmethod
     def supports_url(cls, url: URL) -> bool:
-        """Return True if the DB engine spec supports a given SQLAlchemy URL."""
         backend = url.get_backend_name()
         driver = url.get_driver_name()
         return cls.supports_backend(backend, driver)
 
     @classmethod
     def supports_backend(cls, backend: str, driver: str | None = None) -> bool:
-        """Return True if the DB engine spec supports a given backend/driver."""
         if backend != cls.engine and backend not in cls.engine_aliases:
             return False
         if not cls.drivers or driver is None:
@@ -761,33 +639,18 @@ class BaseEngineSpec:  # noqa: PLR0904
 
     @classmethod
     def get_impersonation_key(cls, user: Any | None) -> Any:
-        """Construct an impersonation key — by default the given username.
-
-        1:1 with ``superset_old/db_engine_specs/base.py:get_impersonation_key``.
-        Used by the per-user query cache key (``CACHE_IMPERSONATION`` /
-        ``CACHE_QUERY_BY_USER``) so cached results are not shared across users
-        when impersonation is in effect.
-
-        :param user: logged-in user
-        :returns: username if a user is given, else ``None``
-        """
+        """Return username for per-user query cache key, or ``None`` for anonymous."""
         return user.username if user else None
-
-    # ------------------------------------------------------------------
-    # Catalog / schema helpers
-    # ------------------------------------------------------------------
 
     @classmethod
     def get_default_catalog(
         cls,
         database: Database,
     ) -> str | None:
-        """Return the default catalog for a given database."""
         return None
 
     @classmethod
     def get_default_schema(cls, database: Database, catalog: str | None) -> str | None:
-        """Return the default schema for a catalog in a given database."""
         with database.get_inspector(catalog=catalog) as inspector:
             return inspector.default_schema_name
 
@@ -797,7 +660,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         sqlalchemy_uri: URL,
         connect_args: dict[str, Any],
     ) -> str | None:
-        """Return the schema configured in a SQLAlchemy URI, if any."""
         return None
 
     @classmethod
@@ -807,18 +669,9 @@ class BaseEngineSpec:  # noqa: PLR0904
         query: Any,
         template_params: dict[str, Any] | None = None,
     ) -> str | None:
-        """Return the default schema for a given query.
+        """Return the schema used for unqualified table references in a query.
 
-        1:1 with ``get_default_schema_for_query`` in
-        ``superset_old/db_engine_specs/base.py``
-        (line 707). Used by access-control to determine the schema of
-        unqualified table references inside SQL Lab queries:
-
-        1. Dialects that allow per-query schema switching honour the
-           query's own ``schema`` field;
-        2. Dialects that hard-code the schema in the SQLAlchemy URI
-           or ``connect_args`` use that;
-        3. Otherwise, fall back to the database default.
+        Priority: dynamic (per-query) schema → URI/connect_args schema → DB default.
         """
         if cls.supports_dynamic_schema:
             return getattr(query, "schema", None)
@@ -838,26 +691,18 @@ class BaseEngineSpec:  # noqa: PLR0904
         cls,
         database: Database,
     ) -> bool:
-        """Method for dynamic ``allows_alias_in_select``."""
         return cls.allows_alias_in_select
-
-    # ------------------------------------------------------------------
-    # Error handling
-    # ------------------------------------------------------------------
 
     @classmethod
     def get_dbapi_exception_mapping(cls) -> dict[type[Exception], type[Exception]]:
-        """Map driver-specific exceptions to Superset DBAPI exceptions."""
         return {}
 
     @classmethod
     def parse_error_exception(cls, exception: Exception) -> Exception:
-        """Engine-specific parser method."""
         return exception
 
     @classmethod
     def get_dbapi_mapped_exception(cls, exception: Exception) -> Exception:
-        """Get a superset custom DBAPI exception from the driver exception."""
         new_exception = cls.get_dbapi_exception_mapping().get(type(exception))
         if not new_exception:
             return cls.parse_error_exception(exception)
@@ -872,11 +717,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         url: URL,
         engine_kwargs: dict[str, Any],
     ) -> tuple[URL, dict[str, Any]]:
-        """Modify URL and/or engine kwargs to impersonate a different user.
-
-        1:1 with ``superset_old/db_engine_specs/base.py`` (the ``@deprecated``
-        markers are dropped — they only emit warnings).
-        """
         from inspect import signature
 
         url = cls.get_url_for_impersonation(url, True, username, user_token)
@@ -898,7 +738,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         username: str | None,
         access_token: str | None,  # noqa: ARG003
     ) -> URL:
-        """Return a modified URL with the username set (1:1 upstream)."""
         if impersonate_user and username is not None:
             url = url.set(username=username)
         return url
@@ -912,10 +751,7 @@ class BaseEngineSpec:  # noqa: PLR0904
         username: str | None,
         access_token: str | None,
     ) -> None:
-        """Set engine-specific impersonation properties on ``connect_args``.
-
-        1:1 upstream — base is a no-op; engines (Hive/Presto/…) override.
-        """
+        """No-op base; engines like Hive/Presto override to set connect_args."""
 
     @classmethod
     def get_allow_cost_estimate(
@@ -924,13 +760,8 @@ class BaseEngineSpec:  # noqa: PLR0904
     ) -> bool:
         return False
 
-    # ------------------------------------------------------------------
-    # Text clause helpers
-    # ------------------------------------------------------------------
-
     @classmethod
     def get_text_clause(cls, clause: str) -> TextClause:
-        """SQLAlchemy wrapper to ensure text clauses are escaped properly."""
         if cls.allows_escaped_colons:
             clause = clause.replace(":", "\\:")
         return text(clause)
@@ -953,10 +784,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         """  # noqa: E501
         return database.get_sqla_engine(catalog=catalog, schema=schema, source=source)
 
-    # ------------------------------------------------------------------
-    # Time-grain expressions
-    # ------------------------------------------------------------------
-
     @classmethod
     def get_timestamp_expr(
         cls,
@@ -964,13 +791,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         pdf: str | None,
         time_grain: str | None,
     ) -> TimestampExpression:
-        """Construct a TimestampExpression for use in a SQLAlchemy query.
-
-        :param col: Target column for the TimestampExpression
-        :param pdf: date format (seconds or milliseconds)
-        :param time_grain: time grain, e.g. P1Y for 1 year
-        :return: TimestampExpression object
-        """
         if time_grain:
             type_ = str(getattr(col, "type", ""))
             time_expr = cls.get_time_grain_expressions().get(time_grain)
@@ -989,7 +809,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         else:
             time_expr = "{col}"
 
-        # if epoch, translate to DATE using db specific conf
         if pdf == "epoch_s":
             time_expr = time_expr.replace("{col}", cls.epoch_to_dttm())
         elif pdf == "epoch_ms":
@@ -1001,8 +820,6 @@ class BaseEngineSpec:  # noqa: PLR0904
     def _sort_time_grains(
         cls, val: tuple[str | None, str], index: int
     ) -> float | int | str:
-        """Return an ordered time-based value of a portion of a time grain
-        for sorting."""
         pos = {
             "FIRST": 0,
             "SECOND": 1,
@@ -1049,14 +866,8 @@ class BaseEngineSpec:  # noqa: PLR0904
 
     @classmethod
     def get_time_grain_expressions(cls) -> dict[str | None, str]:
-        """Return a dict of all supported time grains including any potential
-        added grains but excluding any potentially disabled grains.
-
-        :return: All time grain expressions supported by the engine
-        """
-        # 1:1 with superset_old/db_engine_specs/base.py:get_time_grain_expressions
-        # — merge any engine-specific addon expressions, then drop denylisted
-        # grains (both config-driven; defaults are empty).
+        """Return all enabled time grain expressions (addon merged,
+        denylist applied)."""
         time_grain_expressions = cls._time_grain_expressions.copy()
         addon_expressions, denylist, _ = _time_grain_config()
         time_grain_expressions.update(addon_expressions.get(cls.engine, {}))
@@ -1077,13 +888,6 @@ class BaseEngineSpec:  # noqa: PLR0904
 
     @classmethod
     def get_time_grains(cls) -> tuple[TimeGrain, ...]:
-        """
-        Generate a tuple of supported time grains.
-
-        1:1 with ``superset_old/db_engine_specs/base.py:get_time_grains``.
-
-        :return: All time grains supported by the engine
-        """
         ret_list = []
         time_grains = builtin_time_grains.copy()
         # NB: do not unpack into ``_`` here — that name is the module-level
@@ -1096,36 +900,18 @@ class BaseEngineSpec:  # noqa: PLR0904
                 ret_list.append(TimeGrain(name, _(name), func, duration))
         return tuple(ret_list)
 
-    # ------------------------------------------------------------------
-    # Epoch to datetime SQL expressions
-    # ------------------------------------------------------------------
-
     @classmethod
     def epoch_to_dttm(cls) -> str:
-        """SQL expression that converts epoch (seconds) to datetime.
-
-        The reference column should be denoted as ``{col}`` in the return
-        expression, e.g. ``FROM_UNIXTIME({col})``.
-        """
+        """SQL expression converting epoch-seconds to datetime;
+        use ``{col}`` as placeholder."""
         raise NotImplementedError()
 
     @classmethod
     def epoch_ms_to_dttm(cls) -> str:
-        """SQL expression that converts epoch (milliseconds) to datetime."""
         return cls.epoch_to_dttm().replace("{col}", "({col}/1000)")
-
-    # ------------------------------------------------------------------
-    # Data fetch / execute
-    # ------------------------------------------------------------------
 
     @classmethod
     def fetch_data(cls, cursor: Any, limit: int | None = None) -> list[tuple[Any, ...]]:
-        """Fetch data from cursor.
-
-        :param cursor: Cursor instance
-        :param limit: Maximum number of rows to be returned by the cursor
-        :return: Result of query
-        """
         if cls.arraysize:
             cursor.arraysize = cls.arraysize
         try:
@@ -1133,9 +919,6 @@ class BaseEngineSpec:  # noqa: PLR0904
                 return cursor.fetchmany(limit)
             data = cursor.fetchall()
             description = cursor.description or []
-            # Create a mapping between column name and a mutator function to
-            # normalize values with.  The first two items in the description
-            # row are the column name and type.
             column_mutators = {
                 row[0]: func
                 for row in description
@@ -1166,10 +949,7 @@ class BaseEngineSpec:  # noqa: PLR0904
     ) -> tuple[
         list[ResultSetColumnType], list[dict[Any, Any]], list[ResultSetColumnType]
     ]:
-        """Some engines support expanding nested fields.
-
-        See implementation in Presto spec for details.
-        """
+        """Expand nested fields; see Presto spec for an override."""
         return columns, data, []
 
     @classmethod
@@ -1180,29 +960,14 @@ class BaseEngineSpec:  # noqa: PLR0904
         database: Database,
         **kwargs: Any,
     ) -> None:
-        """Execute a SQL query.
-
-        :param cursor: Cursor instance
-        :param query: Query to execute
-        :param database: Database instance
-        """
         if cls.arraysize:
             cursor.arraysize = cls.arraysize
         try:
             cursor.execute(query)
         except Exception as ex:
-            # 1:1 with ``superset_old/db_engine_specs/base.py::execute`` — on a
-            # DB error, if OAuth2 is enabled for this database and the error
-            # indicates authorization is required, start the OAuth2 dance (which
-            # raises ``OAuth2RedirectError`` so the frontend re-authenticates)
-            # before mapping the exception.
-            #
-            # Caveat: the port's :meth:`start_oauth2_dance` is declared ``async``
-            # but performs no real ``await`` (it only assembles the authorization
-            # URL and raises ``OAuth2RedirectError``). ``execute`` runs in a
-            # synchronous worker thread, so we drive the coroutine to its single
-            # step via ``.send(None)`` — the same technique used by the sync
-            # SQL Lab path (``superset.tasks.sql_lab._check_for_oauth2``).
+            # start_oauth2_dance is declared async but does no real await — it only
+            # assembles the redirect URL and raises OAuth2RedirectError.  execute()
+            # runs in a sync thread, so drive the coroutine one step via send(None).
             if database.is_oauth2_enabled() and cls.needs_oauth2(ex):
                 dance = cls.start_oauth2_dance(database)
                 if hasattr(dance, "send"):  # coroutine — drive it synchronously
@@ -1214,12 +979,7 @@ class BaseEngineSpec:  # noqa: PLR0904
 
     @classmethod
     def handle_cursor(cls, cursor: Any, query: Query) -> None:
-        """Handle a live cursor between the execute and fetchall calls.
-
-        The flow works without this method doing anything, but it allows for
-        handling the cursor and updating progress information in the query
-        object.
-        """
+        """Hook called between execute and fetchall; override to track progress."""
 
     @classmethod
     def execute_with_cursor(
@@ -1228,12 +988,7 @@ class BaseEngineSpec:  # noqa: PLR0904
         sql: str,
         query: Query,
     ) -> None:
-        """Trigger execution of a query and handle the resulting cursor.
-
-        For most implementations this just makes calls to ``execute`` and
-        ``handle_cursor`` consecutively, but in some engines (e.g. Trino) we
-        may need to handle client limitations such as lack of async support.
-        """
+        """Execute *sql* then call ``handle_cursor``; some engines (Trino) override."""
         from sqlalchemy.orm import object_session
 
         from superset.constants import QUERY_CANCEL_KEY
@@ -1252,17 +1007,8 @@ class BaseEngineSpec:  # noqa: PLR0904
         logger.debug("Query %d: Handling cursor", query.id)
         cls.handle_cursor(cursor, query)
 
-    # ------------------------------------------------------------------
-    # Data type introspection
-    # ------------------------------------------------------------------
-
     @classmethod
     def get_datatype(cls, type_code: Any) -> str | None:
-        """Change column type code from cursor description to string repr.
-
-        :param type_code: Type code from cursor description
-        :return: String representation of type code
-        """
         if isinstance(type_code, str) and type_code != "":
             return type_code.upper()
         return None
@@ -1272,12 +1018,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         cls,
         column_type: str | None,
     ) -> tuple[TypeEngine, GenericDataType] | None:
-        """Return a SQLAlchemy native column type and generic data type that
-        corresponds to the column type defined in the data source.
-
-        :param column_type: Column type returned by inspector
-        :return: SQLAlchemy and generic Superset column types
-        """
         if not column_type:
             return None
 
@@ -1299,13 +1039,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         db_extra: dict[str, Any] | None = None,
         source: Any = None,
     ) -> ColumnSpec | None:
-        """Get generic type related specs regarding a native column type.
-
-        :param native_type: Native database type
-        :param db_extra: The database extra object
-        :param source: Type coming from the database table or cursor description
-        :return: ColumnSpec object
-        """
         if col_types := cls.get_column_types(native_type):
             column_type, generic_type = col_types
             is_dttm = generic_type == GenericDataType.TEMPORAL
@@ -1321,13 +1054,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         db_extra: dict[str, Any] | None = None,
         source: Any = None,
     ) -> TypeEngine | None:
-        """Convert native database type to SQLAlchemy column type.
-
-        :param native_type: Native database type
-        :param db_extra: The database extra object
-        :param source: Type coming from the database table or cursor description
-        :return: SQLAlchemy TypeEngine or None
-        """
         column_spec = cls.get_column_spec(
             native_type=native_type,
             db_extra=db_extra,
@@ -1342,18 +1068,7 @@ class BaseEngineSpec:  # noqa: PLR0904
         dttm: datetime,
         db_extra: dict[str, Any] | None = None,
     ) -> str | None:
-        """Convert a Python ``datetime`` object to a SQL expression.
-
-        :param target_type: The target type of expression
-        :param dttm: The datetime object
-        :param db_extra: The database extra object
-        :return: The SQL expression
-        """
         return None
-
-    # ------------------------------------------------------------------
-    # Error message extraction
-    # ------------------------------------------------------------------
 
     @classmethod
     def extract_error_message(cls, ex: Exception) -> str:
@@ -1379,21 +1094,17 @@ class BaseEngineSpec:  # noqa: PLR0904
             elif ex.message:  # type: ignore[union-attr]
                 msg = ex.message  # type: ignore[union-attr]
         raw = str(msg) or str(ex)
-        # Order matters: strip the [SQL:] payload first (it may contain
-        # ``<class '…'>`` substrings inside parameter values), then the
-        # leading exception-class repr.
-        # Strip only newline artifacts, NOT spaces: several engine error
-        # regexes (e.g. Athena/Presto ``Expecting: ``) match on a trailing
-        # space that ``.strip()`` would remove, dropping the match.
+        # Strip [SQL:] payload first (it may contain ``<class '…'>`` substrings
+        # inside parameter values), then the leading exception-class repr.
+        # Strip only newline artifacts, NOT spaces: several engine error regexes
+        # (e.g. Athena/Presto ``Expecting: ``) match on a trailing space that
+        # ``.strip()`` would remove, dropping the match.
         raw = raw.split("\n[SQL:")[0].strip("\n")
         import re as _re
 
         raw = _re.sub(r"<class '[^']+'>:\s*", "", raw)
-        # ``(builtins.NoneType) None`` / ``(builtins.ValueError) msg`` —
-        # SA-2.0 wraps DBAPI errors with the builtin-class repr when the
-        # underlying message is empty (e.g. an asyncpg ``Error`` with no
-        # detail). The remaining ``(builtins.X) Y`` is noise; collapse
-        # to just ``Y`` (or empty when Y is the literal ``None`` repr).
+        # SA 2.0 wraps empty DBAPI errors as ``(builtins.NoneType) None``;
+        # collapse to just the message portion.
         raw = _re.sub(r"^\(builtins\.[A-Za-z_]+\)\s*", "", raw)
         if raw.lower() == "none":
             raw = ""
@@ -1428,10 +1139,6 @@ class BaseEngineSpec:  # noqa: PLR0904
             )
         ]
 
-    # ------------------------------------------------------------------
-    # Engine parameter adjustment
-    # ------------------------------------------------------------------
-
     @classmethod
     def adjust_engine_params(
         cls,
@@ -1440,12 +1147,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         catalog: str | None = None,
         schema: str | None = None,
     ) -> tuple[URL, dict[str, Any]]:
-        """Return a new URL and ``connect_args`` for a specific catalog/schema.
-
-        This is used in SQL Lab, allowing users to select a schema from the
-        list of schemas available in a given database, and have the query run
-        with that schema as the default one.
-        """
         return uri, {
             **connect_args,
             **cls.enforce_uri_query_params.get(uri.get_driver_name(), {}),
@@ -1458,17 +1159,9 @@ class BaseEngineSpec:  # noqa: PLR0904
         catalog: str | None = None,
         schema: str | None = None,
     ) -> list[str]:
-        """Return pre-session queries.
-
-        These are currently used as an alternative to ``adjust_engine_params``
-        for databases where the selected schema cannot be specified in the
-        SQLAlchemy URI or connection arguments.
-        """
+        """Return SQL statements to run before a session
+        (alternative to adjust_engine_params)."""
         return []
-
-    # ------------------------------------------------------------------
-    # Inspector-based metadata
-    # ------------------------------------------------------------------
 
     @classmethod
     def get_catalog_names(
@@ -1476,16 +1169,10 @@ class BaseEngineSpec:  # noqa: PLR0904
         database: Database,
         inspector: Inspector,
     ) -> set[str]:
-        """Get all catalogs from database."""
         return set()
 
     @classmethod
     def get_schema_names(cls, inspector: Inspector) -> set[str]:
-        """Get all schemas from database.
-
-        :param inspector: SQLAlchemy inspector
-        :return: All schemas in the database
-        """
         return set(inspector.get_schema_names())
 
     @classmethod
@@ -1495,13 +1182,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         inspector: Inspector,
         schema: str | None,
     ) -> set[str]:
-        """Get all the real table names within the specified schema.
-
-        :param database: The database to inspect
-        :param inspector: The SQLAlchemy inspector
-        :param schema: The schema to inspect
-        :returns: The physical table names
-        """
         try:
             tables = set(inspector.get_table_names(schema))
         except Exception as ex:
@@ -1518,13 +1198,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         inspector: Inspector,
         schema: str | None,
     ) -> set[str]:
-        """Get all the view names within the specified schema.
-
-        :param database: The database to inspect
-        :param inspector: The SQLAlchemy inspector
-        :param schema: The schema to inspect
-        :returns: The view names
-        """
         try:
             views = set(inspector.get_view_names(schema))
         except Exception as ex:
@@ -1541,7 +1214,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         inspector: Inspector,
         table: Table,
     ) -> list[dict[str, Any]]:
-        """Get the indexes associated with the specified schema/table."""
         return inspector.get_indexes(table.table, table.schema)
 
     @classmethod
@@ -1550,7 +1222,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         inspector: Inspector,
         table: Table,
     ) -> str | None:
-        """Get comment of table from a given schema and table."""
         comment = None
         try:
             comment = inspector.get_table_comment(table.table, table.schema)
@@ -1568,13 +1239,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         table: Table,
         options: dict[str, Any] | None = None,
     ) -> list[ResultSetColumnType]:
-        """Get all columns from a given schema and table.
-
-        :param inspector: SQLAlchemy Inspector instance
-        :param table: Table instance
-        :param options: Extra options to customise the display of columns
-        :return: All columns in table
-        """
         from typing import cast
 
         return convert_inspector_columns(
@@ -1591,7 +1255,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         inspector: Inspector,
         table: Table,
     ) -> list[MetricType]:
-        """Get all metrics from a given schema and table."""
         return [
             {
                 "metric_name": "count",
@@ -1607,15 +1270,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         database: Database,
         table: Table,
     ) -> dict[str, Any]:
-        """Returns basic table metadata.
-
-        1:1 with ``superset_old/db_engine_specs/base.py:get_table_metadata``.
-        Delegates to ``superset.databases.utils.get_table_metadata``.
-
-        :param database: Database instance
-        :param table: A Table instance
-        :return: Basic table metadata
-        """
         from superset.databases.utils import get_table_metadata
 
         return get_table_metadata(database, table)
@@ -1626,15 +1280,9 @@ class BaseEngineSpec:  # noqa: PLR0904
         database: Database,
         table: Table,
     ) -> dict[str, Any]:
-        """Returns engine-specific table metadata.
+        """Return engine-specific table metadata.
 
-        1:1 with ``superset_old/db_engine_specs/base.py:get_extra_table_metadata``.
-        Includes backwards-compat fallback for the deprecated
-        ``extra_table_metadata`` method.
-
-        :param database: Database instance
-        :param table: A Table instance
-        :return: Engine-specific table metadata
+        Falls back to the deprecated ``extra_table_metadata`` method if present.
         """
         # old method that doesn't work with catalogs
         if hasattr(cls, "extra_table_metadata"):
@@ -1644,8 +1292,6 @@ class BaseEngineSpec:  # noqa: PLR0904
                 DeprecationWarning,
             )
 
-            # If a catalog is passed, return nothing, since we don't know the exact
-            # table that is being requested.
             if table.catalog:
                 return {}
 
@@ -1653,36 +1299,19 @@ class BaseEngineSpec:  # noqa: PLR0904
 
         return {}
 
-    # ------------------------------------------------------------------
-    # SQL limit helpers
-    # ------------------------------------------------------------------
-
     @classmethod
     def get_limit_from_sql(cls, sql: str) -> int | None:
-        """Extract limit from SQL query.
-
-        :param sql: SQL query
-        :return: Value of limit clause in query
-        """
         script = SQLScript(sql, engine=cls.engine)
         return script.statements[-1].get_limit_value()
 
     @classmethod
     def get_cte_query(cls, sql: str) -> str | None:
-        """Convert the input CTE based SQL to the SQL for virtual table conversion.
-
-        :param sql: SQL query
-        :return: CTE with the main select query aliased as ``__cte``
-        """
+        """Wrap a CTE query for virtual table conversion, or return None."""
         if not cls.allows_cte_in_subquery:
             statement = SQLStatement(sql, engine=cls.engine)
             if statement.has_cte():
                 return statement.as_cte(cls.cte_alias).format()
         return None
-
-    # ------------------------------------------------------------------
-    # SELECT * generation
-    # ------------------------------------------------------------------
 
     @classmethod
     def df_to_sql(
@@ -1694,9 +1323,8 @@ class BaseEngineSpec:  # noqa: PLR0904
     ) -> None:
         """Upload a pandas DataFrame to a database table via ``to_sql``.
 
-        1:1 port of ``superset_old/db_engine_specs/base.py:1157``. Uses the
-        database's SYNC engine (``get_sqla_engine`` — psycopg2 for the
-        examples DB) because pandas ``to_sql`` is blocking sync IO; the
+        Uses the database's SYNC engine (``get_sqla_engine`` — psycopg2 for
+        the examples DB) because pandas ``to_sql`` is blocking sync IO; the
         caller (``UploadCommand.run``) MUST invoke this inside
         ``asyncio.to_thread`` so it doesn't block the event loop.
 
@@ -1767,8 +1395,7 @@ class BaseEngineSpec:  # noqa: PLR0904
             fields = cls._get_fields(cols)
 
         full_table_name = cls.quote_table(table, engine.dialect)
-        # SQLAlchemy 2.0 ``select`` takes column expressions as *args, not a
-        # single list; ``"*"`` becomes a literal-column star.
+        # SA 2.0 select() takes *args; ``"*"`` becomes a literal-column star.
         select_cols = [literal_column("*")] if isinstance(fields, str) else fields
         qry = select(*select_cols).select_from(text(full_table_name))
 
@@ -1787,32 +1414,16 @@ class BaseEngineSpec:  # noqa: PLR0904
             sql = SQLScript(sql, engine=cls.engine).format()
         return sql
 
-    # ------------------------------------------------------------------
-    # Cost estimation
-    # ------------------------------------------------------------------
-
     @classmethod
     def estimate_statement_cost(
         cls, database: Database, statement: str, cursor: Any
     ) -> dict[str, Any]:
-        """Generate a SQL query that estimates the cost of a given statement.
-
-        :param database: A Database object
-        :param statement: A single SQL statement
-        :param cursor: Cursor instance
-        :return: Dictionary with different costs
-        """
         raise Exception("Database does not support cost estimation")  # noqa: TRY002
 
     @classmethod
     def query_cost_formatter(
         cls, raw_cost: list[dict[str, Any]]
     ) -> list[dict[str, str]]:
-        """Format cost estimate.
-
-        :param raw_cost: Raw estimate from ``estimate_query_cost``
-        :return: Human readable cost estimate
-        """
         raise Exception("Database does not support cost estimation")  # noqa: TRY002
 
     @classmethod
@@ -1821,12 +1432,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         statement: Any,
         database: Database,
     ) -> str:
-        """Process a SQL statement by mutating it.
-
-        :param statement: A single SQL statement
-        :param database: Database instance
-        :return: Processed SQL string
-        """
         return database.mutate_sql_based_on_config(str(statement), is_split=True)
 
     @classmethod
@@ -1838,14 +1443,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         sql: str,
         source: Any = None,
     ) -> list[dict[str, Any]]:
-        """Estimate the cost of a multiple statement SQL query.
-
-        :param database: Database instance
-        :param catalog: Database catalog
-        :param schema: Database schema
-        :param sql: SQL query with possibly multiple statements
-        :param source: Source of the query (eg, "sql_lab")
-        """
         extra = database.get_extra(source) or {}
         if not cls.get_allow_cost_estimate(extra):
             raise Exception(  # noqa: TRY002
@@ -1869,18 +1466,13 @@ class BaseEngineSpec:  # noqa: PLR0904
                 for statement in parsed_script.statements
             ]
 
-    # ------------------------------------------------------------------
-    # Label / identifier handling
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _mutate_label(label: str) -> str:
-        """Conditionally mutate a label.  Noop by default."""
+        """No-op; engines override to enforce naming constraints (e.g. lowercase)."""
         return label
 
     @classmethod
     def _truncate_label(cls, label: str) -> str:
-        """Truncate a label that exceeds max length using md5 hash."""
         label = md5_sha_from_str(label)
         if cls.max_column_name_length and len(label) > cls.max_column_name_length:
             label = label[: cls.max_column_name_length]
@@ -1908,11 +1500,7 @@ class BaseEngineSpec:  # noqa: PLR0904
     def column_datatype_to_string(
         cls, sqla_column_type: TypeEngine, dialect: Dialect
     ) -> str:
-        """Convert SQLAlchemy column type to string representation.
-
-        Removes collation and character encoding info to avoid unnecessarily
-        long datatypes.
-        """
+        """Compile column type, stripping collation/charset to avoid verbose output."""
         sqla_column_type = sqla_column_type.copy()
         if hasattr(sqla_column_type, "collation"):
             sqla_column_type.collation = None
@@ -1920,21 +1508,12 @@ class BaseEngineSpec:  # noqa: PLR0904
             sqla_column_type.charset = None
         return sqla_column_type.compile(dialect=dialect).upper()
 
-    # ------------------------------------------------------------------
-    # Query cancellation
-    # ------------------------------------------------------------------
-
     @classmethod
     def prepare_cancel_query(cls, query: Query) -> None:
-        """Record cancelation intent so the query can be stopped."""
         return None
 
     @classmethod
     def has_implicit_cancel(cls) -> bool:
-        """Return True if the live cursor handles implicit cancellation.
-
-        :return: Whether the live cursor implicitly cancels the query
-        """
         return False
 
     @classmethod
@@ -1943,13 +1522,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         cursor: Any,
         query: Query,
     ) -> str | None:
-        """Select identifiers from the DB engine that uniquely identify the
-        queries to cancel.
-
-        :param cursor: Cursor instance
-        :param query: Query instance
-        :return: Query identifier
-        """
         return None
 
     @classmethod
@@ -1959,26 +1531,12 @@ class BaseEngineSpec:  # noqa: PLR0904
         query: Query,
         cancel_query_id: str,
     ) -> bool:
-        """Cancel query in the underlying database.
-
-        :param cursor: New cursor instance to the db of the query
-        :param query: Query instance
-        :param cancel_query_id: Value returned by ``get_cancel_query_id``
-        :return: True if query cancelled successfully, False otherwise
-        """
         return False
-
-    # ------------------------------------------------------------------
-    # Encrypted extra masking
-    # ------------------------------------------------------------------
 
     @classmethod
     def mask_encrypted_extra(cls, encrypted_extra: str | None) -> str | None:
-        """Mask ``encrypted_extra``.
-
-        This removes sensitive data in ``encrypted_extra`` when presenting it
-        to the user when a database is edited.
-        """
+        """Remove sensitive fields from ``encrypted_extra`` before
+        presenting to user."""
         if encrypted_extra is None or not cls.encrypted_extra_sensitive_fields:
             return encrypted_extra
 
@@ -1996,12 +1554,8 @@ class BaseEngineSpec:  # noqa: PLR0904
 
     @classmethod
     def unmask_encrypted_extra(cls, old: str | None, new: str | None) -> str | None:
-        """Remove masks from ``encrypted_extra``.
-
-        This allows reusing existing values from the current encrypted extra on
-        updates.  It's useful for reusing masked passwords, allowing keys to be
-        updated without having to provide sensitive data to the client.
-        """
+        """Restore masked values in *new* from *old*
+        (allows password reuse on update)."""
         if old is None or new is None:
             return new
 
@@ -2019,13 +1573,8 @@ class BaseEngineSpec:  # noqa: PLR0904
 
         return _json.dumps(new_config)
 
-    # ------------------------------------------------------------------
-    # Public information
-    # ------------------------------------------------------------------
-
     @classmethod
     def get_public_information(cls) -> dict[str, Any]:
-        """Construct a dict with properties we want to expose."""
         return {
             "supports_file_upload": cls.supports_file_upload,
             "disable_ssh_tunneling": cls.disable_ssh_tunneling,
@@ -2033,47 +1582,23 @@ class BaseEngineSpec:  # noqa: PLR0904
             "supports_oauth2": cls.supports_oauth2,
         }
 
-    # ------------------------------------------------------------------
-    # Function names (SQL Lab autocomplete)
-    # ------------------------------------------------------------------
-
     @classmethod
     def get_function_names(
         cls,
         database: Database,
     ) -> list[str]:
-        """Get a list of function names callable on the database.
-
-        Used for SQL Lab autocomplete.
-        """
+        """Return function names for SQL Lab autocomplete."""
         return []
-
-    # ------------------------------------------------------------------
-    # Connection test mutation
-    # ------------------------------------------------------------------
 
     @staticmethod
     def mutate_db_for_connection_test(
         database: Database,
     ) -> None:
-        """Mutate the database instance prior to testing the connection.
-
-        Some databases require passing additional parameters for validating
-        database connections.
-        """
+        """Hook to mutate the database object before a connection test."""
         return None
-
-    # ------------------------------------------------------------------
-    # Extra params
-    # ------------------------------------------------------------------
 
     @staticmethod
     def get_extra_params(database: Database, source: Any = None) -> dict[str, Any]:
-        """Extract extras from the database model.
-
-        :param database: database instance from which to extract extras
-        :param source: in which context is the connection needed
-        """
         extra: dict[str, Any] = {}
         if database.extra:
             try:
@@ -2087,11 +1612,6 @@ class BaseEngineSpec:  # noqa: PLR0904
     def update_params_from_encrypted_extra(
         database: Database, params: dict[str, Any]
     ) -> None:
-        """Update params with sensitive information from encrypted_extra.
-
-        :param database: database instance from which to extract extras
-        :param params: params to be updated
-        """
         if not database.encrypted_extra:
             return
         try:
@@ -2101,18 +1621,10 @@ class BaseEngineSpec:  # noqa: PLR0904
             logger.error(ex, exc_info=True)
             raise
 
-    # ------------------------------------------------------------------
-    # URI validation
-    # ------------------------------------------------------------------
-
     @classmethod
     def validate_database_uri(cls, sqlalchemy_uri: URL) -> None:
-        """Validate a database SQLAlchemy URI per engine spec.
-
-        1:1 with ``superset_old/db_engine_specs/base.py:validate_database_uri``.
-        Invokes the user-configured ``DB_SQLA_URI_VALIDATOR`` callback (if set)
-        before checking disallowed query params.
-        """
+        """Validate URI via ``DB_SQLA_URI_VALIDATOR`` callback
+        and disallowed-params check."""
         try:
             from superset.config import SupersetSettings
 
@@ -2129,10 +1641,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         ).intersection(sqlalchemy_uri.query):
             raise ValueError(f"Forbidden query parameter(s): {existing_disallowed}")
 
-    # ------------------------------------------------------------------
-    # Dialect helpers
-    # ------------------------------------------------------------------
-
     @classmethod
     def denormalize_name(cls, dialect: Dialect, name: str) -> str:
         if (
@@ -2144,7 +1652,6 @@ class BaseEngineSpec:  # noqa: PLR0904
 
     @classmethod
     def quote_table(cls, table: Table, dialect: Dialect) -> str:
-        """Fully quote a table name, including the schema and catalog."""
         quoters = {
             "catalog": dialect.identifier_preparer.quote_schema,
             "schema": dialect.identifier_preparer.quote_schema,
@@ -2157,36 +1664,19 @@ class BaseEngineSpec:  # noqa: PLR0904
             if getattr(table, key)
         )
 
-    # ------------------------------------------------------------------
-    # Column description limit size
-    # ------------------------------------------------------------------
-
     @classmethod
     def get_column_description_limit_size(cls) -> int:
-        """Get a minimum limit size for the sample SELECT column query
-        to fetch the column metadata.
-        """
         return 1
 
     @staticmethod
     def pyodbc_rows_to_tuples(data: list[Any]) -> list[tuple[Any, ...]]:
-        """Convert pyodbc.Row objects from ``fetch_data`` to tuples."""
         if data and type(data[0]).__name__ == "Row":
             data = [tuple(row) for row in data]
         return data
 
-    # ------------------------------------------------------------------
-    # Boolean / null filter handling
-    # ------------------------------------------------------------------
-
     @classmethod
     def handle_boolean_filter(cls, sqla_col: Any, op: str, value: bool) -> Any:
-        """Handle boolean filter operations with engine-specific logic.
-
-        By default uses SQLAlchemy's IS operator (column IS true/false).
-        Engines that don't support IS for boolean values can override
-        ``use_equality_for_boolean_filters``.
-        """
+        """Use IS or == for boolean filters per ``use_equality_for_boolean_filters``."""
         if cls.use_equality_for_boolean_filters:
             return sqla_col == value
         return sqla_col.is_(value)
@@ -2197,12 +1687,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         sqla_col: Any,
         op: str,
     ) -> Any:
-        """Handle null / not-null filter operations.
-
-        :param sqla_col: SQLAlchemy column element
-        :param op: Filter operator string (``"IS NULL"`` or ``"IS NOT NULL"``)
-        :return: SQLAlchemy expression for the null filter
-        """
         op_upper = str(op).upper().replace("_", " ")
         if op_upper in ("IS NULL",):
             return sqla_col.is_(None)
@@ -2217,13 +1701,6 @@ class BaseEngineSpec:  # noqa: PLR0904
         op: str,
         value: Any,
     ) -> Any:
-        """Handle comparison filter operations (=, !=, >, <, >=, <=).
-
-        :param sqla_col: SQLAlchemy column element
-        :param op: Filter operator string
-        :param value: Filter value
-        :return: SQLAlchemy expression for the comparison filter
-        """
         op_str = str(op)
         if op_str in ("==", "EQUALS"):
             return sqla_col == value
@@ -2241,24 +1718,10 @@ class BaseEngineSpec:  # noqa: PLR0904
 
     @classmethod
     def alter_new_orm_column(cls, orm_col: Any) -> None:
-        """Allow altering default column attributes when first detected.
-
-        For instance special columns like ``__time`` for Druid can be set to
-        ``is_dttm=True``.  Note that this only gets called when new columns
-        are detected/created.
-        """
-
-
-# ---------------------------------------------------------------------------
-# BasicParametersMixin — configures engine specs via a dict of parameters
-# instead of a raw SQLAlchemy URI.  Ported 1:1 from
-# ``superset_old/db_engine_specs/base.py`` (``class BasicParametersMixin``).
-# ---------------------------------------------------------------------------
+        """Hook to set default attributes on newly detected columns (e.g. is_dttm)."""
 
 
 class BasicParametersType(TypedDict, total=False):
-    """Typed dict describing the fields accepted by ``BasicParametersMixin``."""
-
     username: str | None
     password: str | None
     host: str
@@ -2269,16 +1732,9 @@ class BasicParametersType(TypedDict, total=False):
 
 
 class BasicPropertiesType(TypedDict):
-    """Top-level payload shape passed to ``validate_parameters``."""
-
     parameters: BasicParametersType
 
 
-# The original code uses a Marshmallow ``Schema`` subclass here.  We don't
-# ship Marshmallow in liteset, so ``parameters_schema`` becomes the JSON
-# Schema dict directly: callers do ``hasattr(spec, "parameters_schema")``
-# (still ``True``), check truthiness (a non-empty dict is truthy), and
-# pass the value to ``parameters_json_schema()`` which returns it as-is.
 BASIC_PARAMETERS_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -2327,28 +1783,17 @@ BASIC_PARAMETERS_JSON_SCHEMA: dict[str, Any] = {
 
 
 class BasicParametersMixin:
-    """
-    Mixin for configuring DB engine specs via a dictionary.
+    """Mixin for configuring engine specs via individual parameters
+    instead of a raw URI.
 
-    With this mixin the SQLAlchemy engine can be configured through
-    individual parameters, instead of the full SQLAlchemy URI. This
-    mixin is for the most common pattern of URI:
-
-        engine+driver://user:password@host:port/dbname[?key=value&key=value...]
-
+    Handles the common ``engine+driver://user:password@host:port/dbname[?key=value...]``
+    pattern.
     """
 
-    # JSON Schema describing the parameters used to configure the DB.  In the
-    # original Apache Superset this was a Marshmallow ``Schema`` instance; in
-    # liteset we attach the OpenAPI fragment directly so that
-    # ``parameters_json_schema()`` is a no-op identity function.
     parameters_schema: dict[str, Any] = BASIC_PARAMETERS_JSON_SCHEMA
-
-    # recommended driver name for the DB engine spec
     default_driver = ""
-
-    # query parameter to enable encryption in the database connection
-    # for Postgres this would be `{"sslmode": "verify-ca"}`, eg.
+    # query parameter to enable encryption,
+    # e.g. ``{"sslmode": "verify-ca"}`` for Postgres
     encryption_parameters: dict[str, str] = {}
 
     @classmethod
@@ -2358,7 +1803,6 @@ class BasicParametersMixin:
         encrypted_extra: dict[str, str] | None = None,
     ) -> str:
         # TODO (betodealmeida): this method should also build `connect_args`
-        # make a copy so that we don't update the original
         query = parameters.get("query", {}).copy()
         if parameters.get("encryption"):
             if not cls.encryption_parameters:
@@ -2367,11 +1811,8 @@ class BasicParametersMixin:
                 )
             query.update(cls.encryption_parameters)
 
-        # NOTE: In SQLAlchemy 2.x, ``str(URL)`` masks the password as
-        # ``***``.  We must call ``render_as_string(hide_password=False)``
-        # to get the full URI with the plain-text password, which is
-        # what the original Apache Superset (SQLAlchemy 1.4) returned
-        # via ``str(URL.create(...))``.
+        # SA 2.x str(URL) masks the password; render_as_string(hide_password=False)
+        # returns the full URI as SA 1.4 str(URL.create(...)) did.
         return URL.create(
             f"{cls.engine}+{cls.default_driver}".rstrip("+"),  # type: ignore[attr-defined]
             username=parameters.get("username"),
@@ -2409,12 +1850,7 @@ class BasicParametersMixin:
     def validate_parameters(
         cls, properties: BasicPropertiesType
     ) -> list[SupersetError]:
-        """
-        Validates any number of parameters, for progressive validation.
-
-        If only the hostname is present it will check if the name is resolvable. As
-        more parameters are present in the request, more validation is done.
-        """
+        """Progressive validation: hostname-only → port → full params."""
         errors: list[SupersetError] = []
 
         required = {"host", "port", "username", "database"}
@@ -2486,12 +1922,6 @@ class BasicParametersMixin:
 
     @classmethod
     def parameters_json_schema(cls) -> Any:
-        """
-        Return configuration parameters as OpenAPI.
-
-        ``parameters_schema`` is itself a JSON Schema dict (see
-        ``BASIC_PARAMETERS_JSON_SCHEMA`` above), so we return it as-is.
-        """
         return cls.parameters_schema or None
 
 

@@ -56,11 +56,10 @@ class BaseAsyncDAO(Generic[T]):
         try:
             return await self.session.get(self.model_cls, model_id)
         except StatementError:
-            # 1:1 with superset_old/daos/base.py: malformed IDs (e.g. a
-            # string where an int is expected) trigger a StatementError
-            # during bind-param processing.  Return None so callers raise
-            # their usual ObjectNotFoundError → 404 instead of letting
-            # the global statement_error_handler return 400.
+            # Malformed IDs (e.g. a string where an int is expected) trigger a
+            # StatementError during bind-param processing.  Return None so
+            # callers raise their usual ObjectNotFoundError → 404 instead of
+            # letting the global statement_error_handler return 400.
             return None
 
     async def find_by_ids(self, model_ids: Sequence[int | str]) -> list[T]:
@@ -102,7 +101,6 @@ class BaseAsyncDAO(Generic[T]):
         return list(result.scalars().unique().all())
 
     async def count(self, filters: list[Any] | None = None) -> int:
-        """Return total record count (for pagination metadata)."""
         stmt = select(func.count()).select_from(self.model_cls)
         if filters:
             stmt = stmt.where(*filters)
@@ -117,11 +115,10 @@ class BaseAsyncDAO(Generic[T]):
     async def create(self, attributes: dict[str, Any]) -> T:
         """Create a new model instance and add to session.
 
-        Mirrors original Superset's BaseDAO.create() which uses setattr
-        instead of ``model(**attrs)`` so callers can pass schema-level
-        fields that are not direct columns/relationships (e.g. report
-        ``selected_tabs``, theme ``css``). Unknown keys become harmless
-        instance attributes and are ignored at flush time.
+        Uses setattr instead of ``model(**attrs)`` so callers can pass
+        schema-level fields that are not direct columns/relationships
+        (e.g. report ``selected_tabs``, theme ``css``). Unknown keys become
+        harmless instance attributes and are ignored at flush time.
 
         Note: Does not flush or commit. Call session.flush() or session.commit()
         at the command/controller level.
@@ -133,11 +130,6 @@ class BaseAsyncDAO(Generic[T]):
         return item
 
     async def update(self, item: T, attributes: dict[str, Any]) -> T:
-        """Update model attributes in-place.
-
-        Note: Does not flush or commit. Changes are tracked by the session
-        and persisted on next flush/commit.
-        """
         for key, value in attributes.items():
             setattr(item, key, value)
         return item

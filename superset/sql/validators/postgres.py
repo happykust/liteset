@@ -14,11 +14,9 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""PostgreSQL SQL validator ported 1:1 from
-``superset_old/sql_validators/postgres.py``.
+"""PostgreSQL SQL validator.
 
-Uses :mod:`pgsanity` to lint SQL ahead of execution. The output annotations
-match the original surface byte-for-byte.
+Uses :mod:`pgsanity` to lint SQL ahead of execution.
 """
 
 from __future__ import annotations
@@ -30,11 +28,6 @@ from superset.sql.validators.base import BaseSQLValidator, SQLValidationAnnotati
 
 
 class PostgreSQLValidator(BaseSQLValidator):
-    """Validate SQL queries using the pgsanity module.
-
-    1:1 with ``superset_old/sql_validators/postgres.py::PostgreSQLValidator``.
-    """
-
     name = "PostgreSQLValidator"
 
     @classmethod

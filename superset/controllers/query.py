@@ -43,10 +43,9 @@ from superset.typing import QueryDAOProtocol, SecurityManagerProtocol, UserProto
 
 logger = logging.getLogger(__name__)
 
-# ``GET /api/v1/query/`` list columns — ported 1:1 from
-# ``superset_old/queries/api.py::QueryRestApi.list_columns`` (the full Query
-# History row). The frontend Query Search page keys off these exact field
-# names, so the set and the dotted nested paths must match verbatim.
+# ``GET /api/v1/query/`` list columns — the full Query History row.
+# The frontend Query Search page keys off these exact field names, so the
+# set and the dotted nested paths must match verbatim.
 QUERY_LIST_COLUMNS = [
     "id",
     "changed_on",
@@ -77,7 +76,6 @@ QUERY_LIST_COLUMNS = [
     "results_key",
 ]
 
-# Mirrors ``QueryRestApi.order_columns``.
 QUERY_ORDER_COLUMNS = [
     "changed_on",
     "database.database_name",
@@ -143,11 +141,7 @@ class QueryController(Controller):
         from superset.exceptions import ObjectNotFoundError
         from superset.models.sql_lab import Query
 
-        # Apply ownership filter — mirrors ``QueryFilter.apply`` in the original:
-        # non-admins without ``can_access_all_queries`` may only see their own
-        # queries.  ``base_filters`` is applied to every single-record GET via
-        # ``datamodel.get(pk, self._base_filters)`` in the original upstream
-        # REST layer.
+        # Non-admins without ``can_access_all_queries`` may only see their own queries.
         base_filters = await query_access_filters(security_manager, current_user)
 
         # Eager-load ``database`` so the response build below doesn't
@@ -160,7 +154,6 @@ class QueryController(Controller):
         if query is None:
             raise ObjectNotFoundError("Query", pk)
 
-        # Serialize using show_columns matching the original API
         show_columns = [
             "id",
             "changed_on",
@@ -194,9 +187,8 @@ class QueryController(Controller):
                 val = val.isoformat()  # type: ignore[union-attr]
             result[col] = val
 
-        # Include nested database info — original show_columns has "database.id"
-        # (dotted path) which upstream serialises as {"database": {"id": ...}} with no
-        # other database fields (superset_old/queries/api.py:104).
+        # show_columns has "database.id" (dotted path) serialised as
+        # {"database": {"id": ...}} with no other database fields.
         # "database_id" (flat integer) is NOT in show_columns, and "database_name"
         # is only in order_columns/list_columns, not show_columns.
         db_obj = getattr(query, "database", None)
@@ -219,9 +211,8 @@ class QueryController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/query/ — list queries.
 
-        Returns the full Query History row (``QUERY_LIST_COLUMNS``), matching
-        ``superset_old/queries/api.py::QueryRestApi`` 1:1 — including the
-        ``changed_on desc`` ``base_order``, rison-based filtering via
+        Returns the full Query History row (``QUERY_LIST_COLUMNS``), including
+        the ``changed_on desc`` default order, rison-based filtering via
         ``search_columns`` (changed_on, database, sql, status, user,
         start_time, sql_editor_id, uuid), rison ordering via
         ``order_columns``, and the dotted ``database`` / ``user`` nested
@@ -235,12 +226,10 @@ class QueryController(Controller):
         rison_filters, order_by, page, page_size = build_rison_query_params(
             Query,
             rison_params,
-            # Upstream ``ModelRestApi.page_size = 20`` — QueryRestApi does not
-            # override it, so the original list default is 20, not 25.
+            # QueryRestApi.page_size = 20 (not the framework default 25).
             default_page_size=20,
         )
         if not order_by:
-            # 1:1 with ``base_order = ("changed_on", "desc")`` in original
             order_by = [Query.changed_on.desc()]
 
         base_filters = await query_access_filters(security_manager, current_user)
@@ -404,12 +393,8 @@ class QueryController(Controller):
     async def stop_query(
         self, data: StopQuerySchema, dao: QueryDAOProtocol
     ) -> dict[str, str]:
-        # 1:1 with ``superset_old/queries/api.py:234-241``:
-        # ``@backoff.on_exception(backoff.constant, Exception, interval=1,
-        # on_backoff=lambda ...: db.session.rollback(),
-        # on_giveup=lambda ...: db.session.rollback(), max_tries=5)``
-        # Async equivalent: retry up to 5 times with 1-second intervals,
-        # rolling back the session on each retry and on final failure.
+        # Retry up to 5 times with 1-second intervals, rolling back the
+        # session on each retry and on final failure.
         max_tries = 5
         last_exc: Exception | None = None
         for attempt in range(max_tries):
@@ -422,9 +407,7 @@ class QueryController(Controller):
                 return {"result": "OK"}
             except Exception as ex:  # noqa: BLE001
                 if isinstance(ex, SupersetException):
-                    # domain error — never retry (mirrors original: the
-                    # SupersetException is caught inside the original fn body,
-                    # so the @backoff decorator never sees it — zero retries)
+                    # domain error — never retry
                     raise
                 last_exc = ex
                 await dao.session.rollback()

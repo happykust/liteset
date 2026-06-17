@@ -26,7 +26,6 @@ from superset.db.base_dao import BaseAsyncDAO
 from superset.key_value.exceptions import KeyValueCodecDecodeException
 from superset.models.key_value import KeyValueEntry
 
-# Matches original superset.key_value.types.Key
 Key = int | UUID
 
 
@@ -38,13 +37,7 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         resource: str,
         entry_id: int,
     ) -> KeyValueEntry | None:
-        """Get a key-value entry by resource and integer ID.
-
-        Matches original KeyValueDAO.get_entry at
-        superset_old/daos/key_value.py:42-47 -- no expiry filtering.
-        Callers that need to exclude expired entries must check
-        ``is_expired()`` (or ``expires_on``) themselves.
-        """
+        """No expiry filtering — callers must check ``expires_on`` themselves."""
         stmt = select(KeyValueEntry).where(
             KeyValueEntry.resource == resource,
             KeyValueEntry.id == entry_id,
@@ -62,14 +55,12 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
     ) -> KeyValueEntry:
         """Create a new key-value entry.
 
-        Matches the signature of original KeyValueDAO.create_entry at
-        superset_old/daos/key_value.py:84-111 — key is optional and may
-        be ``int`` (becomes entry.id) or ``UUID`` (becomes entry.uuid).
-        When key is None, the DB generates an auto-increment ``id``.
+        Key is optional and may be ``int`` (becomes entry.id) or ``UUID``
+        (becomes entry.uuid). When key is None, the DB generates an
+        auto-increment ``id``.
 
-        ``user_id`` populates ``created_by_fk`` (1:1 with the original,
-        which uses ``get_user_id()``). It is optional and defaults to
-        ``None`` to keep the signature backward-compatible.
+        ``user_id`` populates ``created_by_fk``. It is optional and defaults
+        to ``None`` to keep the signature backward-compatible.
         """
         entry = KeyValueEntry(
             resource=resource,
@@ -92,14 +83,8 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         resource: str,
         key: Key,
     ) -> KeyValueEntry | None:
-        """Retrieve an entry by resource + key (int or UUID).
-
-        Matches original KeyValueDAO.get_entry at
-        superset_old/daos/key_value.py:42-47 via get_filter() at
-        superset_old/key_value/utils.py:44-53 -- no expiry filtering.
-        Callers that need to exclude expired entries (e.g. get_value)
-        must check expiry themselves after retrieval.
-        """
+        """No expiry filtering — callers that need to exclude expired entries
+        must check after retrieval."""
         if isinstance(key, UUID):
             filter_col = KeyValueEntry.uuid == key
         else:
@@ -116,25 +101,11 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         resource: str,
         key: Key,
     ) -> Any:
-        """Retrieve and JSON-decode a value by resource + key.
-
-        Matches original KeyValueDAO.get_value at
-        superset_old/daos/key_value.py:50-60 using a JSON codec
-        (our permalinks always store JSON-encoded payloads).
-
-        The expiry check is done here (not in get_entry_by_key)
-        to match the original's is_expired() guard at line 57-58.
-        """
+        """Retrieve and JSON-decode a value; expired entries are
+        treated as not found."""
         entry = await self.get_entry_by_key(resource, key)
         if entry is None:
             return None
-        # Expiry check -- equivalent to the original get_value (line 57-58):
-        #   if not entry or entry.is_expired(): return None
-        # The original model's ``is_expired()`` is exactly
-        #   self.expires_on is not None and self.expires_on <= datetime.now()
-        # (superset_old/key_value/models.py:44-45). The liteset KeyValueEntry
-        # model does not expose ``is_expired()``, so we inline the identical
-        # comparison here rather than calling a method that does not exist.
         if entry.expires_on is not None and entry.expires_on <= datetime.now():
             return None
         import json as _json
@@ -157,11 +128,8 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         Uses SELECT FOR UPDATE to prevent TOCTOU race conditions
         under concurrent access within the same transaction isolation.
 
-        On update we populate ``changed_on`` / ``changed_by_fk`` and on
-        insert we thread ``user_id`` into ``created_by_fk`` — 1:1 with
-        the original KeyValueDAO.upsert_entry at
-        superset_old/daos/key_value.py:113-128 (which sets ``changed_on``
-        + ``changed_by_fk`` via ``get_user_id()`` on the update path).
+        On update populates ``changed_on`` / ``changed_by_fk``; on insert
+        threads ``user_id`` into ``created_by_fk``.
         """
         stmt = (
             select(KeyValueEntry)
@@ -192,22 +160,11 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         resource: str,
         entry_id: int,
     ) -> bool:
-        """Delete a key-value entry. Returns True if deleted."""
         entry = await self.get_entry(resource, entry_id)
         if entry:
             await self.delete([entry])
             return True
         return False
-
-    # ------------------------------------------------------------------
-    # High-level string-keyed API for filter state / permalinks
-    #
-    # The original Superset stores:
-    #   - ``resource`` column (VARCHAR 32): short resource name, e.g.
-    #     "explore_form_data"
-    #   - ``uuid`` column: the lookup key (a UUID)
-    #   - ``value`` column: the payload (bytes)
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _coerce_uuid(key: str) -> UUID | None:
@@ -232,30 +189,14 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         user_id: int | None = None,
         expires_on: datetime | None = None,
     ) -> None:
-        """Store a string value keyed by resource name + UUID key.
+        """Store a value keyed by resource name + UUID key.
 
-        Raises ValueError if ``key`` is not a valid UUID; callers that
-        accept arbitrary string keys must coerce them upstream (see
-        the permalink/filter-state commands).
-
-        ``user_id`` (optional, default ``None`` for backward compat)
-        populates the audit columns: ``created_by_fk`` + ``created_on``
-        on insert and ``changed_by_fk`` + ``changed_on`` on update,
-        1:1 with the original KeyValueDAO.create_entry / upsert_entry
-        which thread ``get_user_id()`` into those columns.
-
-        ``expires_on`` (optional) sets the expiry datetime on the stored
-        entry — mirrors the original ``SupersetMetastoreCache.set()``
-        which passes ``_get_expiry(timeout)`` to
-        ``KeyValueDAO.upsert_entry(expires_on=...)``
-        (superset_old/extensions/metastore_cache.py:80-92).
+        Raises ValueError if ``key`` is not a valid UUID.
         """
         key_uuid = self._coerce_uuid(key)
         if key_uuid is None:
             raise ValueError(f"Invalid UUID key: {key!r}")
-        # No expiry filter -- must find expired entries too so we can
-        # update them in place (matching original upsert_entry which
-        # calls get_entry without expiry filtering).
+        # No expiry filter — must find expired entries too for in-place update.
         stmt = (
             select(KeyValueEntry)
             .where(
@@ -290,13 +231,8 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         resource_id: int,
         key: str,
     ) -> str | None:
-        """Retrieve a string value by resource name + UUID key.
-
-        Returns None for malformed UUIDs — keys that cannot exist in
-        the database. This mirrors original Superset's behaviour where
-        get_filter() raises KeyValueParseKeyError that the controller
-        translates to a 404.
-        """
+        """Retrieve a string value by resource name + UUID key;
+        returns None for malformed UUIDs."""
         key_uuid = self._coerce_uuid(key)
         if key_uuid is None:
             return None
@@ -320,10 +256,8 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         resource_id: int,
         key: str,
     ) -> bool:
-        """Delete a value by resource name + UUID key.
-
-        Returns False for malformed UUIDs (treat as not-found).
-        """
+        """Delete a value by resource name + UUID key;
+        returns False for malformed UUIDs."""
         key_uuid = self._coerce_uuid(key)
         if key_uuid is None:
             return False
@@ -340,7 +274,6 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         return False
 
     async def delete_expired_entries(self, resource: str) -> None:
-        """Delete all expired entries for a resource."""
         stmt = delete(KeyValueEntry).where(
             KeyValueEntry.resource == resource,
             KeyValueEntry.expires_on <= datetime.now(),

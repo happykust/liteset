@@ -14,13 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/database/tables.py``.
-
-1:1 with the original :class:`TablesDatabaseCommand`:
+"""Command for listing tables and views accessible in a database schema.
 
 * ``get_all_table_names_in_schema`` and ``get_all_view_names_in_schema``
-  go through the model so the cached results decorated with
-  ``@memoized_func`` are honoured (cache-key shape:
+  go through the model so cached results are honoured (cache-key shape:
   ``db:{id}:catalog:{c}:schema:{s}:{table_list,view_list}``);
 * ``force`` / ``cache`` / ``cache_timeout`` are forwarded as kwargs;
 * the catalog is defaulted via ``self._model.get_default_catalog()``
@@ -47,11 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 class TablesDatabaseCommand(AsyncBaseCommand[dict[str, Any]]):
-    """List tables / views accessible to the user for a given database.
-
-    Async port of
-    ``superset_old.commands.database.tables.TablesDatabaseCommand``.
-    """
+    """List tables / views accessible to the user for a given database."""
 
     _model: Any
 
@@ -81,8 +74,6 @@ class TablesDatabaseCommand(AsyncBaseCommand[dict[str, Any]]):
 
     async def run(self) -> dict[str, Any]:
         assert self._model is not None
-        # 1:1 with original — default the catalog from the engine spec
-        # before talking to the inspector / cache.
         self._catalog_name = self._catalog_name or self._model.get_default_catalog()
         try:
             raw_tables = await self._model.get_all_table_names_in_schema(
@@ -100,9 +91,6 @@ class TablesDatabaseCommand(AsyncBaseCommand[dict[str, Any]]):
                 cache_timeout=self._model.table_cache_timeout,
             )
 
-            # Wrap raw tuples as DatasourceName objects — matches the
-            # original which relied on this for ``security_manager
-            # .get_datasources_accessible_by_user`` filtering downstream.
             tables = sorted(
                 DatasourceName(*datasource_name) for datasource_name in raw_tables
             )
@@ -110,12 +98,8 @@ class TablesDatabaseCommand(AsyncBaseCommand[dict[str, Any]]):
                 DatasourceName(*datasource_name) for datasource_name in raw_views
             )
 
-            # Apply per-user permission filtering when the security manager
-            # exposes the (legacy-shaped) helper.  The async
-            # ``AsyncSecurityManager`` in liteset has a different signature
-            # (returns perm strings instead of filtered names), so guard
-            # explicitly to avoid breaking that path — admin users keep
-            # the unfiltered list.
+            # Guard ``filter_datasources_by_perms``: AsyncSecurityManager has a
+            # different signature (returns perm strings, not filtered names).
             if self._security_manager is not None and hasattr(
                 self._security_manager, "filter_datasources_by_perms"
             ):
@@ -134,10 +118,6 @@ class TablesDatabaseCommand(AsyncBaseCommand[dict[str, Any]]):
                     user=self._user,
                 )
 
-            # Batch-fetch ``extra`` (certification etc.) for matching
-            # SqlaTable rows — 1:1 with the original which built
-            # ``extra_dict_by_name`` via a single query filtered by
-            # ``database_id`` + ``catalog`` + ``schema``.
             extra_lookup: dict[str, Any] = {}
             all_names = {t.table for t in tables}
             if all_names:

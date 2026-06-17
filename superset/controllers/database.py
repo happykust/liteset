@@ -133,8 +133,6 @@ def _inspect_table_metadata(  # noqa: C901
     """Run all Inspector calls synchronously and return the raw metadata dict.
 
     This function is designed to be called via ``async_conn.run_sync()``.
-    It mirrors the original ``superset_old/databases/utils.py:get_table_metadata``
-    logic exactly.
     """
     from sqlalchemy import inspect as sa_inspect, select, text
 
@@ -183,7 +181,7 @@ def _inspect_table_metadata(  # noqa: C901
         idx_entry["type"] = "index"
         indexes.append(idx_entry)
 
-    # Aggregate keys list: pk + fks + indexes (matches original exactly)
+    # Aggregate keys list: pk + fks + indexes
     keys: list[dict[str, Any]] = []
     if primary_key:
         keys.append(primary_key)
@@ -215,11 +213,6 @@ def _inspect_table_metadata(  # noqa: C901
 
     # --- select star -------------------------------------------------------
     # Generate SELECT * using the connection's dialect for proper quoting.
-    # Matches original ``database.select_star(table, indent=True, cols=columns,
-    # latest_partition=True)`` as closely as possible without access to the
-    # Database model's ``select_star`` method.  The original uses
-    # ``BaseEngineSpec.select_star`` which requires ``database.get_columns``
-    # and ``database.compile_sqla_query`` — methods not yet ported.
     dialect = sync_conn.dialect
     quoted_table = dialect.identifier_preparer.quote_identifier(table_name)
     if schema:
@@ -230,7 +223,6 @@ def _inspect_table_metadata(  # noqa: C901
 
     qry = select(text("*")).select_from(text(full_name)).limit(100)
     raw_sql = str(qry.compile(dialect=dialect, compile_kwargs={"literal_binds": True}))
-    # Apply simple indentation to match ``indent=True`` from original
     select_star_sql = raw_sql.replace(" FROM ", "\nFROM ").replace(
         " \n LIMIT ", "\nLIMIT "
     )
@@ -247,29 +239,25 @@ def _inspect_table_metadata(  # noqa: C901
 
     # NOTE: _inspect_table_extra_metadata was removed.  Both the deprecated
     # and non-deprecated extra-metadata endpoints now delegate to
-    # ``database.db_engine_spec.get_extra_table_metadata()`` which matches
-    # the original Superset implementation.  The base engine spec returns
-    # ``{}`` and engine-specific overrides (e.g. BigQuery) provide
+    # ``database.db_engine_spec.get_extra_table_metadata()``.  The base engine
+    # spec returns ``{}`` and engine-specific overrides (e.g. BigQuery) provide
     # partition/clustering info.
 
 
-# ----------------------------------------------------------------------------
-# Synchronous-driver introspection fallback
-# ----------------------------------------------------------------------------
 # Engines without an async SQLAlchemy driver (Trino, ClickHouse, …) cannot go
 # through ``get_async_connection`` — ``create_async_engine`` on a sync-only URI
 # raises "the asyncio extension requires an async driver".  For those engines we
-# reproduce upstream Superset's *synchronous* introspection: a plain SQLAlchemy
-# inspector plus the engine spec's sync ``get_{catalog,schema,table,view}_names``
-# classmethods.  Callers offload these to a thread (``asyncio.to_thread``).
+# use *synchronous* introspection: a plain SQLAlchemy inspector plus the engine
+# spec's sync ``get_{catalog,schema,table,view}_names`` classmethods.  Callers
+# offload these to a thread (``asyncio.to_thread``).
 def _parse_rison_or_json(q: str) -> Any:
     """Parse a ``q`` query argument as RISON, falling back to JSON.
 
-    The frontend sends ``q`` as RISON (e.g. ``(catalog:memory,force:!t)``) —
-    upstream Superset decodes it with ``prison``.  A bare ``json.loads`` (the
-    previous implementation) raised on every RISON payload, silently dropping
-    the ``catalog`` filter — harmless for single-catalog engines but it made
-    multi-catalog browsing (Trino, …) impossible.
+    The frontend sends ``q`` as RISON (e.g. ``(catalog:memory,force:!t)``).
+    A bare ``json.loads`` (the previous implementation) raised on every RISON
+    payload, silently dropping the ``catalog`` filter — harmless for
+    single-catalog engines but it made multi-catalog browsing (Trino, …)
+    impossible.
     """
     try:
         import prison
@@ -283,14 +271,12 @@ def _parse_rison_or_json(q: str) -> Any:
 
 
 def _sync_catalog_names(database: Any) -> set[str]:
-    """Synchronous catalog enumeration (1:1 upstream ``get_catalog_names``)."""
     spec = database.db_engine_spec
     with database.get_inspector() as inspector:
         return spec.get_catalog_names(database, inspector)
 
 
 def _sync_schema_names(database: Any, catalog: str | None) -> set[str]:
-    """Synchronous schema enumeration (1:1 upstream ``get_schema_names``)."""
     spec = database.db_engine_spec
     with database.get_inspector(catalog=catalog) as inspector:
         return spec.get_schema_names(inspector)
@@ -299,7 +285,6 @@ def _sync_schema_names(database: Any, catalog: str | None) -> set[str]:
 def _sync_table_and_view_names(
     database: Any, catalog: str | None, schema: str | None
 ) -> tuple[set[str], set[str]]:
-    """Synchronous table + view enumeration (1:1 upstream)."""
     spec = database.db_engine_spec
     with database.get_inspector(catalog=catalog, schema=schema) as inspector:
         tables = spec.get_table_names(database, inspector, schema)
@@ -310,16 +295,12 @@ def _sync_table_and_view_names(
 def _get_schema_access_for_file_upload(database: Any, user: Any = None) -> set[str]:
     """Resolve the schemas a user may upload files into for ``database``.
 
-    1:1 with ``Database.get_schema_access_for_file_upload`` in
-    ``superset_old/models/core.py`` (line 1055): read
-    ``schemas_allowed_for_file_upload`` from the DB's ``extra`` (coercing a
+    Read ``schemas_allowed_for_file_upload`` from the DB's ``extra`` (coercing a
     legacy stringified list via ``literal_eval``), then union it with the
     result of the configurable ``ALLOWED_USER_CSV_SCHEMA_FUNC(database, user)``.
-
-    The original reads ``g.user``; in the async port the current user is passed
-    explicitly. When the hook is unset (the default in ``superset/config.py``)
-    the function is skipped — equivalent to the upstream default that returns
-    ``[]`` unless ``UPLOADED_CSV_HIVE_NAMESPACE`` is configured.
+    When the hook is unset (the default in ``superset/config.py``) the function
+    is skipped, returning ``[]`` unless ``UPLOADED_CSV_HIVE_NAMESPACE`` is
+    configured.
     """
     from ast import literal_eval
 
@@ -369,7 +350,7 @@ def _build_database_result(db: Any) -> DatabaseDetailResult:
     """Build a full database result from a Database model instance.
 
     Used by create, update, and GET /{pk} to return a consistent,
-    expanded response matching Superset's original API contract.
+    expanded response.
     """
     return DatabaseDetailResult.from_model(db, mask_uri=mask_uri_password)
 
@@ -381,18 +362,16 @@ async def _decode_connection_body(
 
     The POST / PUT / TestConnection / ValidateParameters request bodies must
     accept the legacy ``encrypted_extra`` key as an alias for
-    ``masked_encrypted_extra`` (1:1 with the original
-    ``rename_encrypted_extra`` ``@pre_load`` hook).  Litestar's typed-param
-    injection would silently drop the unknown legacy key, so we read the raw
-    body, normalize it, then ``msgspec.convert`` into the target struct (which
-    runs its ``__post_init__`` validation, e.g. URI safety + JSON validity).
+    ``masked_encrypted_extra``.  Litestar's typed-param injection would silently
+    drop the unknown legacy key, so we read the raw body, normalize it, then
+    ``msgspec.convert`` into the target struct (which runs its ``__post_init__``
+    validation, e.g. URI safety + JSON validity).
 
     The body value is a credential and is never logged here. Malformed JSON
     or schema mismatches surface as Litestar ``ValidationException`` (mapped
-    to 422 by the global handler), matching upstream's ``response_400`` /
-    ``response_422`` for the same conditions. NB:
-    ``msgspec.ValidationError`` IS-A ``msgspec.DecodeError`` — catch the
-    narrower one first or you lose the field-level message.
+    to 422 by the global handler). NB: ``msgspec.ValidationError`` IS-A
+    ``msgspec.DecodeError`` — catch the narrower one first or you lose the
+    field-level message.
     """
     from litestar.exceptions import ValidationException
 
@@ -430,12 +409,10 @@ async def _decode_connection_body(
 def _engine_select_star_sync(database: Any, table: Table) -> str:
     """Generate engine-correct ``SELECT *`` SQL via the engine spec.
 
-    Mirrors original ``Database.select_star`` /
-    ``BaseEngineSpec.select_star`` — quoting matches the engine's
-    dialect (backticks for MySQL, brackets for MSSQL, double-quotes
-    for Postgres / Trino / Snowflake / Redshift / BigQuery, etc.) and
-    a partition-aware ``WHERE`` is applied for Hive / Presto / Trino
-    partitioned tables.
+    Quoting matches the engine's dialect (backticks for MySQL, brackets for
+    MSSQL, double-quotes for Postgres / Trino / Snowflake / Redshift /
+    BigQuery, etc.) and a partition-aware ``WHERE`` is applied for Hive /
+    Presto / Trino partitioned tables.
 
     Runs in a worker thread (called via :func:`asyncio.to_thread`)
     because :func:`Database.get_sqla_engine` opens a sync SQLAlchemy
@@ -450,15 +427,10 @@ def _engine_select_star_sync(database: Any, table: Table) -> str:
     catalog = getattr(database, "get_default_catalog", lambda: None)()
     qualified = Table(table.table, table.schema, table.catalog or catalog)
 
-    # The original ``select_star`` endpoint at
-    # ``superset_old/databases/api.py:1232-1234`` calls
-    # ``database.select_star(Table(...), latest_partition=True)`` which
-    # forwards to ``BaseEngineSpec.select_star`` (base.py:1615) with
-    # ``show_cols=False, latest_partition=True``.  When
-    # ``latest_partition=True``, the engine spec fetches columns via
-    # ``database.get_columns(table)`` and calls
-    # ``cls.where_latest_partition()`` to add partition-filtering WHERE
-    # clauses for Hive/Presto/Trino/BigQuery partitioned tables.
+    # With ``latest_partition=True`` the engine spec fetches columns via
+    # ``database.get_columns(table)`` and calls ``cls.where_latest_partition()``
+    # to add partition-filtering WHERE clauses for Hive/Presto/Trino/BigQuery
+    # partitioned tables.
     try:
         with database.get_sqla_engine(
             catalog=qualified.catalog,
@@ -475,8 +447,7 @@ def _engine_select_star_sync(database: Any, table: Table) -> str:
                 cols=None,
             )
     except NoSuchTableError:
-        # Re-raise so the endpoint can return 404 — mirrors original
-        # ``superset_old/databases/api.py:1236-1238``.
+        # Re-raise so the endpoint can return 404.
         raise
     except Exception:  # noqa: BLE001
         if hasattr(db_engine_spec, "quote_table"):
@@ -503,11 +474,6 @@ async def _engine_select_star(database: Any, table: Table) -> str:
     return await asyncio.to_thread(_engine_select_star_sync, database, table)
 
 
-# ---------------------------------------------------------------------------
-# OAuth2 token purge — mirrors ``Database.purge_oauth2_tokens``
-# (``superset_old/models/core.py:1189``).
-# ---------------------------------------------------------------------------
-
 _OAUTH2_PURGE_KEYS: frozenset[str] = frozenset(
     {"id", "scope", "authorization_request_uri", "token_request_uri"}
 )
@@ -530,10 +496,7 @@ def _extract_oauth2_client_info(raw: str | None) -> dict[str, Any]:
 async def _purge_oauth2_tokens(dao: "DatabaseDAOProtocol", database_id: int) -> None:
     """Delete every ``DatabaseUserOAuth2Tokens`` row for ``database_id``.
 
-    Mirrors ``Database.purge_oauth2_tokens`` at
-    ``superset_old/models/core.py:1189-1199`` (with the column-name
-    bug from the original — which filtered on ``id`` rather than
-    ``database_id`` — corrected).
+    Filters on ``database_id`` (not ``id``).
     """
     from sqlalchemy import delete as sa_delete
 
@@ -559,9 +522,6 @@ async def _purge_oauth2_tokens_if_needed(
 ) -> None:
     """Purge OAuth2 tokens iff the OAuth2 client config rotated.
 
-    1:1 with ``UpdateDatabaseCommand._handle_oauth2`` at
-    ``superset_old/commands/database/update.py:128-159``:
-
     - When ``encrypted_extra`` becomes ``None`` (OAuth2 disabled),
       purge unconditionally.
     - Otherwise compare the four critical keys (``id``, ``scope``,
@@ -574,17 +534,12 @@ async def _purge_oauth2_tokens_if_needed(
         await _purge_oauth2_tokens(dao, int(database.id))
         return
 
-    # 1:1 with UpdateDatabaseCommand._handle_oauth2 line 139:
-    # ``current_config = self._model.get_oauth2_config()``
-    # CRITICAL: must use the OLD encrypted_extra (pre-update) here.
-    # The original calls get_oauth2_config() BEFORE DatabaseDAO.update(),
-    # so self._model.encrypted_extra is still the old value.  In liteset
-    # the update has already run by the time we get here, so calling
-    # database.get_oauth2_config() would return the NEW config — making
-    # both sides of the comparison equal and suppressing the purge.
-    # Instead, rebuild the old config from old_encrypted_extra directly,
-    # then fall back to the engine-spec level (same approach as the
-    # original: json.loads(old).get('oauth2_client_info') or spec.get_oauth2_config()).
+    # CRITICAL: must use the OLD encrypted_extra (pre-update) here.  The update
+    # has already run by the time we get here, so calling
+    # database.get_oauth2_config() would return the NEW config — making both
+    # sides of the comparison equal and suppressing the purge.  Instead, rebuild
+    # the old config from old_encrypted_extra directly, then fall back to the
+    # engine-spec level.
     try:
         old_per_db = _extract_oauth2_client_info(old_encrypted_extra)
         if old_per_db:
@@ -619,8 +574,7 @@ async def _create_ssh_tunnel(
 ) -> Any:
     """Run :class:`CreateSSHTunnelCommand` for ``database`` + ``payload``.
 
-    Mirrors original ``CreateDatabaseCommand.run`` lines 88-99 — the
-    SSH tunnel row is inserted in a second step after the database
+    The SSH tunnel row is inserted in a second step after the database
     row is created.
     """
     from superset.commands.database.ssh_tunnel.create import CreateSSHTunnelCommand
@@ -649,9 +603,6 @@ async def _sync_ssh_tunnel(
     payload: dict[str, Any] | None,
 ) -> Any:
     """Create / update / delete the SSH tunnel row.
-
-    Mirrors original ``UpdateDatabaseCommand._handle_ssh_tunnel`` lines
-    161-185:
 
     - ``payload is None`` (or ``{}``): delete current tunnel if present.
     - ``payload`` + no current tunnel: ``CreateSSHTunnelCommand``.
@@ -698,11 +649,7 @@ async def _sync_ssh_tunnel(
 def _serialise_ssh_tunnel(tunnel: Any) -> dict[str, Any]:
     """Return ``tunnel.data`` for the API response.
 
-    Mirrors original ``superset_old/databases/api.py:post`` /
-    ``put`` handlers which echo ``mask_password_info(model.ssh_tunnel)``
-    back into the response (lines 466-467 / 553-555).  The new
-    ``SSHTunnel`` model embeds masking in its ``data`` property so we
-    can reuse it directly.
+    The ``SSHTunnel`` model embeds password masking in its ``data`` property.
     """
     if tunnel is None:
         return {}
@@ -735,13 +682,11 @@ async def _database_is_accessible(
     """Return whether ``user`` may view ``database``.
 
     In-Python evaluation of the same predicate encoded by
-    ``superset.db.filters.database_access_filters`` (1:1 with the original
-    ``DatabaseFilter``): ``all_database_access`` holders see everything;
-    everyone else needs a ``database_access`` perm on this database OR its
-    name appearing in a ``catalog_access`` / ``schema_access`` /
-    ``datasource_access`` view-menu permission.  Used for GET-by-id so an
-    inaccessible database returns 404 (existence hidden), matching FAB's
-    ``get_headless`` base-filter behaviour.
+    ``superset.db.filters.database_access_filters``: ``all_database_access``
+    holders see everything; everyone else needs a ``database_access`` perm on
+    this database OR its name appearing in a ``catalog_access`` /
+    ``schema_access`` / ``datasource_access`` view-menu permission.  Used for
+    GET-by-id so an inaccessible database returns 404 (existence hidden).
     """
     from superset.db.filters import _databases_from_view_menus
 
@@ -779,10 +724,7 @@ async def _get_accessible_database_or_404(
 ) -> Any:
     """Load a database by id, hiding inaccessible ones behind a 404.
 
-    1:1 with the upstream ``DatabaseFilter`` base_filter that
-    ``DatabaseDAO.find_by_id``/FAB ``datamodel`` apply on EVERY by-id
-    operation (superset_old/daos/database.py:38, daos/base.py:52-72): a
-    database outside the user's visibility scope must behave exactly like a
+    A database outside the user's visibility scope must behave exactly like a
     missing one — existence hidden, no metadata or mutation possible.
     """
     database = await dao.find_by_id(pk)
@@ -820,10 +762,8 @@ class DatabaseController(Controller):
         from superset.db.filters import database_access_filters
         from superset.models.core import Database
 
-        # Anonymous callers see an empty list — mirrors original
-        # ``DatabaseFilter`` (databases/filters.py) which restricts the query
-        # to databases the caller is allowed to read.  ``can_read`` on the menu
-        # is satisfied by Public role permissions but data-level access
+        # Anonymous callers see an empty list: ``can_read`` on the menu is
+        # satisfied by Public role permissions but data-level access
         # (``database_access`` / ``all_database_access``) is required to see
         # actual rows.
         if not getattr(current_user, "is_authenticated", False):
@@ -844,10 +784,9 @@ class DatabaseController(Controller):
         if not order_by:
             order_by = [Database.changed_on.desc()]
 
-        # Apply the RBAC base filter (1:1 with the original ``DatabaseFilter``
-        # base_filter): non-``all_database_access`` users only see databases
-        # they hold ``database_access`` for, or whose name appears in a
-        # catalog/schema/datasource_access permission.
+        # Apply the RBAC base filter: non-``all_database_access`` users only see
+        # databases they hold ``database_access`` for, or whose name appears in
+        # a catalog/schema/datasource_access permission.
         base_filters = await database_access_filters(security_manager, current_user)
         combined_filters = (rison_filters or []) + (base_filters or [])
 
@@ -891,12 +830,10 @@ class DatabaseController(Controller):
             ],
             list_title="List Database",
         )
-        # Post-process: add computed columns from the Database model's
-        # ``extra`` JSON and engine spec — 1:1 with the original's
-        # ``list_columns`` (superset_old/databases/api.py:207-234) which
-        # includes ``allows_cost_estimate``, ``allows_subquery``, etc. as
-        # @property descriptors on the model that read ``get_extra()`` and
-        # ``db_engine_spec.get_public_information()``.
+        # Post-process: add computed columns (``allows_cost_estimate``,
+        # ``allows_subquery``, etc.) from the Database model's ``extra`` JSON and
+        # engine spec, exposed as @property descriptors that read ``get_extra()``
+        # and ``db_engine_spec.get_public_information()``.
         db_by_id = {getattr(db, "id", None): db for db in databases}
         for row in payload.get("result", []):
             db_obj = db_by_id.get(row.get("id"))
@@ -982,10 +919,9 @@ class DatabaseController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/{pk:int}/connection",
-        # The original ``constants.MODEL_API_RW_METHOD_PERMISSION_MAP`` maps
-        # ``get_connection`` to ``write`` — this endpoint returns the full
-        # connection info (incl. masked URI, parameters_schema, ssh_tunnel),
-        # so it requires ``can_write`` rather than ``can_read``.
+        # This endpoint returns the full connection info (incl. masked URI,
+        # parameters_schema, ssh_tunnel), so it requires ``can_write`` rather
+        # than ``can_read``.
         guards=[require_permission("can_write", "Database")],
     )
     async def get_connection(
@@ -998,11 +934,8 @@ class DatabaseController(Controller):
         database = await _get_accessible_database_or_404(
             dao, security_manager, current_user, pk
         )
-        # Mirrors ``DatabaseConnectionSchema`` from
-        # ``superset_old.databases.schemas`` (via
-        # ``DatabaseRestApi.get_connection``).  Fields ``id``,
-        # ``engine_information`` and ``parameters_schema`` are required
-        # for the frontend's edit modal — without ``id`` it falls back
+        # Fields ``id``, ``engine_information`` and ``parameters_schema`` are
+        # required for the frontend's edit modal — without ``id`` it falls back
         # to POST and trips the duplicate-name validator; without
         # ``parameters_schema`` the dynamic-form connector renders empty.
         result: dict[str, Any] = {
@@ -1026,9 +959,9 @@ class DatabaseController(Controller):
             "force_ctas_schema": getattr(database, "force_ctas_schema", None),
             "impersonate_user": getattr(database, "impersonate_user", False),
             "is_managed_externally": getattr(database, "is_managed_externally", False),
-            # Original returns ``""`` (empty string) when no encrypted
-            # extra is set, not ``null`` — the form's JSON-editor binds
-            # to a string and chokes on null.
+            # Return ``""`` (empty string) when no encrypted extra is set, not
+            # ``null`` — the form's JSON-editor binds to a string and chokes on
+            # null.
             "masked_encrypted_extra": (
                 getattr(database, "masked_encrypted_extra", None) or ""
             ),
@@ -1037,11 +970,8 @@ class DatabaseController(Controller):
             "server_cert": getattr(database, "server_cert", None),
             "uuid": (str(database.uuid) if getattr(database, "uuid", None) else None),
         }
-        # ssh_tunnel is added separately — original
-        # ``superset_old/databases/api.py:get_connection`` calls
-        # ``DatabaseDAO.get_ssh_tunnel(pk)`` and only attaches the field
-        # when a tunnel exists.  Mirror that conditional behaviour so
-        # the response has the same shape for both connector states.
+        # ssh_tunnel is attached only when a tunnel exists, so the response has
+        # the same shape for both connector states.
         tunnel = await dao.get_ssh_tunnel(pk)
         if tunnel is not None:
             result["ssh_tunnel"] = _serialise_ssh_tunnel(tunnel) or None
@@ -1064,19 +994,13 @@ class DatabaseController(Controller):
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
-        # Enforce the RBAC base filter on GET-by-id, mirroring the original
-        # ``DatabaseRestApi.get`` which fetches via ``get_headless`` and so
-        # applies ``base_filters = [["id", DatabaseFilter, ...]]`` — an
-        # inaccessible database returns 404 (existence is hidden).
+        # Enforce the RBAC base filter on GET-by-id — an inaccessible database
+        # returns 404 (existence is hidden).
         if not await _database_is_accessible(security_manager, current_user, database):
             raise ObjectNotFoundError("Database", pk)
-        # ``DatabaseShowResult`` — exactly upstream show_columns; the
-        # connection details (sqlalchemy_uri/extra/server_cert/parameters/
+        # The connection details (sqlalchemy_uri/extra/server_cert/parameters/
         # masked_encrypted_extra) are can_write-only via /{pk}/connection.
         result = DatabaseShowResult.from_model(database)
-        # Merge SSH tunnel data into response — matches original
-        # superset_old/databases/api.py:get (lines 397-403) which calls
-        # DatabaseDAO.get_ssh_tunnel(pk) and adds payload["result"]["ssh_tunnel"].
         tunnel = await dao.get_ssh_tunnel(pk)
         if tunnel is not None:
             result.ssh_tunnel = _serialise_ssh_tunnel(tunnel) or None
@@ -1107,8 +1031,7 @@ class DatabaseController(Controller):
 
         set_current_user(current_user)
         # Normalize the legacy ``encrypted_extra`` key -> ``masked_encrypted_extra``
-        # before validation (1:1 with the original ``rename_encrypted_extra``
-        # ``@pre_load`` hook) so older API clients keep working.
+        # before validation so older API clients keep working.
         data: DatabasePostSchema = await _decode_connection_body(
             request, DatabasePostSchema
         )
@@ -1137,11 +1060,8 @@ class DatabaseController(Controller):
                 "force_ctas_schema": data.force_ctas_schema,
             }
         )
-        # Keep the field under ``masked_encrypted_extra`` — 1:1 with the
-        # original pre_load flow (superset_old/databases/schemas.py:352 reads
-        # ``data.get("masked_encrypted_extra")`` during validation; only
-        # ``_create_database`` renames it to ``encrypted_extra`` at
-        # persistence time, superset_old/commands/database/create.py:157-160).
+        # Keep the field under ``masked_encrypted_extra``; only the create
+        # command renames it to ``encrypted_extra`` at persistence time.
         # An early rename starves the dynamic_form ``build_sqlalchemy_uri``
         # path of credentials (e.g. BigQuery → "Missing service credentials").
         if data.masked_encrypted_extra is not None:
@@ -1149,14 +1069,10 @@ class DatabaseController(Controller):
 
         # Keep ssh_tunnel in create_data so that CreateDatabaseCommand can
         # forward it to TestConnectionDatabaseCommand during the pre-creation
-        # connection test — matching the original at
-        # superset_old/commands/database/create.py:56,64 where
-        # ``self._properties`` (which includes ``ssh_tunnel``) is passed
-        # verbatim to ``TestConnectionDatabaseCommand(self._properties).run()``.
-        # The command's ``run()`` filters create_data to model-only columns
-        # before ``dao.create()``, so the extra key is harmless for DB
-        # insertion.  We also capture it here for the separate SSH tunnel
-        # creation step below.
+        # connection test.  The command's ``run()`` filters create_data to
+        # model-only columns before ``dao.create()``, so the extra key is
+        # harmless for DB insertion.  We also capture it here for the separate
+        # SSH tunnel creation step below.
         ssh_tunnel_payload = _coerce_ssh_tunnel_payload(create_data.get("ssh_tunnel"))
 
         cmd = CreateDatabaseCommand(
@@ -1181,35 +1097,24 @@ class DatabaseController(Controller):
         try:
             db = await cmd.execute()
         except DatabaseParametersInvalidError as ex:
-            # Original: build_sqlalchemy_uri ValueErrors were Marshmallow
-            # ValidationErrors from the @pre_load hook → ``response_400``
-            # (superset_old/databases/api.py:449-450) — HTTP 400, not 422.
+            # build_sqlalchemy_uri value errors map to HTTP 400, not 422.
             raise ClientException(status_code=400, detail=str(ex)) from ex
         except DatabaseConnectionFailedError as ex:
-            # Original: ``except DatabaseConnectionFailedError as ex:
-            # return self.response_422(message=str(ex))``
-            # (superset_old/databases/api.py:474-475). The command wraps any
-            # non-SupersetErrorsException connection-test failure into this
-            # exception, whose own status is 500 — without this catch the
-            # client gets 500 instead of 422. Must precede the
+            # The command wraps any non-SupersetErrorsException connection-test
+            # failure into this exception, whose own status is 500 — without
+            # this catch the client gets 500 instead of 422. Must precede the
             # DatabaseCreateFailedError arm (it is a subclass of it).
             raise ClientException(status_code=422, detail=str(ex)) from ex
         except DatabaseCreateFailedError as ex:
-            # Original: logs and returns 422
-            # (superset_old/databases/api.py:478-485).
             logging.getLogger(__name__).error(
                 "Error creating model DatabaseRestApi: %s", str(ex), exc_info=True
             )
             raise ClientException(status_code=422, detail=str(ex)) from ex
         except (SSHTunnelingNotEnabledError, SSHTunnelDatabasePortError) as ex:
-            # Original: ``except (SSHTunnelingNotEnabledError,
-            # SSHTunnelDatabasePortError) as ex: return self.response_400``
-            # (superset_old/databases/api.py:486).
             raise ClientException(status_code=400, detail=str(ex)) from ex
         db_id = int(db.id)
 
         # Create SSH tunnel row if the request included one and the feature is enabled.
-        # Mirrors original CreateDatabaseCommand.run() lines 88-102.
         tunnel: Any | None = None
         if ssh_tunnel_payload:
             try:
@@ -1219,30 +1124,25 @@ class DatabaseController(Controller):
                     payload=ssh_tunnel_payload,
                 )
             except Exception as _ssh_exc:  # noqa: BLE001
-                # Log and re-raise so the client sees a clear error —
-                # matches original superset_old error propagation.
+                # Log and re-raise so the client sees a clear error.
                 _log.warning(
                     "Failed to create SSH tunnel for database %s: %s",
                     db_id,
                     _ssh_exc,
                 )
-                # Analytics event — 1:1 with upstream CreateDatabaseCommand.run
-                # (superset_old/commands/database/create.py:109-112).
                 event_logger.log_with_context(
                     action=(f"db_creation_failed.{type(_ssh_exc).__name__}.ssh_tunnel"),
                     engine=(create_data.get("sqlalchemy_uri") or "").split(":")[0],
                 )
                 raise
 
-        # Add catalog/schema DAR permissions for the newly-created database.
-        # Mirrors original CreateDatabaseCommand.run() line 101-102
-        # (``add_permissions(database, ssh_tunnel)``): enumerate the connection's
-        # catalogs/schemas and create the ``catalog_access`` / ``schema_access``
-        # permission-view-menus so per-schema RBAC grants can be made immediately.
+        # Add catalog/schema DAR permissions for the newly-created database:
+        # enumerate the connection's catalogs/schemas and create the
+        # ``catalog_access`` / ``schema_access`` permission-view-menus so
+        # per-schema RBAC grants can be made immediately.
         # Best-effort: a connection/OAuth2 failure must not abort the create, so
         # introspection errors are swallowed (the user can re-sync permissions
-        # later) — matching the original's per-catalog ``GenericDBException`` and
-        # OAuth2 tolerance.
+        # later).
         from superset.commands.database.utils import add_permissions
         from superset.exceptions import OAuth2RedirectError
         from superset.security.manager import build_async_security_manager
@@ -1264,9 +1164,6 @@ class DatabaseController(Controller):
                 _perm_exc,
             )
 
-        # Stats counter — 1:1 with upstream CreateDatabaseCommand.run
-        # (superset_old/commands/database/create.py:125-126):
-        # ``if ssh_tunnel: stats_logger.incr("db_creation_success.ssh_tunnel")``.
         if tunnel is not None:
             from superset.extensions import stats_logger_manager
 
@@ -1278,7 +1175,6 @@ class DatabaseController(Controller):
             user_id=current_user.id,
         )
         result = _build_database_result(db)
-        # Include masked SSH tunnel in response, matching original line 466-467.
         if tunnel is not None:
             result.ssh_tunnel = _serialise_ssh_tunnel(tunnel) or None
         return DatabaseGetResponse(
@@ -1301,8 +1197,8 @@ class DatabaseController(Controller):
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
     ) -> DatabaseGetResponse:
-        # Visibility scope (upstream DatabaseFilter via DAO base_filter):
-        # a database the user cannot access must 404 before any mutation.
+        # Visibility scope: a database the user cannot access must 404 before
+        # any mutation.
         await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
         # Bind the current user to the request-scoped ContextVar so downstream
         # commands resolving ``get_current_user()`` (e.g. ``SyncPermissionsCommand``
@@ -1312,8 +1208,7 @@ class DatabaseController(Controller):
 
         set_current_user(current_user)
         # Normalize the legacy ``encrypted_extra`` key -> ``masked_encrypted_extra``
-        # before validation (1:1 with the original ``rename_encrypted_extra``
-        # ``@pre_load`` hook) so older API clients keep working.
+        # before validation so older API clients keep working.
         data: DatabasePutSchema = await _decode_connection_body(
             request, DatabasePutSchema
         )
@@ -1343,8 +1238,7 @@ class DatabaseController(Controller):
         )
         # Pass ``masked_encrypted_extra`` THROUGH to the command unchanged
         # (do NOT pre-rename to ``encrypted_extra``).  The command's unmask
-        # branch — mirroring ``superset_old/commands/database/update.py:70-77``
-        # — resolves the ``XXXXXXXXXX`` placeholders against the existing
+        # branch resolves the ``XXXXXXXXXX`` placeholders against the existing
         # database's stored secret via
         # ``db_engine_spec.unmask_encrypted_extra`` (which uses
         # ``superset.utils.json.reveal_sensitive``) and only then writes the
@@ -1356,8 +1250,7 @@ class DatabaseController(Controller):
 
         # Extract ssh_tunnel before passing data to UpdateDatabaseCommand.
         # The command only updates Database model columns; SSH tunnel is handled
-        # separately via _sync_ssh_tunnel (create/update/delete), matching
-        # superset_old/commands/database/update.py:98 + _handle_ssh_tunnel.
+        # separately via _sync_ssh_tunnel (create/update/delete).
         # Use UNSET sentinel to distinguish "not sent" from "sent as null".
         ssh_tunnel_in_body = "ssh_tunnel" in update_data
         ssh_tunnel_payload_raw = update_data.pop("ssh_tunnel", msgspec.UNSET)
@@ -1368,9 +1261,7 @@ class DatabaseController(Controller):
         )
 
         # Capture the old encrypted_extra BEFORE the command mutates the
-        # model — needed for the precise OAuth2 token purge diff below
-        # (1:1 with ``superset_old/commands/database/update.py:128-159``
-        # where ``_handle_oauth2`` runs before ``DatabaseDAO.update``).
+        # model — needed for the precise OAuth2 token purge diff below.
         old_database = await dao.find_by_id(pk)
         old_encrypted_extra: str | None = (
             getattr(old_database, "encrypted_extra", None) if old_database else None
@@ -1394,16 +1285,12 @@ class DatabaseController(Controller):
         try:
             db = await cmd.execute()
         except DatabaseParametersInvalidError as ex:
-            # Upstream's @pre_load build_sqlalchemy_uri failures were
-            # Marshmallow ValidationErrors → response_400 (R11-08) —
-            # symmetric with the POST handler's catch.
+            # build_sqlalchemy_uri failures → 400, symmetric with the POST
+            # handler's catch.
             raise ClientException(status_code=400, detail=str(ex)) from ex
 
-        # -----------------------------------------------------------------
-        # OAuth2 token purge — mirrors UpdateDatabaseCommand._handle_oauth2.
-        # Runs AFTER the database row is updated.  Compares old vs new
-        # ``encrypted_extra`` to determine if OAuth2 config changed.
-        # -----------------------------------------------------------------
+        # OAuth2 token purge — runs AFTER the database row is updated.  Compares
+        # old vs new ``encrypted_extra`` to determine if OAuth2 config changed.
         new_encrypted_extra = update_data.get("encrypted_extra", msgspec.UNSET)
         if new_encrypted_extra is not msgspec.UNSET:
             await _purge_oauth2_tokens_if_needed(
@@ -1414,10 +1301,8 @@ class DatabaseController(Controller):
                 old_db_engine_spec=old_db_engine_spec,
             )
 
-        # -----------------------------------------------------------------
-        # SSH tunnel CRUD — mirrors UpdateDatabaseCommand._handle_ssh_tunnel.
-        # Only runs when the request body included an `ssh_tunnel` key.
-        # -----------------------------------------------------------------
+        # SSH tunnel CRUD — only runs when the request body included an
+        # `ssh_tunnel` key.
         tunnel: Any | None = None
         if ssh_tunnel_in_body and ssh_tunnel_payload is not msgspec.UNSET:
             try:
@@ -1440,8 +1325,6 @@ class DatabaseController(Controller):
             user_id=current_user.id,
         )
         result = _build_database_result(db)
-        # Echo masked SSH tunnel in response when it was provided, matching
-        # original lines 554-555.
         if tunnel is not None:
             result.ssh_tunnel = _serialise_ssh_tunnel(tunnel) or None
         return DatabaseGetResponse(
@@ -1464,7 +1347,7 @@ class DatabaseController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, str]:
-        # Visibility scope (upstream DatabaseFilter via DAO base_filter).
+        # Visibility scope: a database the user cannot access must 404.
         await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
         cmd = DeleteDatabaseCommand(dao=cast("AsyncDatabaseDAO", dao), database_id=pk)
         await cmd.execute()
@@ -1488,10 +1371,9 @@ class DatabaseController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> Response[dict[str, Any]]:
-        # Mirrors superset_old/databases/api.py:sync_permissions verbatim: run
-        # the command (which dispatches the Celery task in async mode, else runs
-        # inline) then return 202/200 with the original message.
-        # Visibility scope (upstream DatabaseFilter via DAO base_filter).
+        # Run the command (which dispatches the Celery task in async mode, else
+        # runs inline) then return 202/200.
+        # Visibility scope: a database the user cannot access must 404.
         await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
         username: str | None = getattr(current_user, "username", None)
         await SyncPermissionsCommand(
@@ -1552,8 +1434,7 @@ class DatabaseController(Controller):
             )
             return CatalogsResponse(result=catalogs_list)
         except OAuth2RedirectError:
-            # 1:1 with upstream catalogs (databases/api.py:737-740): the
-            # OAuth2 dance must reach the frontend (error_type
+            # The OAuth2 dance must reach the frontend (error_type
             # OAUTH2_REDIRECT), not collapse into an empty dropdown.
             raise
         except Exception as exc:
@@ -1575,10 +1456,8 @@ class DatabaseController(Controller):
         current_user: UserProtocol,
         q: str | None = None,
     ) -> SchemasResponse:
-        # The original uses ``self.datamodel.get(pk, self._base_filters)``
-        # which applies the ``DatabaseFilter`` base filter — users without
+        # Apply the database access base filter — users without
         # ``database_access`` for this specific database get a 404.
-        # Mirrors ``superset_old/databases/api.py:783``.
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
@@ -1612,8 +1491,7 @@ class DatabaseController(Controller):
                 catalog=catalog,
                 user=current_user,
             )
-            # Filter to only schemas that allow file upload — 1:1 with
-            # ``superset_old/databases/api.py`` lines 800-815.
+            # Filter to only schemas that allow file upload.
             if upload_allowed:
                 if not getattr(database, "allow_file_upload", False):
                     return SchemasResponse(result=[])
@@ -1629,7 +1507,6 @@ class DatabaseController(Controller):
                     ]
             return SchemasResponse(result=schemas_list)
         except OAuth2RedirectError:
-            # 1:1 with upstream schemas (databases/api.py:820-823).
             raise
         except Exception as exc:
             _log.warning("Failed to fetch schemas for database %s: %s", pk, exc)
@@ -1653,19 +1530,18 @@ class DatabaseController(Controller):
         catalog: str | None = Parameter(query="catalog", default=None),
         force: bool = Parameter(query="force", default=False),
     ) -> dict[str, Any]:
-        # Visibility scope (upstream DatabaseFilter via DAO base_filter):
-        # TablesDatabaseCommand's own find_by_id is unscoped.
+        # Visibility scope: a database the user cannot access must 404
+        # (the command's own find_by_id is unscoped).
         await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
-        # Original Superset sends params inside Rison ``q`` parameter.
-        # Fall back to direct query params for backward compat.
+        # Params arrive inside the Rison ``q`` parameter; fall back to direct
+        # query params for backward compat.
         rison = rison_params or {}
         effective_force = rison.get("force", force)
         effective_schema = rison.get("schema_name", schema_name) or None
         _effective_catalog = rison.get("catalog_name", catalog)
         _ = effective_force  # async path always fetches live
-        # Original API requires ``schema_name`` (passed via Rison ``q``).
-        # Without it the request can't be served — return 400 to mirror
-        # Marshmallow validation behaviour.
+        # ``schema_name`` (passed via Rison ``q``) is required; without it the
+        # request can't be served — return 400.
         if not effective_schema:
             from litestar.exceptions import ClientException
 
@@ -1687,16 +1563,13 @@ class DatabaseController(Controller):
                     _sync_table_and_view_names, database, _effective_catalog, schema
                 )
 
-            # Per-table access filtering — 1:1 with upstream
-            # ``TablesDatabaseCommand`` (``get_datasources_accessible_by_user``).
-            # Without it any ``can_read Database`` holder (e.g. Gamma) could
-            # enumerate every table/view name of a database they cannot access.
-            # ``filter_datasources_by_perms`` is the full async port: it returns
-            # everything on database/catalog/schema access AND additionally
-            # surfaces individually ``datasource_access``-granted tables (the
-            # branch the previous conservative port dropped). The handler keeps
-            # working with plain string names, so we wrap into ``DatasourceName``
-            # tuples for the filter and unwrap afterwards.
+            # Per-table access filtering: without it any ``can_read Database``
+            # holder (e.g. Gamma) could enumerate every table/view name of a
+            # database they cannot access. ``filter_datasources_by_perms``
+            # returns everything on database/catalog/schema access AND surfaces
+            # individually ``datasource_access``-granted tables. The handler
+            # keeps working with plain string names, so we wrap into
+            # ``DatasourceName`` tuples for the filter and unwrap afterwards.
             if hasattr(security_manager, "filter_datasources_by_perms"):
                 from superset.utils.core import DatasourceName
 
@@ -1734,8 +1607,7 @@ class DatabaseController(Controller):
                 schema=schema,
             )
 
-            # Mirror ``superset_old/commands/database/tables.py:119-136``:
-            # only TABLE entries carry an ``extra`` key (defaulting to
+            # Only TABLE entries carry an ``extra`` key (defaulting to
             # ``None``); VIEW entries are emitted without ``extra``.
             options: list[dict[str, Any]] = sorted(
                 [
@@ -1760,9 +1632,7 @@ class DatabaseController(Controller):
                 "result": options,
             }
         except OAuth2RedirectError:
-            # Upstream tables has no try/except at all — exceptions propagate
-            # through @handle_api_exception; at minimum the OAuth2 dance must
-            # not be swallowed into an empty list.
+            # The OAuth2 dance must not be swallowed into an empty list.
             raise
         except Exception as exc:
             _log.warning("Failed to fetch tables for database %s: %s", pk, exc)
@@ -1788,15 +1658,14 @@ class DatabaseController(Controller):
     ) -> TableMetadataResponse:
         """GET /api/v1/database/{pk}/table_metadata/
 
-        Mirrors the original ``DatabaseRestApi.table_metadata`` which uses
-        ``security_manager.raise_for_access(database=database, table=table)``
+        Uses ``security_manager.raise_for_access(database=database, table=table)``
         for TABLE-level permission checks.
         """
         await event_logger.alog_with_context(
             "database.table_metadata.init",
             object_ref=f"database:{pk}",
         )
-        # Accept both ``schema`` (original Superset) and ``schema_name`` (alias)
+        # Accept both ``schema`` and its ``schema_name`` alias
         effective_schema = schema_name or schema or None
         database = await dao.find_by_id(pk)
         if not database:
@@ -1813,21 +1682,15 @@ class DatabaseController(Controller):
                 user=current_user,
             )
         except SupersetSecurityException as exc:
-            # Match original: raise 404 to hide table existence
+            # Raise 404 to hide table existence
             raise ObjectNotFoundError("Table", name) from exc
 
         try:
-            # Delegate to the engine-spec's ``get_table_metadata`` — 1:1
-            # with ``superset_old/databases/api.py:1094``:
-            #   payload = database.db_engine_spec.get_table_metadata(database, table)
-            # This calls ``get_table_metadata()`` from ``databases/utils.py``
-            # which uses ``database.get_columns(table)`` (engine-spec-enriched
-            # columns with ``is_dttm``, ``type_generic``, ``duplicates_constraint``),
-            # ``database.get_pk_constraint(table)``,
-            # ``database.get_table_comment(table)``, and generates ``selectStar``
-            # via ``database.select_star(table, indent=True, cols=columns,
-            # latest_partition=True)`` — ensuring engine-specific partition-aware
-            # WHERE clauses for Hive/Presto/Trino and dialect-correct quoting.
+            # Delegate to the engine-spec's ``get_table_metadata``, which yields
+            # engine-enriched columns (``is_dttm``, ``type_generic``,
+            # ``duplicates_constraint``), pk/comment, and a ``selectStar`` with
+            # engine-specific partition-aware WHERE clauses for
+            # Hive/Presto/Trino and dialect-correct quoting.
             raw = await asyncio.to_thread(
                 database.db_engine_spec.get_table_metadata,
                 database,
@@ -1915,14 +1778,13 @@ class DatabaseController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/database/{pk}/table_metadata/extra/
 
-        Mirrors the original ``DatabaseRestApi.table_extra_metadata``
-        which delegates to ``database.db_engine_spec.get_extra_table_metadata()``.
+        Delegates to ``database.db_engine_spec.get_extra_table_metadata()``.
         """
         await event_logger.alog_with_context(
             "database.table_extra_metadata.init",
             object_ref=f"database:{pk}",
         )
-        # Accept both ``schema`` (original Superset) and ``schema_name`` (alias)
+        # Accept both ``schema`` and its ``schema_name`` alias
         effective_schema = schema_name or schema or None
         database = await dao.find_by_id(pk)
         if not database:
@@ -1939,11 +1801,10 @@ class DatabaseController(Controller):
                 user=current_user,
             )
         except SupersetSecurityException as exc:
-            # Match original: raise 404 to hide table existence
+            # Raise 404 to hide table existence
             raise ObjectNotFoundError("Table", name) from exc
 
-        # Delegate to engine spec — matches original:
-        #   database.db_engine_spec.get_extra_table_metadata(database, table)
+        # Delegate to engine spec: get_extra_table_metadata(database, table)
         db_engine_spec = getattr(database, "db_engine_spec", None)
         if db_engine_spec and hasattr(db_engine_spec, "get_extra_table_metadata"):
             payload = await asyncio.to_thread(
@@ -1978,10 +1839,8 @@ class DatabaseController(Controller):
         query parameters and supports catalogs (SIP-95).  This path-based
         variant is kept for backward compatibility with older API clients.
 
-        Mirrors the original ``DatabaseRestApi.table_metadata_deprecated``
-        which uses the ``@check_table_access`` decorator for TABLE-level
-        permission checks and delegates to ``get_table_metadata()`` from
-        ``superset/databases/utils.py``.
+        Performs TABLE-level permission checks before delegating to the engine
+        spec's ``get_table_metadata``.
         """
         from urllib.parse import unquote_plus
 
@@ -1992,7 +1851,7 @@ class DatabaseController(Controller):
             object_ref=f"database:{pk}",
         )
 
-        # Parse JS-style URI path items (mirrors parse_js_uri_path_item)
+        # Parse JS-style URI path items: treat "null"/"undefined" as None.
         parsed_schema: str | None = schema_name
         if schema_name in ("null", "undefined"):
             parsed_schema = None
@@ -2014,7 +1873,7 @@ class DatabaseController(Controller):
             )
             raise ObjectNotFoundError("Database", pk)
 
-        # Table-level access check — matches original @check_table_access
+        # Table-level access check
         table = Table(parsed_table, parsed_schema)
         try:
             await security_manager.raise_for_access(
@@ -2036,9 +1895,7 @@ class DatabaseController(Controller):
             raise ObjectNotFoundError("Table", parsed_table) from exc
 
         try:
-            # Delegate to engine-spec's ``get_table_metadata`` — 1:1 with
-            # ``superset_old/databases/api.py:941``:
-            #   get_table_metadata(database, Table(table_name, schema_name))
+            # Delegate to engine-spec's ``get_table_metadata``
             raw = await asyncio.to_thread(
                 database.db_engine_spec.get_table_metadata,
                 database,
@@ -2139,9 +1996,8 @@ class DatabaseController(Controller):
         which uses query parameters and supports catalogs (SIP-95).  This
         path-based variant is kept for backward compatibility.
 
-        Mirrors the original ``DatabaseRestApi.table_extra_metadata_deprecated``
-        which uses ``@check_table_access`` for TABLE-level permission checks
-        and delegates to ``database.db_engine_spec.get_extra_table_metadata()``.
+        Performs TABLE-level permission checks before delegating to
+        ``database.db_engine_spec.get_extra_table_metadata()``.
         """
         from urllib.parse import unquote_plus
 
@@ -2168,7 +2024,7 @@ class DatabaseController(Controller):
             )
             raise ObjectNotFoundError("Database", pk)
 
-        # Table-level access check — matches original @check_table_access
+        # Table-level access check
         table = Table(parsed_table, parsed_schema)
         try:
             await security_manager.raise_for_access(
@@ -2189,10 +2045,9 @@ class DatabaseController(Controller):
             )
             raise ObjectNotFoundError("Table", parsed_table) from exc
 
-        # Delegate to engine spec — matches original:
-        #   database.db_engine_spec.get_extra_table_metadata(database, table)
-        # The base implementation returns {}, engine-specific overrides
-        # (e.g. BigQuery) return partition/clustering info.
+        # Delegate to engine spec: the base implementation returns {},
+        # engine-specific overrides (e.g. BigQuery) return partition/clustering
+        # info.
         db_engine_spec = getattr(database, "db_engine_spec", None)
         if db_engine_spec and hasattr(db_engine_spec, "get_extra_table_metadata"):
             payload = await asyncio.to_thread(
@@ -2225,18 +2080,16 @@ class DatabaseController(Controller):
         current_user: UserProtocol,
         schema_name: str = Parameter(query="schema_name", default=""),
     ) -> SelectStarResponse:
-        # The original uses ``<path:table_name>`` to support dotted/slashed
-        # table names (catalog.schema.table).  No restrictive regex is applied
-        # — the name is passed directly to the engine spec's ``select_star``.
+        # ``<path:table_name>`` supports dotted/slashed table names
+        # (catalog.schema.table).  No restrictive regex is applied — the name is
+        # passed directly to the engine spec's ``select_star``.
         if not table_name or not table_name.strip():
             raise CommandInvalidError("Table name must not be empty")
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
 
-        # Table-level access check — mirrors the original @check_table_access
-        # decorator from superset_old/databases/decorators.py which calls
-        # security_manager.can_access_table(database, Table(...))
+        # Table-level access check
         effective_schema = schema_name or None
         table = Table(table_name, effective_schema)
         try:
@@ -2248,14 +2101,11 @@ class DatabaseController(Controller):
         except SupersetSecurityException as exc:
             raise ObjectNotFoundError("Table", table_name) from exc
 
-        # Use engine-spec-aware SELECT * generation — matches original
-        # Database.select_star → BaseEngineSpec.select_star with dialect-
-        # correct quoting and optional partition probing.
+        # Engine-spec-aware SELECT * generation with dialect-correct quoting
+        # and optional partition probing.
         try:
             sql = await _engine_select_star(database, table)
         except NoSuchTableError as exc:
-            # Original: ``except NoSuchTableError: return self.response(404, …)``
-            # (superset_old/databases/api.py:1236-1238)
             raise ObjectNotFoundError("Table", table_name) from exc
         return SelectStarResponse(result=sql)
 
@@ -2281,8 +2131,7 @@ class DatabaseController(Controller):
         if not database:
             raise ObjectNotFoundError("Database", pk)
 
-        # Table-level access check — mirrors the original @check_table_access
-        # decorator from superset_old/databases/decorators.py
+        # Table-level access check
         table = Table(table_name, schema_name or None)
         try:
             await security_manager.raise_for_access(
@@ -2293,15 +2142,12 @@ class DatabaseController(Controller):
         except SupersetSecurityException as exc:
             raise ObjectNotFoundError("Table", table_name) from exc
 
-        # Use engine-spec-aware SELECT * generation — matches original
-        # Database.select_star → BaseEngineSpec.select_star with dialect-
-        # correct quoting and optional partition probing.
+        # Engine-spec-aware SELECT * generation with dialect-correct quoting
+        # and optional partition probing.
         table_with_schema = Table(table_name, schema_name or None)
         try:
             sql = await _engine_select_star(database, table_with_schema)
         except NoSuchTableError as exc:
-            # Original: ``except NoSuchTableError: return self.response(404, …)``
-            # (superset_old/databases/api.py:1236-1238)
             raise ObjectNotFoundError("Table", table_name) from exc
         return SelectStarResponse(result=sql)
 
@@ -2320,16 +2166,15 @@ class DatabaseController(Controller):
         current_user: UserProtocol,
     ) -> dict[str, Any]:
         # Normalize the legacy ``encrypted_extra`` key -> ``masked_encrypted_extra``
-        # before validation (1:1 with the original ``rename_encrypted_extra``
-        # ``@pre_load`` hook) so older API clients keep working.
+        # before validation so older API clients keep working.
         data: DatabaseTestConnectionSchema = await _decode_connection_body(
             request, DatabaseTestConnectionSchema
         )
         cmd = DatabaseTestConnectionCommand(
             dao=cast("AsyncDatabaseDAO", dao),
             # The OAuth2-dance branches in the command are gated on a known
-            # user — upstream resolves it via g.user; pass the requester so
-            # OAuth2-enabled DBs get the redirect instead of a bare error.
+            # user — pass the requester so OAuth2-enabled DBs get the redirect
+            # instead of a bare error.
             user_id=getattr(current_user, "id", None),
             data={
                 "database_name": data.database_name,
@@ -2422,10 +2267,9 @@ class DatabaseController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        # Visibility scope (upstream DatabaseFilter via DAO base_filter).
+        # Visibility scope: a database the user cannot access must 404.
         await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
-        # Mirrors ``superset_old/databases/api.py:validate_sql`` — the command
-        # returns a list of SQL-error annotations, which the API wraps as
+        # The command returns a list of SQL-error annotations, wrapped as
         # ``{"result": [...]}``.  When the engine has no validator configured
         # the command raises ``NoValidatorConfigFoundError`` (422) /
         # ``NoValidatorFoundError`` (422) rather than returning 200 — the
@@ -2462,16 +2306,13 @@ class DatabaseController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             raise CommandInvalidError("At least one ID is required for export")
-        # Visibility scope (upstream DatabaseFilter via DAO base_filter):
-        # ExportDatabasesCommand loads via find_by_ids which upstream scopes —
-        # any requested id outside the user's visibility must 404 the export.
+        # Visibility scope: any requested id outside the user's visibility must
+        # 404 the export.
         for _id in ids:
             await _get_accessible_database_or_404(
                 dao, security_manager, current_user, _id
             )
-        # 1:1 with ``superset_old/databases/api.py:1515-1539``: build
-        # ``root = f"database_export_{timestamp}"`` (timestamp =
-        # ``datetime.now().strftime("%Y%m%dT%H%M%S")``), nest every ZIP entry
+        # Build ``root = f"database_export_{timestamp}"``, nest every ZIP entry
         # under ``f"{root}/{file_name}"``, and name the download
         # ``f"{root}.zip"``. The importer strips the root via ``remove_root``
         # (``parts[1:]``) so re-import still works — exports without a root
@@ -2505,7 +2346,6 @@ class DatabaseController(Controller):
         "/import/",
         guards=[require_permission("can_write", "Database")],
         media_type="application/json",
-        # Upstream returns 200 "OK" (databases/api.py import_); align.
         status_code=200,
     )
     async def import_database(
@@ -2515,7 +2355,6 @@ class DatabaseController(Controller):
     ) -> dict[str, str]:
         """Import database(s) from a ZIP bundle.
 
-        Mirrors ``superset_old/databases/api.py:import_`` (lines 1620-1662).
         Accepts four credential maps so SSH-tunnel key-pair databases can be
         re-imported without losing private-key credentials:
 
@@ -2569,8 +2408,7 @@ class DatabaseController(Controller):
             dao, security_manager, current_user, pk
         )
         # Delegate to Database.function_names which calls
-        # db_engine_spec.get_function_names(database) — matches original
-        # superset_old/databases/api.py:function_names line 1826-1828.
+        # db_engine_spec.get_function_names(database).
         names: list[str] = []
         try:
             raw = getattr(database, "function_names", None)
@@ -2593,8 +2431,7 @@ class DatabaseController(Controller):
     async def available(self) -> dict[str, Any]:  # noqa: C901
         """GET /api/v1/database/available/ — list engine specs.
 
-        Mirrors ``superset_old/databases/api.py::available``. The
-        ``preferred`` flag is True only for engines whose ``engine_name``
+        The ``preferred`` flag is True only for engines whose ``engine_name``
         appears in the ``PREFERRED_DATABASES`` config list, and the
         response is sorted so preferred engines come first — in the order
         they appear in the config — followed by the rest sorted
@@ -2604,9 +2441,8 @@ class DatabaseController(Controller):
         from superset.db_engine_specs import get_installed_drivers
 
         settings_obj = SupersetSettings()  # type: ignore[call-arg]
-        # Map of engine/backend → set of INSTALLED driver names (R11-17): an
-        # engine is only offered when at least one of its drivers can import,
-        # 1:1 with upstream ``get_available_engine_specs``.
+        # Map of engine/backend → set of INSTALLED driver names: an engine is
+        # only offered when at least one of its drivers can import.
         installed_drivers = get_installed_drivers()
 
         def _installed_for(spec_cls: Any, engine_key: str) -> set[str]:
@@ -2618,11 +2454,9 @@ class DatabaseController(Controller):
                         break
             return drivers
 
-        # DBS_AVAILABLE_DENYLIST — 1:1 with upstream
-        # ``get_available_engine_specs`` (R13-11): engines whose
-        # ``default_driver`` is denylisted are hidden from the
-        # "Connect a database" modal; the 'superset' meta-DB is implicitly
-        # denied unless ENABLE_SUPERSET_META_DB is on.
+        # DBS_AVAILABLE_DENYLIST: engines whose ``default_driver`` is denylisted
+        # are hidden from the "Connect a database" modal; the 'superset' meta-DB
+        # is implicitly denied unless ENABLE_SUPERSET_META_DB is on.
         from superset.utils.feature_flags import feature_flag_manager
 
         dbs_denylist: dict[str, set[str]] = {
@@ -2652,10 +2486,8 @@ class DatabaseController(Controller):
 
         databases: list[dict[str, Any]] = []
 
-        # Sync engine specs (the 1:1 upstream ports built on
-        # ``BasicParametersMixin``) are the source of the connection-modal
-        # metadata, exactly as upstream's ``available`` is built purely from
-        # ``get_available_engine_specs()``.  Computed up front so the native
+        # Sync engine specs (built on ``BasicParametersMixin``) are the source
+        # of the connection-modal metadata.  Computed up front so the native
         # loop below can enrich each async spec with its sync counterpart.
         sync_specs = _get_sync_spec_map()
 
@@ -2674,14 +2506,12 @@ class DatabaseController(Controller):
             # advertise an async ``default_driver`` (e.g. ``asyncpg``) that is
             # absent from the installed (sync) driver set, so the dynamic
             # connection form would never render.  When a sync spec exists for
-            # the engine we build the connection-relevant fields from it — 1:1
-            # with upstream, which only ever sees the sync specs here.
+            # the engine we build the connection-relevant fields from it.
             params_spec = form_spec if form_spec is not None else spec_cls
             default_driver = (getattr(params_spec, "default_driver", "") or "") or (
                 getattr(spec_cls, "default_driver", "") or ""
             )
-            # Use the engine spec's sqlalchemy_uri_placeholder when available
-            # — 1:1 with ``superset_old/databases/api.py:1904``.
+            # Use the engine spec's sqlalchemy_uri_placeholder when available.
             placeholder = getattr(
                 params_spec,
                 "sqlalchemy_uri_placeholder",
@@ -2696,12 +2526,10 @@ class DatabaseController(Controller):
                 "preferred": engine_name in preferred_set,
                 "available_drivers": sorted(drivers),
                 "sqlalchemy_uri_placeholder": placeholder,
-                # Use engine spec's ``get_public_information()`` for engine
-                # info — 1:1 with ``superset_old/databases/api.py:1906``.
-                # Sync engine specs inherit get_public_information() from
-                # BaseEngineSpec.  Async engine specs (BaseAsyncEngineSpec)
-                # do not, so we inline the same four keys using getattr
-                # with the same defaults as BaseEngineSpec.
+                # Use engine spec's ``get_public_information()`` for engine info.
+                # Sync engine specs inherit it from BaseEngineSpec; async engine
+                # specs (BaseAsyncEngineSpec) do not, so we inline the same four
+                # keys using getattr with the same defaults as BaseEngineSpec.
                 "engine_information": (
                     params_spec.get_public_information()
                     if hasattr(params_spec, "get_public_information")
@@ -2724,10 +2552,9 @@ class DatabaseController(Controller):
             }
             if default_driver:
                 payload["default_driver"] = default_driver
-            # Show configuration parameters for engines that support it — 1:1
-            # with ``superset_old/databases/api.py:1914-1922``: only set
-            # ``parameters`` when the engine spec has ``parameters_json_schema``
-            # AND ``sqlalchemy_uri_placeholder`` AND
+            # Show configuration parameters for engines that support it: only
+            # set ``parameters`` when the engine spec has
+            # ``parameters_json_schema`` AND ``sqlalchemy_uri_placeholder`` AND
             # ``default_driver in drivers``.
             if (
                 hasattr(params_spec, "parameters_json_schema")
@@ -2736,7 +2563,7 @@ class DatabaseController(Controller):
             ):
                 payload["parameters"] = params_spec.parameters_json_schema()
                 # Re-set placeholder from the spec (it may be more specific
-                # after the conditional check, matching the original).
+                # after the conditional check).
                 payload["sqlalchemy_uri_placeholder"] = (
                     params_spec.sqlalchemy_uri_placeholder
                 )
@@ -2745,8 +2572,7 @@ class DatabaseController(Controller):
         # 1. Native async engine specs
         for engine_key, spec_cls in _NATIVE_SPECS.items():
             if not getattr(spec_cls, "engine_name", None):
-                # Skip abstract base specs with no engine_name; mirrors the
-                # original "if not drivers: continue" filter.
+                # Skip abstract base specs with no engine_name.
                 continue
             if _is_denied(engine_key, spec_cls):
                 continue
@@ -2783,8 +2609,7 @@ class DatabaseController(Controller):
                 continue
             _drivers = _installed_for(spec_cls, engine_key)
             if not _drivers:
-                # Driver not installed → engine can't connect; omit it
-                # (R11-17) — 1:1 with upstream ``if not driver`` skip.
+                # Driver not installed → engine can't connect; omit it.
                 continue
             databases.append(
                 _build_payload(
@@ -2822,8 +2647,7 @@ class DatabaseController(Controller):
         dao: DatabaseDAOProtocol,
     ) -> dict[str, Any]:
         # Normalize the legacy ``encrypted_extra`` key -> ``masked_encrypted_extra``
-        # before validation (1:1 with the original ``rename_encrypted_extra``
-        # ``@pre_load`` hook) so older API clients keep working.
+        # before validation so older API clients keep working.
         data: DatabaseValidateParamsSchema = await _decode_connection_body(
             request, DatabaseValidateParamsSchema
         )
@@ -2869,9 +2693,8 @@ class DatabaseController(Controller):
         # Check allow_file_upload flag on the database
         if not getattr(database, "allow_file_upload", False):
             return SchemaAccessForUploadResponse(schemas=[])
-        # 1:1 with ``Database.get_schema_access_for_file_upload`` — union the
-        # ``schemas_allowed_for_file_upload`` extra (coercing a legacy stringified
-        # list) with ``ALLOWED_USER_CSV_SCHEMA_FUNC(database, user)``.
+        # Union the ``schemas_allowed_for_file_upload`` extra (coercing a legacy
+        # stringified list) with ``ALLOWED_USER_CSV_SCHEMA_FUNC(database, user)``.
         schemas: list[str] = list(
             _get_schema_access_for_file_upload(database, current_user)
         )
@@ -2891,12 +2714,10 @@ class DatabaseController(Controller):
     # ------------------------------------------------------------------
     @post(
         "/{pk:int}/upload/",
-        # 1:1 with upstream: the ``upload`` method is NOT in
-        # ``MODEL_API_RW_METHOD_PERMISSION_MAP`` (only ``upload_metadata`` is,
-        # mapped to ``upload``), so FAB derives the permission from the method
-        # name → ``can_upload`` on Database — NOT ``can_write``. A role granted
-        # the dedicated ``can_upload`` permission (without ``can_write``) must
-        # be able to upload; the previous ``can_write`` gate wrongly denied it.
+        # This endpoint requires ``can_upload`` on Database — NOT ``can_write``.
+        # A role granted the dedicated ``can_upload`` permission (without
+        # ``can_write``) must be able to upload; the previous ``can_write`` gate
+        # wrongly denied it.
         guards=[require_permission("can_upload", "Database")],
         media_type="application/json",
     )
@@ -2910,26 +2731,15 @@ class DatabaseController(Controller):
     ) -> dict[str, Any]:
         """Upload a CSV / Excel / Columnar file to a database table.
 
-        Mirrors ``superset_old/databases/api.py:upload`` (lines 1728-1787).
-        The original uses ``UploadPostSchema().load(request.form.to_dict())``
-        to parse and coerce all form fields.  Here we use the async-compatible
-        :func:`superset.utils.upload.parse_upload_form` which is the 1:1 port
-        of that schema.
-
-        Key changes vs the previous stub:
-        1. All 17+ ``UploadPostSchema`` fields are now read from the multipart
-           form (previously only ``table_name`` and ``schema_name`` were passed,
-           and ``schema_name`` was stored under the wrong key ``"schema_name"``
-           while ``UploadCommand.run()`` reads ``"schema"``).
-        2. ``validate_file_extension`` is called so invalid extensions are
-           rejected before any DB work is done.
-        3. ``parse_upload_form`` coerces booleans, integers, and
-           ``column_data_types`` JSON — previously all were silently dropped.
+        Uses :func:`superset.utils.upload.parse_upload_form` to parse and coerce
+        all multipart form fields (booleans, integers, ``column_data_types``
+        JSON).  Invalid file extensions are rejected via
+        ``validate_file_extension`` before any DB work is done.
         """
         from superset.utils.upload import parse_upload_form, validate_file_extension
 
-        # Visibility scope (upstream DatabaseFilter via DAO base_filter):
-        # UploadCommand's own find_by_id is unscoped.
+        # Visibility scope: a database the user cannot access must 404
+        # (the command's own find_by_id is unscoped).
         await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
 
         # Extract the UploadFile object from the multipart dict.
@@ -2951,10 +2761,9 @@ class DatabaseController(Controller):
         # parse_upload_form can coerce them the same way Marshmallow did.
         form_dict: dict[str, Any] = {k: v for k, v in data.items() if k != "file"}
 
-        # parse_upload_form mirrors UploadPostSchema field-by-field:
-        # bools, ints, delimited lists, column_data_types JSON.
-        # The canonical field name for the target schema is "schema"
-        # (UploadPostSchema line 1122 in superset_old/databases/schemas.py).
+        # parse_upload_form coerces bools, ints, delimited lists and
+        # column_data_types JSON.  The canonical field name for the target
+        # schema is "schema".
         parsed = parse_upload_form(form_dict)
 
         cmd = UploadCommand(
@@ -2977,8 +2786,7 @@ class DatabaseController(Controller):
     # ------------------------------------------------------------------
     @post(
         "/upload_metadata/",
-        # The original ``constants.MODEL_API_RW_METHOD_PERMISSION_MAP`` maps
-        # ``upload_metadata`` to ``upload`` (not ``write``) — mirror that so
+        # ``upload_metadata`` requires ``can_upload`` (not ``can_write``) so
         # users with ``can_upload`` but not ``can_write`` retain access.
         guards=[require_permission("can_upload", "Database")],
         media_type="application/json",
@@ -2992,13 +2800,8 @@ class DatabaseController(Controller):
     ) -> dict[str, Any]:
         """Upload a file and return file metadata (column names per sheet).
 
-        Mirrors ``superset_old/databases/api.py:upload_metadata`` (lines
-        1704-1718) verbatim: parse the ``type`` / ``delimiter`` / ``header_row``
-        options (``UploadFileMetadataPostSchema``), instantiate the matching
-        per-format reader and delegate to its ``file_metadata(file)``. The
-        readers honour every option the original passed (delimiter, header_row)
-        and apply identical parsing/error semantics — previously this endpoint
-        used an inline parser that silently dropped reader options.
+        Parse the ``type`` / ``delimiter`` / ``header_row`` options, instantiate
+        the matching per-format reader and delegate to its ``file_metadata(file)``.
 
         Supported file types (via the ``type`` query parameter):
         - ``csv``  -- comma/delimiter-separated values
@@ -3013,8 +2816,8 @@ class DatabaseController(Controller):
         from superset.commands.database.uploaders.csv_reader import CSVReader
         from superset.commands.database.uploaders.excel_reader import ExcelReader
 
-        # Mirror ``UploadFileMetadataPostSchema``: only ``delimiter`` and
-        # ``header_row`` are forwarded into the reader options.
+        # Only ``delimiter`` and ``header_row`` are forwarded into the reader
+        # options.
         options: dict[str, Any] = {
             "delimiter": delimiter,
             "header_row": header_row,
@@ -3059,9 +2862,7 @@ class DatabaseController(Controller):
         # No auth guard: the OAuth2 provider redirects the user's browser
         # back here with no Superset session cookie attached.  Identity is
         # carried inside the signed ``state`` parameter (validated by
-        # :func:`decode_oauth2_state`).  Mirrors original ``oauth2()`` in
-        # ``superset_old/databases/api.py`` which is registered without any
-        # ``@protect()`` decorator.
+        # :func:`decode_oauth2_state`).
     )
     async def oauth2(
         self,
@@ -3077,8 +2878,6 @@ class DatabaseController(Controller):
         :class:`OAuth2StoreTokenCommand`, persists them in
         ``database_user_oauth2_tokens``, and renders a self-closing HTML
         page that notifies the opener tab.
-
-        Mirrors ``superset_old/databases/api.py:oauth2`` (lines 1413-1469).
         """
         from superset.commands.database.oauth2 import OAuth2StoreTokenCommand
         from superset.exceptions import OAuth2Error
@@ -3122,11 +2921,9 @@ class DatabaseController(Controller):
         tab_id = decoded.get("tab_id", "")
 
         # Render the self-closing HTML page that notifies the opener tab,
-        # then closes itself.  1:1 with
-        # ``superset_old/templates/superset/oauth2.html`` — the frontend
-        # listens for the ``{ tabId }`` ``postMessage`` payload to re-run
-        # the original query, so the byte shape of the script must match
-        # the original exactly.
+        # then closes itself.  The frontend listens for the ``{ tabId }``
+        # ``postMessage`` payload to re-run the original query, so the byte
+        # shape of the script must match what the frontend expects.
         return Template(
             template_name="superset/oauth2.html",
             context={"tab_id": tab_id},
@@ -3137,12 +2934,10 @@ class DatabaseController(Controller):
     # ------------------------------------------------------------------
     @get(
         "/{pk:int}/ssh_tunnel/",
-        # ``can_write`` — upstream exposes SSH-tunnel metadata
-        # (server_address/port/username) ONLY through ``get_connection``
-        # (constants.py:171 ``get_connection: write``); there is no can_read
-        # path to it.  Gate this liteset-added GET at the same level so a
-        # ``can_read``-only user (e.g. Gamma) can't enumerate a database's SSH
-        # bastion host + username (R15-01).
+        # ``can_write`` — SSH-tunnel metadata (server_address/port/username) is
+        # sensitive, so gate this GET at the write level so a ``can_read``-only
+        # user (e.g. Gamma) can't enumerate a database's SSH bastion host +
+        # username.
         guards=[require_permission("can_write", "Database")],
     )
     async def get_ssh_tunnel(
@@ -3155,8 +2950,7 @@ class DatabaseController(Controller):
         database = await dao.find_by_id(pk)
         if not database:
             raise ObjectNotFoundError("Database", pk)
-        # This GET endpoint is liteset-added (upstream exposes only DELETE) and
-        # returns tunnel server_address/port/username — gate on database access
+        # Returns tunnel server_address/port/username — gate on database access
         # (404 to hide existence, like get_database) so it can't leak the tunnel
         # config of a database the user cannot access.
         if not await _database_is_accessible(security_manager, current_user, database):
@@ -3188,14 +2982,10 @@ class DatabaseController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, str]:
-        # Check database existence + visibility first — 1:1 with
-        # ``superset_old/databases/api.py:2045-2047``: the original does
-        # ``DatabaseDAO.find_by_id(pk)`` (scoped by DatabaseFilter) and
-        # returns 404 when missing/inaccessible, BEFORE checking for the
-        # SSH tunnel.  Without this the port would return
-        # ``ObjectNotFoundError("SSHTunnel", pk)`` instead of
-        # ``ObjectNotFoundError("Database", pk)`` when the database
-        # itself doesn't exist.
+        # Check database existence + visibility first, BEFORE checking for the
+        # SSH tunnel.  Otherwise a missing database would return
+        # ``ObjectNotFoundError("SSHTunnel", pk)`` instead of the correct
+        # ``ObjectNotFoundError("Database", pk)``.
         await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
         cmd = DeleteSSHTunnelCommand(dao=cast("AsyncDatabaseDAO", dao), database_id=pk)
         await cmd.execute()

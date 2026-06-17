@@ -333,20 +333,17 @@ def test_get_executor(
         assert executor == expected_executor
 
 
-# Ported from ``tests/integration_tests/tasks/test_utils.py::test_fetch_csrf_token``.
-#
-# Upstream tested ``superset.tasks.utils.fetch_csrf_token``; in the Liteset port
-# this logic lives in :func:`superset.tasks.cache._fetch_csrf_token`. Two
-# port deviations (documented on the function itself) apply:
+# Exercises ``superset.tasks.cache._fetch_csrf_token`` with two behavioural
+# differences from the integration test:
 #   * the URL is built from ``webdriver_baseurl`` (read off ``SupersetSettings``)
 #     instead of legacy ``url_for``, and the base is always ``.rstrip("/")``-ed,
 #     so the trailing-slash and non-trailing-slash variants collapse onto the
 #     same canonical ``{base}/api/v1/security/csrf_token/`` URL;
 #   * the CSRF header is emitted as ``X-CSRFToken`` (Liteset's single accepted
-#     header spelling) rather than upstream's ``X-CSRF-Token``.
+#     header spelling) rather than ``X-CSRF-Token``.
 # Every other assertion (Request built with the URL/headers/GET, token parsed
 # from the JSON ``result``, Cookie replaced from the response set-cookie, same
-# Request object passed to urlopen) is preserved 1:1.
+# Request object passed to urlopen) is verified.
 @pytest.mark.parametrize(
     "base_url",
     [
@@ -400,5 +397,4 @@ def test_fetch_csrf_token(mock_urlopen, mock_request_cls, mock_settings_cls, bas
 
     assert result_headers["X-CSRFToken"] == "csrf_token"
     assert result_headers["Cookie"] == "session=new_session_cookie"
-    # assert the same Request object is used
     mock_urlopen.assert_called_once_with(mock_request, timeout=mock.ANY)

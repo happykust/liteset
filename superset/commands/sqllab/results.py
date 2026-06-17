@@ -16,11 +16,9 @@
 # under the License.
 """``GET /api/v1/sqllab/results/?q=(key:...)`` command.
 
-Direct port of
-``superset_old/commands/sql_lab/results.py::SqlExecutionResultsCommand``.
-Restores msgpack/zlib decoding of the results-backend payload, the
-404/410 distinction (``query missing`` vs ``results missing``), and the
-``apply_display_max_row_configuration_if_require`` row cap.
+Fetches stored results-backend payloads with msgpack/zlib decoding,
+the 404/410 distinction (``query missing`` vs ``results missing``),
+and the ``apply_display_max_row_configuration_if_require`` row cap.
 """
 
 from __future__ import annotations
@@ -79,11 +77,9 @@ class GetSQLResultsCommand(AsyncBaseCommand[dict[str, Any]]):
         query = None
         if self._dao is not None:
             try:
-                # Eager-load ``database`` — ``_deserialize_results_payload``
-                # reads ``query.database.db_engine_spec`` for ``expand_data``;
-                # the default lazy relationship raised MissingGreenlet inside
-                # the broad except, silently skipping Presto/Hive expansion
-                # (R11-14).
+                # Eager-load ``database``: the lazy relationship raises
+                # MissingGreenlet under asyncpg, silently skipping
+                # Presto/Hive expand_data when caught by the broad except below.
                 from sqlalchemy import select as _sa_select
                 from sqlalchemy.orm import selectinload as _selectinload
 
@@ -107,10 +103,6 @@ class GetSQLResultsCommand(AsyncBaseCommand[dict[str, Any]]):
 
         results_backend, use_msgpack = self._resolve_results_backend()
 
-        # ------------------------------------------------------------------
-        # 2. Optional in-memory ``cache_manager`` short-circuit (used by
-        # tests that wire a custom cache; never set in production).
-        # ------------------------------------------------------------------
         if self._cache_manager is not None:
             try:
                 getter = self._cache_manager.get(self._key)
@@ -122,15 +114,9 @@ class GetSQLResultsCommand(AsyncBaseCommand[dict[str, Any]]):
             except Exception:  # noqa: BLE001
                 logger.warning("Cache get failed for key %s", self._key, exc_info=True)
 
-        # ------------------------------------------------------------------
-        # 3. No results backend configured — match original 5xx surface.
-        # ------------------------------------------------------------------
         if results_backend is None:
             raise SupersetResultsBackendNotConfigureException()
 
-        # ------------------------------------------------------------------
-        # 4. Query row missing -> 404 (matches original).
-        # ------------------------------------------------------------------
         if query is None:
             logger.warning(
                 "404 - Query not found in metadata DB for key: %s", self._key
@@ -147,11 +133,6 @@ class GetSQLResultsCommand(AsyncBaseCommand[dict[str, Any]]):
                 status=404,
             )
 
-        # ------------------------------------------------------------------
-        # 5. Fetch the blob; honour ``results_backend.get`` synchronously
-        # via :func:`asyncio.to_thread` because the cache backend clients
-        # are sync.
-        # ------------------------------------------------------------------
         blob = await self._results_backend_get(results_backend, self._key)
         if not blob:
             logger.warning(
@@ -172,9 +153,6 @@ class GetSQLResultsCommand(AsyncBaseCommand[dict[str, Any]]):
                 status=410,
             )
 
-        # ------------------------------------------------------------------
-        # 6. Decompress + deserialize using the original helper.
-        # ------------------------------------------------------------------
         from superset.utils.core import zlib_decompress
 
         payload = zlib_decompress(blob, decode=not use_msgpack)
@@ -183,9 +161,7 @@ class GetSQLResultsCommand(AsyncBaseCommand[dict[str, Any]]):
         try:
             obj = _deserialize_results_payload(payload, query, use_msgpack)
         except SerializationError as ex:
-            # 1:1 with superset_old/commands/sql_lab/results.py:135 — ONLY
-            # SerializationError maps to 404; any other deserialization
-            # failure propagates as HTTP 500.
+            # Only SerializationError → 404; other deserialization failures → 500.
             raise SupersetErrorException(
                 SupersetError(
                     message=(
@@ -199,16 +175,9 @@ class GetSQLResultsCommand(AsyncBaseCommand[dict[str, Any]]):
                 status=404,
             ) from ex
 
-        # ------------------------------------------------------------------
-        # 7. ``displayLimitReached`` truncation when ``rows`` is requested.
-        # ------------------------------------------------------------------
         if self._rows:
             obj = apply_display_max_row_configuration_if_require(obj, self._rows)
         return obj
-
-    # ------------------------------------------------------------------
-    # internal helpers
-    # ------------------------------------------------------------------
 
     def _resolve_results_backend(self) -> tuple[Any | None, bool]:
         try:
@@ -232,11 +201,6 @@ class GetSQLResultsCommand(AsyncBaseCommand[dict[str, Any]]):
 def _deserialize_results_payload(
     payload: bytes | str, query: Any, use_msgpack: bool
 ) -> dict[str, Any]:
-    """Decode the results-backend payload.
-
-    1:1 with ``superset_old/views/utils.py::_deserialize_results_payload``
-    minus the ``stats_timing`` wrappers.
-    """
     if use_msgpack:
         import msgpack
         import pyarrow as pa
@@ -250,10 +214,8 @@ def _deserialize_results_payload(
 
             raise SerializationError("Unable to deserialize table") from ex
 
-        # 1:1 with ``SupersetResultSet.convert_table_to_df``
-        # (superset_old/result_set.py:211-215): out-of-range timestamps
-        # (year < 1678 / > 2262) raise ArrowInvalid — fall back to
-        # ``timestamp_as_object=True`` instead of a 500.
+        # Arrow rejects timestamps outside year 1678–2262;
+        # fall back to timestamp_as_object.
         try:
             df = pa_table.to_pandas(integer_object_nulls=True)
         except pa.lib.ArrowInvalid:
@@ -272,8 +234,6 @@ def _deserialize_results_payload(
             if "name" in column and "column_name" not in column:
                 column["column_name"] = column.get("name")
 
-        # Honour the engine's ``expand_data`` hook when available — falls
-        # back to leaving the columns alone.
         try:
             db_engine_spec = query.database.db_engine_spec
             all_columns, data, expanded_columns = db_engine_spec.expand_data(

@@ -16,11 +16,10 @@
 # under the License.
 """Unit tests for the ``internet_port`` advanced data type plugin.
 
-Guards the 1:1 port of ``port_translation_func`` against a regression
-where ``valid_filter_operators`` was incorrectly populated with display
-strings instead of the :class:`FilterStringOperators` enum members the
-frontend/contract expects (matching upstream
-``superset/advanced_data_type/plugins/internet_port.py``).
+Guards ``port_translation_func`` against a regression where
+``valid_filter_operators`` was incorrectly populated with display strings
+instead of the :class:`FilterStringOperators` enum members the
+frontend/contract expects.
 """
 
 from superset.advanced_data_type.plugins.internet_port import (
@@ -56,7 +55,6 @@ def test_port_translation_func_valid_filter_operators_are_enum_members() -> None
 
 
 def test_port_translation_func_valid_port_number() -> None:
-    """Valid numeric port translates correctly with enum operators."""
     req: AdvancedDataTypeRequest = {
         "advanced_data_type": "port",
         "values": ["80"],
@@ -71,7 +69,6 @@ def test_port_translation_func_valid_port_number() -> None:
 
 
 def test_port_translation_func_valid_port_name() -> None:
-    """Valid named port translates correctly with enum operators."""
     req: AdvancedDataTypeRequest = {
         "advanced_data_type": "port",
         "values": ["https"],

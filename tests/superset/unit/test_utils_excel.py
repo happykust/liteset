@@ -14,9 +14,9 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Ported from tests/unit_tests/utils/excel_tests.py (Flask-free).
+"""Unit tests for the Excel export helpers in ``superset.utils.excel``.
 
-In the Liteset port ``GenericDataType`` lives in ``superset.typing`` (the
+``GenericDataType`` lives in ``superset.typing`` (the
 ``superset.utils.excel`` module imports it from there) rather than
 ``superset.utils.core``.
 """
@@ -31,9 +31,6 @@ from superset.utils.excel import apply_column_types, df_to_excel
 
 
 def test_timezone_conversion() -> None:
-    """
-    Test that columns with timezones are converted to a string.
-    """
     df = pd.DataFrame({"dt": [datetime(2023, 1, 1, 0, 0, tzinfo=timezone.utc)]})
     apply_column_types(df, [GenericDataType.TEMPORAL])
     contents = df_to_excel(df)
@@ -41,9 +38,6 @@ def test_timezone_conversion() -> None:
 
 
 def test_quote_formulas() -> None:
-    """
-    Test that formulas are quoted in Excel.
-    """
     df = pd.DataFrame({"formula": ["=SUM(A1:A2)", "normal", "@SUM(A1:A2)"]})
     contents = df_to_excel(df)
     assert pd.read_excel(contents)["formula"].tolist() == [

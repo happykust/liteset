@@ -24,16 +24,12 @@ import msgspec
 
 from superset.schemas.base import ApiListResponse, ApiResponse, ModelStruct, UserRef
 
-# ---------------------------------------------------------------------------
 # Request bodies
-# ---------------------------------------------------------------------------
 
 
 def _validate_uuid_field(field_name: str, value: Any) -> None:
     """Reject malformed UUID strings before the SA UUID column does.
 
-    Mirrors upstream's ``fields.UUID(allow_none=True)`` — marshmallow
-    parses the string into ``UUID`` up-front and 400s on failure.
     Without this gate a bad UUID propagates to ``process_bind_param``
     which calls ``uuid.UUID(value)`` and crashes with
     ``StatementError: badly formed hexadecimal UUID string`` (500).
@@ -93,17 +89,11 @@ class DatasetColumnsPut(msgspec.Struct):
     advanced_data_type: str | None | msgspec.UnsetType = msgspec.UNSET
 
     def __post_init__(self) -> None:
-        # 1:1 with original DatasetColumnsPutSchema.column_name:
-        # fields.String(required=True, validate=Length(1, 255))
-        # DatasetPutSchema.handle_error (superset_old/datasets/schemas.py:182-191)
-        # converts ALL schema validation errors into SupersetMarshmallowValidationError
-        # (status=422), which is caught by superset_exception_handler and returned as
-        # HTTP 422. Raising msgspec.ValidationError here instead would be caught by
-        # Litestar's validation_error_handler and mapped to 400 (not 422), so we raise
+        # ``column_name`` has ``required=True, validate=Length(1, 255)`` upstream.
+        # Raising msgspec.ValidationError here would be caught by Litestar's
+        # validation_error_handler and mapped to 400 (not 422), so we raise
         # SupersetMarshmallowValidationError directly to preserve the original
-        # status code.
-        # ``column_name`` is required upstream — absent (UNSET) / null /
-        # empty / oversized all reject as 422.
+        # status code — absent (UNSET) / null / empty / oversized all reject as 422.
         if (
             not isinstance(self.column_name, str)
             or not self.column_name
@@ -139,9 +129,8 @@ class DatasetMetricsPut(msgspec.Struct):
     uuid: str | None | msgspec.UnsetType = msgspec.UNSET
 
     def __post_init__(self) -> None:
-        # 1:1 with original DatasetMetricsPutSchema.metric_name:
-        # fields.String(required=True, validate=Length(1, 255)).  The DB
-        # column is String(255) — without this check an oversized name hits
+        # ``metric_name`` has ``required=True, validate=Length(1, 255)`` upstream.
+        # The DB column is String(255) — without this check an oversized name hits
         # PostgreSQL DataError → 500 instead of the original clean 422.
         # Same 422-routing rationale as DatasetColumnsPut.__post_init__.
         if not self.metric_name or len(self.metric_name) > 255:
@@ -200,9 +189,7 @@ class GetOrCreateDatasetSchema(msgspec.Struct):
     always_filter_main_dttm: bool = False
 
 
-# ---------------------------------------------------------------------------
 # Import / Export
-# ---------------------------------------------------------------------------
 
 
 class ImportV1Column(msgspec.Struct):
@@ -261,9 +248,7 @@ class ImportV1Dataset(msgspec.Struct):
     folders: list[Any] = []
 
 
-# ---------------------------------------------------------------------------
 # Cache warm-up
-# ---------------------------------------------------------------------------
 
 
 class DatasetCacheWarmUpRequest(msgspec.Struct):
@@ -273,9 +258,7 @@ class DatasetCacheWarmUpRequest(msgspec.Struct):
     extra_filters: str | None = None
 
 
-# ---------------------------------------------------------------------------
 # Drill / Response
-# ---------------------------------------------------------------------------
 
 
 class DatasetDrillInfo(msgspec.Struct):
@@ -289,9 +272,7 @@ class DatasetDrillResponse(msgspec.Struct):
     columns: list[DatasetDrillInfo] = []
 
 
-# ---------------------------------------------------------------------------
 # Detail result Structs for GET /{pk}
-# ---------------------------------------------------------------------------
 
 
 class ColumnRef(ModelStruct):
@@ -314,8 +295,7 @@ class ColumnRef(ModelStruct):
     extra: str | None = None
     changed_on: str | None = None
     created_on: str | None = None
-    # Populated only on GET with ?include_rendered_sql=true (Jinja-rendered
-    # ``expression``) — 1:1 with upstream ``render_dataset_fields``.
+    # Populated only on GET with ?include_rendered_sql=true (Jinja-rendered expression).
     rendered_expression: str | None = None
 
 
@@ -335,8 +315,7 @@ class MetricRef(ModelStruct):
     uuid: str | None = None
     changed_on: str | None = None
     created_on: str | None = None
-    # Populated only on GET with ?include_rendered_sql=true (Jinja-rendered
-    # ``expression``) — 1:1 with upstream ``render_dataset_fields``.
+    # Populated only on GET with ?include_rendered_sql=true (Jinja-rendered expression).
     rendered_expression: str | None = None
 
 
@@ -479,8 +458,7 @@ class DatasetDetailResult(ModelStruct):
         """Build ``order_by_choices`` in the shape expected by the
         frontend control ``order_by_cols`` and the table-viz save flow.
 
-        The original implementation in
-        ``superset_old/connectors/sqla/models.py:337`` returns a list of
+        The original implementation returns a list of
         ``(json.dumps([column, asc]), "column [asc|desc]")`` pairs.
         The frontend's SelectControl compares saved values (JSON-encoded
         strings like ``'["num", false]'``) against the ``value`` of each
@@ -502,12 +480,10 @@ class DatasetDetailResult(ModelStruct):
 
     @classmethod
     def _resolve_time_grain_sqla(cls, obj: Any) -> list[Any]:
-        # 1:1 with ``SqlaTable.time_grain_sqla`` (connectors/sqla/models.py):
-        # ``[(g.duration, g.name) for g in database.grains()]`` — the choices
-        # for the Explore "Time Grain" control. Guard against an unloaded
-        # ``database`` relationship (sync lazy-load under asyncpg →
-        # MissingGreenlet); the detail handler eager-loads it. ``grains()`` is
-        # pure-CPU (reads the engine spec's ``_time_grain_expressions``), no I/O.
+        # ``[(g.duration, g.name) for g in database.grains()]`` — the choices for the
+        # Explore "Time Grain" control. Guard against an unloaded ``database``
+        # relationship (sync lazy-load under asyncpg → MissingGreenlet); the detail
+        # handler eager-loads it. ``grains()`` is pure-CPU, no I/O.
         import sqlalchemy as _sa
 
         try:
@@ -525,9 +501,8 @@ class DatasetDetailResult(ModelStruct):
 
     @classmethod
     def _resolve_column_formats(cls, obj: Any) -> dict[str, Any]:
-        # 1:1 with ``SqlaTable.column_formats``: the d3 number format per
-        # metric. Metrics are eager-loaded by the detail handler, so this is
-        # pure attribute access (async-safe).
+        # The d3 number format per metric. Metrics are eager-loaded by the detail
+        # handler, so this is pure attribute access (async-safe).
         return {
             m.metric_name: m.d3format
             for m in (getattr(obj, "metrics", None) or [])
@@ -536,10 +511,9 @@ class DatasetDetailResult(ModelStruct):
 
     @classmethod
     def _resolve_select_star(cls, obj: Any) -> str | None:
-        # 1:1 with ``SqlaTable.select_star`` → ``Database.select_star`` — a
-        # ``SELECT * … LIMIT 100`` preview. The model property guards an
-        # unloaded ``database`` and opens a lazy sync engine (``create_engine``,
-        # no connection) for offline compilation — async-safe.
+        # ``SELECT * … LIMIT 100`` preview. The model property guards an unloaded
+        # ``database`` and opens a lazy sync engine for offline
+        # compilation — async-safe.
         return getattr(obj, "select_star", None)
 
     @classmethod

@@ -643,9 +643,8 @@ class TestAccessTokenMiddleware:
 
         app = _create_middleware_test_app(embedded_superset=True)
         async with AsyncTestClient(app=app) as client:
-            # Guest tokens are read from the dedicated X-GuestToken header
-            # (1:1 with upstream get_guest_user_from_request), NOT the
-            # Authorization: Bearer header (which carries API access tokens).
+            # Guest tokens are read from the dedicated X-GuestToken header,
+            # NOT the Authorization: Bearer header (which carries API access tokens).
             resp = await client.get(
                 "/api-protected",
                 headers={"X-GuestToken": guest_token},

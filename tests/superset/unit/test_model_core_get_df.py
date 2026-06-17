@@ -16,11 +16,10 @@
 # under the License.
 """Unit tests for Database.get_df mutator and post_process_df behavior.
 
-1:1 contract tests for superset_old/models/core.py lines 715-718:
+Contracts:
   - if mutator: df = mutator(df)   # unconditional reassignment
   - return self.post_process_df(df)  # no None guard before this call
 
-These tests assert the ORIGINAL Superset behaviour is preserved:
   - mutator returning None overwrites df with None.
   - post_process_df(None) raises AttributeError.
 """
@@ -33,19 +32,14 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pandas as pd
 import pytest
 
-# ---------------------------------------------------------------------------
-# post_process_df tests (staticmethod, no DB interaction needed)
-# ---------------------------------------------------------------------------
-
 
 def test_post_process_df_none_raises_attribute_error() -> None:
-    """1:1 with original: post_process_df(None) raises AttributeError.
+    """post_process_df(None) raises AttributeError.
 
-    In superset_old/models/core.py line 639:
-        for col, coltype in df.dtypes.to_dict().items():
-    When df is None, df.dtypes raises AttributeError.
-    The original has NO None-guard before calling post_process_df (line 718),
-    so all-DDL SQL (no SELECT rows) crashes with AttributeError.
+    ``for col, coltype in df.dtypes.to_dict().items()`` — when df is None,
+    ``df.dtypes`` raises AttributeError.  There is NO None-guard before
+    calling post_process_df, so all-DDL SQL (no SELECT rows) crashes with
+    AttributeError.
     """
     from superset.models.core import Database
 
@@ -54,7 +48,6 @@ def test_post_process_df_none_raises_attribute_error() -> None:
 
 
 def test_post_process_df_empty_dataframe() -> None:
-    """Normal case: empty DataFrame returns successfully."""
     from superset.models.core import Database
 
     result = Database.post_process_df(pd.DataFrame())
@@ -63,7 +56,6 @@ def test_post_process_df_empty_dataframe() -> None:
 
 
 def test_post_process_df_simple_dataframe() -> None:
-    """Normal case: plain-value DataFrame is returned unchanged."""
     from superset.models.core import Database
 
     df = pd.DataFrame({"a": [1, 2], "b": ["x", "y"]})
@@ -72,15 +64,9 @@ def test_post_process_df_simple_dataframe() -> None:
     assert list(result["a"]) == [1, 2]
 
 
-# ---------------------------------------------------------------------------
-# get_df mutator contract tests
-# ---------------------------------------------------------------------------
-
-
 def _make_wired_db(
     source_df: pd.DataFrame | None,
 ) -> tuple[object, MagicMock, MagicMock, MagicMock]:
-    """Return (db, fake_engine, fake_conn, engine_spec) with I/O wired."""
     from superset.models.core import Database
 
     engine_spec = MagicMock()
@@ -116,9 +102,8 @@ def _make_wired_db(
 
 
 def test_get_df_mutator_returning_none_propagates_to_post_process() -> None:
-    """1:1 with original: mutator returning None overwrites df.
+    """mutator returning None overwrites df (unconditional assignment).
 
-    Original superset_old/models/core.py lines 715-718:
         if mutator:
             df = mutator(df)   # unconditional — None return replaces df
         return self.post_process_df(df)  # df is now None -> AttributeError
@@ -154,13 +139,11 @@ def test_get_df_mutator_returning_none_propagates_to_post_process() -> None:
         with pytest.raises(AttributeError, match="crash on None df"):
             db.get_df("SELECT x FROM t", mutator=none_mutator)  # type: ignore[attr-defined]
 
-    # post_process_df must have been called with None, not source_df
     assert len(received) == 1
     assert received[0] is None
 
 
 def test_get_df_mutator_returning_dataframe_used() -> None:
-    """Normal case: mutator returning a new DataFrame replaces df correctly."""
     from superset.models.core import Database
 
     original_df = pd.DataFrame({"x": [1, 2]})
@@ -188,20 +171,13 @@ def test_get_df_mutator_returning_dataframe_used() -> None:
 
         db.get_df("SELECT x FROM t", mutator=transform_mutator)  # type: ignore[attr-defined]
 
-    # post_process_df must have been called with mutated_df, not original_df
     assert len(received) == 1
     assert received[0] is mutated_df
 
 
-# ---------------------------------------------------------------------------
-# get_raw_connection
-# ---------------------------------------------------------------------------
-
-
 def test_get_raw_connection_yields_conn_and_runs_prequeries() -> None:
     """get_raw_connection opens a sync engine, runs the engine-spec prequeries,
-    and yields the raw DBAPI connection — 1:1 with upstream
-    Database.get_raw_connection. The sync engine-spec helpers
+    and yields the raw DBAPI connection.  The sync engine-spec helpers
     (estimate_query_cost, BigQuery get_latest_partition, GSheets
     get_table_metadata) call it and would AttributeError without it."""
     from superset.models.core import Database
@@ -232,5 +208,4 @@ def test_get_raw_connection_yields_conn_and_runs_prequeries() -> None:
 
     spec.get_prequeries.assert_called_once()
     fake_cursor.execute.assert_called_once_with("SET search_path = myschema")
-    # closing() must have closed the raw connection on exit.
     fake_conn.close.assert_called_once()

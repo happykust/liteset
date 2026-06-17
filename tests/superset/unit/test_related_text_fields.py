@@ -17,11 +17,10 @@
 """/related/{column} ``text`` resolution — model ``__repr__`` + per-column
 ``text_field_rel_fields`` override.
 
-The original resolves dropdown text via ``_get_text_for_model``
-(superset_old/views/base_api.py:403-408): ``text_field_rel_fields`` first,
-``str(model)`` otherwise. ``str(model)`` only produces human-readable labels
-because the FAB/Superset models define ``__repr__`` — liteset models must do
-the same or every dropdown shows ``<...Dashboard object at 0x...>``.
+Dropdown text is resolved via ``_get_text_for_model``: ``text_field_rel_fields``
+first, ``str(model)`` otherwise.  ``str(model)`` only produces human-readable
+labels because the FAB/Superset models define ``__repr__`` — liteset models
+must do the same or every dropdown shows ``<...Dashboard object at 0x...>``.
 """
 
 from __future__ import annotations
@@ -31,12 +30,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
-# Model __repr__ — 1:1 with the originals
+# Model __repr__
 # ---------------------------------------------------------------------------
 
 
 def test_slice_repr_is_slice_name():
-    """superset_old/models/slice.py:140 — ``slice_name or str(id)``."""
+    """``__repr__`` returns ``slice_name or str(id)``."""
     from superset.models.slice import Slice
 
     slc = Slice()
@@ -48,7 +47,7 @@ def test_slice_repr_is_slice_name():
 
 
 def test_dashboard_repr():
-    """superset_old/models/dashboard.py:184 — ``Dashboard<{id or slug}>``."""
+    """``__repr__`` returns ``Dashboard<{id or slug}>``."""
     from superset.models.dashboard import Dashboard
 
     dash = Dashboard()
@@ -60,7 +59,7 @@ def test_dashboard_repr():
 
 
 def test_saved_query_repr_is_label():
-    """superset_old/models/sql_lab.py:439 — ``str(label)``."""
+    """``__repr__`` returns ``str(label)``."""
     from superset.models.sql_lab import SavedQuery
 
     sq = SavedQuery()
@@ -78,7 +77,7 @@ def test_role_repr_is_name():
 
 
 def test_sqla_table_repr_is_name():
-    """superset_old/connectors/sqla/models.py:1186 — ``self.name``."""
+    """``__repr__`` returns ``self.name``."""
     from superset.models.connectors import SqlaTable
 
     tbl = SqlaTable()
@@ -87,7 +86,7 @@ def test_sqla_table_repr_is_name():
 
 
 def test_annotation_layer_repr_is_name():
-    """superset_old/models/annotations.py:37 — ``str(self.name)``."""
+    """``__repr__`` returns ``str(self.name)``."""
     from superset.models.annotations import AnnotationLayer
 
     layer = AnnotationLayer()
@@ -96,8 +95,7 @@ def test_annotation_layer_repr_is_name():
 
 
 # ---------------------------------------------------------------------------
-# Reports controller passes text_field_rel_fields (superset_old/reports/
-# api.py:233-237) through to get_related_payload.
+# Reports controller passes text_field_rel_fields through to get_related_payload.
 # ---------------------------------------------------------------------------
 
 

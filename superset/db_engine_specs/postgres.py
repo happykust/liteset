@@ -15,12 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""PostgreSQL engine spec — synchronous.
-
-Ported 1:1 from ``superset_old/db_engine_specs/postgres.py`` with the legacy
-WSGI-stack imports removed.  Only overridden methods and attributes are
-included.
-"""
+"""PostgreSQL database engine spec."""
 
 from __future__ import annotations
 
@@ -55,10 +50,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Regular expressions to catch custom errors
-# ---------------------------------------------------------------------------
 
 CONNECTION_INVALID_USERNAME_REGEX = re.compile(
     'role "(?P<username>.*?)" does not exist'
@@ -103,11 +94,6 @@ COLUMN_DOES_NOT_EXIST_REGEX = re.compile(
 SYNTAX_ERROR_REGEX = re.compile('syntax error at or near "(?P<syntax_error>.*?)"')
 
 
-# ---------------------------------------------------------------------------
-# Options parser
-# ---------------------------------------------------------------------------
-
-
 def parse_options(connect_args: dict[str, Any]) -> dict[str, str]:
     """Parse ``options`` from ``connect_args`` into a dictionary."""
     if not isinstance(connect_args.get("options"), str):
@@ -122,13 +108,8 @@ def parse_options(connect_args: dict[str, Any]) -> dict[str, str]:
     return {token[0]: token[1] for token in tokens}
 
 
-# ---------------------------------------------------------------------------
-# PostgresBaseEngineSpec — abstract class for Postgres-like databases
-# ---------------------------------------------------------------------------
-
-
 class PostgresBaseEngineSpec(BaseEngineSpec):
-    """Abstract class for Postgres 'like' databases."""
+    """Abstract base for Postgres-like databases (Redshift, Vertica, etc.)."""
 
     engine = ""
     engine_name = "PostgreSQL"
@@ -257,11 +238,6 @@ class PostgresBaseEngineSpec(BaseEngineSpec):
         return None
 
 
-# ---------------------------------------------------------------------------
-# PostgresEngineSpec — the concrete PostgreSQL engine spec
-# ---------------------------------------------------------------------------
-
-
 class PostgresEngineSpec(BasicParametersMixin, PostgresBaseEngineSpec):
     engine = "postgresql"
     engine_aliases = {"postgres"}
@@ -333,12 +309,6 @@ class PostgresEngineSpec(BasicParametersMixin, PostgresBaseEngineSpec):
         query: Query,
         template_params: dict[str, Any] | None = None,
     ) -> str | None:
-        """
-        Return the default schema for a given query.
-
-        This method simply uses the parent method after checking that there are no
-        malicious path setting in the query.
-        """
         script = process_jinja_sql(query.sql, database, template_params).script
         settings = script.get_settings()
         if "search_path" in settings:
@@ -362,17 +332,12 @@ class PostgresEngineSpec(BasicParametersMixin, PostgresBaseEngineSpec):
         catalog: str | None = None,
         schema: str | None = None,
     ) -> tuple[URL, dict[str, Any]]:
-        """Set the catalog (database)."""
         if catalog:
             uri = uri.set(database=catalog)
         return uri, connect_args
 
     @classmethod
     def get_default_catalog(cls, database: Database) -> str:
-        """Return the default catalog for a given database.
-
-        In Postgres, a catalog is called a "database".
-        """
         return database.url_object.database
 
     @classmethod
@@ -400,13 +365,6 @@ class PostgresEngineSpec(BasicParametersMixin, PostgresBaseEngineSpec):
     def estimate_statement_cost(
         cls, database: Database, statement: str, cursor: Any
     ) -> dict[str, Any]:
-        """Run a SQL query that estimates the cost of a given statement.
-
-        :param database: A Database object
-        :param statement: A single SQL statement
-        :param cursor: Cursor instance
-        :return: Dictionary with different costs
-        """
         sql = f"EXPLAIN {statement}"
         cursor.execute(sql)
 
@@ -431,10 +389,6 @@ class PostgresEngineSpec(BasicParametersMixin, PostgresBaseEngineSpec):
         database: Database,
         inspector: Inspector,
     ) -> set[str]:
-        """Return all catalogs.
-
-        In Postgres, a catalog is called a "database".
-        """
         return {
             catalog
             for (catalog,) in inspector.bind.execute(
@@ -452,18 +406,14 @@ WHERE datistemplate = false;
         inspector: PGInspector,
         schema: str | None,
     ) -> set[str]:
-        """Need to consider foreign tables for PostgreSQL."""
+        # PGInspector exposes get_foreign_table_names; standard Inspector doesn't.
         return set(inspector.get_table_names(schema)) | set(
             inspector.get_foreign_table_names(schema)
         )
 
     @staticmethod
     def get_extra_params(database: Database, source: Any = None) -> dict[str, Any]:
-        """For Postgres, the path to a SSL certificate is placed in
-        ``connect_args``.
-
-        :param database: database instance from which to extract extras
-        """
+        # SSL certificate path goes into connect_args (not engine_params top-level).
         try:
             extra = _json.loads(database.extra or "{}")
         except _json.JSONDecodeError as ex:
@@ -483,7 +433,6 @@ WHERE datistemplate = false;
 
     @classmethod
     def get_datatype(cls, type_code: Any) -> str | None:
-        """Resolve a psycopg2-style type code to a type name string."""
         try:
             from psycopg2.extensions import binary_types, string_types
         except ImportError:
@@ -497,25 +446,12 @@ WHERE datistemplate = false;
 
     @classmethod
     def get_cancel_query_id(cls, cursor: Any, query: Query) -> str | None:
-        """Get Postgres PID for query cancellation.
-
-        :param cursor: Cursor instance
-        :param query: Query instance
-        :return: Postgres PID
-        """
         cursor.execute("SELECT pg_backend_pid()")
         row = cursor.fetchone()
         return row[0]
 
     @classmethod
     def cancel_query(cls, cursor: Any, query: Query, cancel_query_id: str) -> bool:
-        """Cancel query in the underlying database.
-
-        :param cursor: New cursor instance to the db of the query
-        :param query: Query instance
-        :param cancel_query_id: Postgres PID
-        :return: True if query cancelled successfully, False otherwise
-        """
         try:
             cursor.execute(
                 "SELECT pg_terminate_backend(pid) "  # noqa: S608

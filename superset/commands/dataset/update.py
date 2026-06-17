@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dataset/update.py``."""
+"""Command to update a dataset's attributes, columns, and metrics."""
 
 from __future__ import annotations
 
@@ -33,8 +33,7 @@ def validate_folders(
     metrics: list[Any],
     columns: list[Any],
 ) -> None:
-    """Additional folder-structure validation — 1:1 port of
-    ``superset_old/commands/dataset/update.py::validate_folders``.
+    """Validate the dataset folder structure.
 
     Gated on ``DATASET_FOLDERS``; checks valid leaf UUIDs (metric/column),
     sibling-unique + non-reserved names, and absence of cycles.
@@ -105,10 +104,6 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         self._dataset: Any | None = None
 
     async def validate(self) -> None:  # noqa: C901
-        # Not-found (404) and ownership (403) short-circuit immediately — 1:1
-        # with upstream (``raise DatasetNotFoundError()`` / ``DatasetForbidden
-        # Error``). Every *field* validation below ACCUMULATES into a single
-        # ``DatasetInvalidError`` so the controller emits a per-field 422 body.
         from superset.commands.dataset.exceptions import (
             DatabaseNotFoundValidationError,
             DatasetColumnNotFoundValidationError,
@@ -135,10 +130,6 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
 
         exceptions: list[DatasetValidationError] = []
 
-        # Column semantics — 1:1 with upstream ``_validate_columns``: reject
-        # duplicate names, then verify submitted ``id``s belong to THIS dataset
-        # (no cross-dataset column-id injection) and — unless ``override_columns``
-        # — that new (id-less) column names don't collide with existing ones.
         columns = self._data.get("columns")
         if columns:
             col_names = [
@@ -169,8 +160,6 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                     ):
                         exceptions.append(DatasetColumnsExistsValidationError())
 
-        # Metric semantics — 1:1 with upstream ``_validate_metrics`` (no
-        # ``override`` flag for metrics).
         metrics = self._data.get("metrics")
         if metrics:
             metric_names = [
@@ -198,11 +187,6 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 ):
                     exceptions.append(DatasetMetricsExistsValidationError())
 
-        # Folder-structure validation — 1:1 with upstream ``_validate_semantics``:
-        # only when ``folders`` is provided. Rejects with 422 when DATASET_FOLDERS
-        # is disabled (the default), else validates UUIDs/names/cycles. Upstream
-        # appends a field-less marshmallow ``ValidationError`` here → normalized
-        # under the ``"_schema"`` key; ``DatasetValidationError`` defaults to it.
         folders = self._data.get("folders")
         if folders:
             await self._dao.session.refresh(self._dataset, ["metrics", "columns"])
@@ -215,11 +199,8 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             except CommandInvalidError as ex:
                 exceptions.append(DatasetValidationError(str(ex)))
 
-        # --- Dataset source: db-change resolution, catalog coercion,
-        # uniqueness + SQL-access — 1:1 with upstream ``_validate_dataset_source``
-        # / ``_validate_sql_access`` (both run in validate()).  Resolve the
-        # target Database explicitly via the DAO/refresh (NOT a sync lazy-load on
-        # ``self._dataset.database``) to avoid MissingGreenlet under asyncpg.
+        # Explicit DAO fetch avoids a sync lazy-load on
+        # self._dataset.database (MissingGreenlet).
         new_db: Any | None = None
         database_id = self._data.get("database_id")
         if database_id and database_id != self._dataset.database_id:
@@ -227,16 +208,12 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             if new_db is None:
                 exceptions.append(DatabaseNotFoundValidationError())
 
-        # ``db`` is the connection the dataset will end up on: the resolved new
-        # one, else the dataset's current database.
         if new_db is not None:
             db = new_db
         else:
             await self._dao.session.refresh(self._dataset, ["database"])
             db = getattr(self._dataset, "database", None)
 
-        # Catalog validation / coercion — 1:1 with upstream
-        # ``_validate_dataset_source`` (MultiCatalogDisabled + default coercion).
         catalog = self._data.get("catalog")
         default_catalog = (
             db.get_default_catalog()
@@ -261,27 +238,18 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             else getattr(self._dataset, "schema", None)
         )
 
-        # 1:1 with upstream ``_validate_dataset_source``: the uniqueness
-        # check ALWAYS runs, falling back to the current model's table_name
-        # when the PUT body omits it (``self._properties.get("table_name",
-        # self._model.table_name)``) — a schema-only change can still
-        # collide with another dataset, and the DB-level UniqueConstraint
-        # was dropped (migration df3d7e2eb9a4), so this is the only guard.
+        # Uniqueness check always runs even when table_name is omitted — a schema-only
+        # change can still collide, and the DB-level UniqueConstraint was dropped
+        # (migration df3d7e2eb9a4), so this is the only guard.
         table_name = self._data.get("table_name") or getattr(
             self._dataset, "table_name", None
         )
         if table_name:
-            # Use the resolved target db for the uniqueness check (1:1 upstream
-            # ``validate_update_uniqueness(db, table, ...)``).
             uniq_db_id = (
                 int(getattr(db, "id", 0))
                 if db is not None and getattr(db, "id", None) is not None
                 else int(self._dataset.database_id)
             )
-            # Coalesce catalog to the db default — 1:1 with upstream
-            # ``validate_update_uniqueness`` which computes
-            # ``table.catalog or database.get_default_catalog()`` before
-            # filtering ``SqlaTable.catalog == catalog``.
             uniq_catalog = catalog if catalog is not None else default_catalog
             is_unique = await self._dao.validate_uniqueness(
                 database_id=uniq_db_id,
@@ -295,10 +263,6 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                     DatasetExistsValidationError(Table(table_name, schema, catalog))
                 )
 
-        # SQL-access validation — 1:1 with upstream ``_validate_sql_access``:
-        # only when ``sql`` is provided AND differs from the current value.
-        # Accumulates two per-field ``sql`` errors (DatasetDataAccessIsNotAllowed
-        # on SupersetSecurityException, ``Invalid SQL: ...`` on SupersetParseError).
         sql = self._data.get("sql")
         if (
             sql
@@ -311,9 +275,6 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 SupersetSecurityException,
             )
 
-            # ``raise_for_access`` reads roles/perms off a User OBJECT — resolve
-            # it like ``CreateDatasetCommand`` (passing the bare id silently
-            # denies for everyone).
             user = (
                 await self._security_manager.find_user_by_id(self._user_id)
                 if self._user_id is not None
@@ -336,10 +297,6 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                     DatasetValidationError(f"Invalid SQL: {message}", field_name="sql")
                 )
 
-        # Validate/resolve owners here (not run()) so a bad owner id surfaces as
-        # a per-field ``owners`` error in the accumulated 422 — 1:1 with upstream
-        # ``update.py::validate`` (compute_owners + append). Resolved list is
-        # stashed for run() to reuse.
         if self._security_manager is not None:
             from superset.commands.dataset.exceptions import (
                 OwnersNotFoundValidationError,
@@ -365,14 +322,6 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
     async def run(self) -> "SqlaTable":
         assert self._dataset is not None
 
-        # SQL-access validation moved to validate() (1:1 with upstream
-        # ``_validate_sql_access``), accumulating per-field ``sql`` 422 errors.
-
-        # Columns/metrics are handled by DAO.update() special logic. The
-        # ``database_id`` → ``database`` resolution is applied by setattr below
-        # (the resolved Database is used in validate()); here we map the id key
-        # onto the model attribute. ``catalog`` may have been coerced in
-        # validate() and is carried in ``self._data``.
         data = dict(self._data)
         columns = data.pop("columns", None)
         metrics = data.pop("metrics", None)
@@ -387,8 +336,6 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 dict(m) if not isinstance(m, dict) else m for m in metrics
             ]
         if self._security_manager is not None:
-            # Reuse the owners resolved+validated during validate() (per-field
-            # validated there); fall back to computing here if needed.
             if getattr(self, "_owners", None) is not None:
                 update_attrs["owners"] = self._owners
             else:
@@ -404,15 +351,10 @@ class UpdateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 update_attrs[key] = value
         if self._user_id is not None:
             update_attrs["changed_by_fk"] = self._user_id
-        # 1:1 with superset_old/commands/dataset/update.py:68
-        # (``self._properties["override_columns"] = override_columns``) — the
-        # DAO's ``update_columns`` reads this flag to pick the
-        # delete-all-and-reinsert override path.
         update_attrs["override_columns"] = self._override_columns
         await self._dao.update(self._dataset, update_attrs)
         await self._dao.session.flush()
 
-        # Sync implicit owner: tags (async port of DatasetUpdater.after_update)
         await self._dao.session.refresh(self._dataset, ["owners"])
         owner_ids = (
             [o.id for o in self._dataset.owners]

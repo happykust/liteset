@@ -16,8 +16,6 @@
 # under the License.
 """Thumbnail digest computation.
 
-1:1 port of ``superset_old/thumbnails/digest.py``.
-
 The two adaptations versus the original:
 
 * ``app.config["..."]`` → :class:`SupersetSettings` (cached via
@@ -53,10 +51,7 @@ def _adjust_string_for_executor(
     executor_type: ExecutorType,
     executor: str,
 ) -> str:
-    """Add the executor to the unique string for user-specific thumbnails.
-
-    1:1 port of ``superset_old.thumbnails.digest._adjust_string_for_executor``.
-    """
+    """Add the executor to the unique string for user-specific thumbnails."""
     if executor_type == ExecutorType.CURRENT_USER:
         # add the user id to the string to make it unique
         unique_string = f"{unique_string}\n{executor}"
@@ -70,8 +65,6 @@ def _adjust_string_with_rls(
     executor: str,
 ) -> str:
     """Add RLS filters to the unique string based on the executor.
-
-    1:1 port of ``superset_old.thumbnails.digest._adjust_string_with_rls``.
 
     The original calls ``security_manager.find_user(executor)`` plus
     ``security_manager.get_current_guest_user_if_guest()`` and then walks
@@ -93,8 +86,7 @@ def _adjust_string_with_rls(
 
     # Try the foreground user first (matches ``find_user``); fall back to
     # the active guest user if the executor name doesn't resolve.  This
-    # mirrors the original's ``find_user(executor) or
-    # get_current_guest_user_if_guest()`` chain.
+    # ``find_user(executor) or get_current_guest_user_if_guest()`` chain.
     user: object | None = None
     with _metadata_sync_session() as session:
         stmt = select(User).where(User.username == executor)
@@ -151,9 +143,8 @@ def _query_dashboard_datasources(
 ) -> "list[SqlaTable]":
     """Bulk-load the ``SqlaTable`` datasources backing a dashboard's charts.
 
-    1:1 with the original ``Dashboard.datasources`` property
-    (``superset_old/models/dashboard.py``) which grouped each slice's
-    ``datasource_id`` by its ``cls_model`` and bulk-loaded the rows. The async
+    Grouped each slice's ``datasource_id`` by its ``cls_model`` and
+    bulk-loaded the rows. The async
     port enumerates them through a synchronous metadata ``session`` keyed off
     the dashboard id, so the lookup never depends on the relationship-load
     state of the (possibly async-detached) ``Dashboard`` instance.
@@ -260,7 +251,6 @@ def _query_chart_datasources(
 def get_dashboard_digest(dashboard: "Dashboard") -> str | None:
     """Return the cache-key digest for ``dashboard``.
 
-    1:1 port of ``superset_old.thumbnails.digest.get_dashboard_digest``.
     Reads ``THUMBNAIL_EXECUTORS`` and the optional override
     ``THUMBNAIL_DASHBOARD_DIGEST_FUNC`` from :class:`SupersetSettings`.
     """
@@ -290,7 +280,7 @@ def get_dashboard_digest(dashboard: "Dashboard") -> str | None:
     # plain columns (already loaded) so they stay inline.  The datasources
     # stay attached to ``session`` for ``get_sqla_row_level_filters`` (which
     # walks ``datasource.database`` and columns to build the template
-    # processor) — 1:1 with the original which hashed ``Dashboard.datasources``.
+    # processor) — hashed ``Dashboard.datasources``.
     from superset.utils.rls import _metadata_sync_session
 
     with _metadata_sync_session() as session:
@@ -311,7 +301,6 @@ def get_dashboard_digest(dashboard: "Dashboard") -> str | None:
 def get_chart_digest(chart: "Slice") -> str | None:
     """Return the cache-key digest for ``chart``.
 
-    1:1 port of ``superset_old.thumbnails.digest.get_chart_digest``.
     Reads ``THUMBNAIL_EXECUTORS`` and the optional override
     ``THUMBNAIL_CHART_DIGEST_FUNC`` from :class:`SupersetSettings`.
     """

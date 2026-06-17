@@ -14,13 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Update command for saved queries.
-
-LITESET ADDITION (no 1:1 counterpart in
-``superset_old/commands/query/``).  See :mod:`superset.commands.query.create`
-for rationale — Apache Superset 6.0 handles saved-query updates via FAB's
-``ModelRestApi.put`` directly against the ORM model.
-"""
+"""Update command for saved queries."""
 
 from __future__ import annotations
 
@@ -57,10 +51,6 @@ class UpdateSavedQueryCommand(AsyncBaseCommand["SavedQuery"]):
         self._query = await self._dao.find_by_id(self._query_id)
         if not self._query:
             raise ObjectNotFoundError("SavedQuery", self._query_id)
-        # Enforce owner-scope (1:1 with the original FAB base_filter, which
-        # applies ``SavedQueryFilter`` to single PUT by pk → 404 for objects
-        # outside the caller's scope).  See
-        # ``superset_old/queries/saved_queries/api.py::base_filters``.
         await self._assert_in_scope()
 
     async def _assert_in_scope(self) -> None:
@@ -87,15 +77,11 @@ class UpdateSavedQueryCommand(AsyncBaseCommand["SavedQuery"]):
                 setattr(self._query, key, value)
         if self._user_id is not None:
             self._query.changed_by_fk = self._user_id
-            # 1:1 with original pre_update at
-            # superset_old/queries/saved_queries/api.py:196-197 which calls
-            # ``self.pre_add(item)`` → ``item.user = g.user``.  This sets the
-            # dedicated ``user_id`` FK column (separate from
-            # AuditMixinNullable's changed_by_fk) on every update.
+            # Also update user_id — a separate FK from changed_by_fk that backs
+            # the ``user`` relationship and owner: tags.
             self._query.user_id = self._user_id
         await self._dao.session.flush()
 
-        # Sync implicit owner: tags (async port of QueryUpdater.after_update)
         query_user_id = getattr(self._query, "user_id", None)
         owner_ids = [query_user_id] if query_user_id is not None else []
         await sync_owner_tags_after_update(

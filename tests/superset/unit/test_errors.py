@@ -14,9 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for SupersetError and related structures.
-
-Verifies 1:1 parity with superset_old/errors.py:
+"""Unit tests for SupersetError and related structures:
 - __post_init__ always overwrites issue_codes from the mapping (unconditional
   dict.update(), never a conditional guard)
 - extra fields unrelated to issue_codes are preserved
@@ -66,13 +64,11 @@ def test_post_init_sets_issue_codes_when_extra_is_empty_dict() -> None:
 
 
 def test_post_init_overwrites_caller_supplied_issue_codes() -> None:
-    """Original behaviour: __post_init__ always calls self.extra.update(),
-    unconditionally replacing any issue_codes the caller may have supplied.
+    """__post_init__ always calls self.extra.update(), unconditionally replacing
+    any issue_codes the caller may have supplied.
 
-    Regression guard for the liteset divergence where a
-    ``if "issue_codes" not in self.extra`` guard was added, which would have
-    preserved stale/custom codes instead of the authoritative mapping-derived
-    ones (superset_old/errors.py lines 227-241).
+    Regression guard: a ``if "issue_codes" not in self.extra`` guard would have
+    preserved stale/custom codes instead of the authoritative mapping-derived ones.
     """
     stale_codes = [{"code": 9999, "message": "stale"}]
     err = SupersetError(
@@ -133,7 +129,7 @@ def test_post_init_no_injection_no_extra_for_unmapped_type() -> None:
 
 
 # ---------------------------------------------------------------------------
-# issue_codes format — message string mirrors original
+# issue_codes format
 # ---------------------------------------------------------------------------
 
 

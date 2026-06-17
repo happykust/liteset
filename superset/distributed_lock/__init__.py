@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/distributed_lock/__init__.py``.
+"""Async distributed lock backed by the KV store.
 
 Provides :func:`KeyValueDistributedLock`, an ``@asynccontextmanager``
 that acquires a database-backed (key-value) distributed lock.  The
@@ -73,7 +73,6 @@ async def KeyValueDistributedLock(  # pylint: disable=invalid-name  # noqa: N802
     :raises CreateKeyValueDistributedLockFailedException: If the lock is taken.
     """
 
-    # pylint: disable=import-outside-toplevel
     from superset.commands.distributed_lock.create import CreateDistributedLock
     from superset.commands.distributed_lock.delete import DeleteDistributedLock
     from superset.commands.distributed_lock.get import GetDistributedLock
@@ -110,13 +109,11 @@ def sync_key_value_distributed_lock(  # noqa: N802
     """Synchronous KV-backed distributed lock (sibling of
     :func:`KeyValueDistributedLock`).
 
-    1:1 with the (originally synchronous) upstream
-    ``superset_old/distributed_lock/__init__.py:KeyValueDistributedLock`` and
-    its three ``CreateDistributedLock`` / ``GetDistributedLock`` /
-    ``DeleteDistributedLock`` commands, but driven from the sync metadata
-    session (``get_sync_session`` / psycopg2) rather than the global
-    ``db.session``. The KV operations are inlined against
-    :class:`~superset.models.key_value.KeyValueEntry`, mirroring
+    Uses the three ``CreateDistributedLock`` / ``GetDistributedLock`` /
+    ``DeleteDistributedLock`` commands driven from the sync metadata
+    session (``get_sync_session`` / psycopg2) rather than the async session.
+    The KV operations are inlined against
+    :class:`~superset.models.key_value.KeyValueEntry` via
     :class:`~superset.db.daos.key_value.AsyncKeyValueDAO`
     (``delete_expired_entries`` -> ``get_entry_by_key`` -> ``create_entry``
     on acquire; ``get_entry_by_key`` -> delete on release). Reuses the same
@@ -133,7 +130,6 @@ def sync_key_value_distributed_lock(  # noqa: N802
     :yields: The UUID key of the acquired lock.
     :raises CreateKeyValueDistributedLockFailedException: If the lock is taken.
     """
-    # pylint: disable=import-outside-toplevel
     from superset.db.session import get_sync_session
     from superset.models.key_value import KeyValueEntry
 
@@ -141,7 +137,6 @@ def sync_key_value_distributed_lock(  # noqa: N802
     resource = RESOURCE.value
 
     with get_sync_session() as session:
-        # --- acquire (GetDistributedLock + CreateDistributedLock) ---
         existing = (
             session.query(KeyValueEntry)
             .filter(
@@ -161,7 +156,6 @@ def sync_key_value_distributed_lock(  # noqa: N802
             raise CreateKeyValueDistributedLockFailedException("Lock already taken")
 
         logger.debug("Acquiring lock on namespace %s for key %s", namespace, key)
-        # delete_expired_entries(resource)
         session.execute(
             delete(KeyValueEntry).where(
                 KeyValueEntry.resource == resource,
@@ -180,7 +174,6 @@ def sync_key_value_distributed_lock(  # noqa: N802
         session.commit()
 
         yield key
-        # --- release (DeleteDistributedLock) ---
         row = (
             session.query(KeyValueEntry)
             .filter(

@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dataset/duplicate.py``."""
+"""Command for duplicating a virtual dataset."""
 
 from __future__ import annotations
 
@@ -43,11 +43,6 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         self._source: Any | None = None
 
     async def validate(self) -> None:
-        # Not-found (404) short-circuits immediately; the field validations
-        # below ACCUMULATE into a single ``DatasetInvalidError`` so the
-        # controller emits a per-field 422 body (1:1 with upstream, which
-        # appends ``DatasourceTypeInvalidError`` + ``DatasetExistsValidation
-        # Error`` to ``exceptions`` then raises ``DatasetInvalidError``).
         from superset.commands.dataset.exceptions import (
             DatasetExistsValidationError,
             DatasetInvalidError,
@@ -60,9 +55,6 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
 
         exceptions: list[DatasetValidationError] = []
         if not self._source:
-            # 1:1 with upstream: a missing base dataset is ACCUMULATED into the
-            # validation error set (``exceptions.append(DatasetNotFoundError())``)
-            # → 422 ``DatasetInvalidError``, not an early 404.
             exceptions.append(
                 DatasetValidationError(
                     "Dataset does not exist", field_name="base_model_id"
@@ -75,17 +67,9 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 )
             )
 
-        # Only virtual datasets (with SQL) can be duplicated — 1:1 with
-        # upstream ``self._base_model.kind != "virtual"`` →
-        # ``DatasourceTypeInvalidError`` (field ``datasource_type``).
         if self._source and not getattr(self._source, "sql", None):
             exceptions.append(DatasourceTypeInvalidError())
 
-        # Check that the new name doesn't already exist. Mirrors
-        # ``superset_old/commands/dataset/duplicate.py:118``: the original
-        # rejects the name if a dataset with that ``table_name`` exists in ANY
-        # database (``DatasetDAO.find_one_or_none(table_name=...)``), not just
-        # the source database/schema.
         existing = await self._dao.find_one_or_none(table_name=self._table_name)
         if existing is not None:
             exceptions.append(DatasetExistsValidationError(Table(self._table_name)))
@@ -99,8 +83,6 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         assert self._source is not None
         source_sql = getattr(self._source, "sql", None)
         if source_sql:
-            # ``strip(";")`` (both ends), 1:1 with upstream
-            # ``self._base_model.sql.strip().strip(";")``.
             source_sql = source_sql.strip().strip(";")
         new_dataset = SqlaTable(
             table_name=self._table_name,
@@ -113,43 +95,31 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         if self._user_id is not None:
             new_dataset.created_by_fk = self._user_id
             new_dataset.changed_by_fk = self._user_id
-            # Mirrors ``superset_old/commands/dataset/duplicate.py:122`` which
-            # passes ``owners=self.populate_owners()`` to ``SqlaTable(...)``;
-            # ``CreateMixin.populate_owners`` defaults to the current user
-            # (``default_to_user=True``) when no owner ids are supplied.
             from superset.models.security import User
 
             current_user = await self._dao.session.get(User, self._user_id)
             if current_user is not None:
                 new_dataset.owners = [current_user]
-        # Initialise the *new* dataset's collections BEFORE ``session.add``
-        # so SQLAlchemy registers them as already-loaded — otherwise a
-        # subsequent ``.append(...)`` (or any read access) triggers a sync
-        # lazy-load against asyncpg and dies with ``MissingGreenlet``. The
-        # default ``lazy="select"`` strategy fires the SELECT eagerly on
-        # first attribute touch even for an obviously-empty collection on a
-        # transient instance.
+        # Pre-init collections before session.add so SQLAlchemy treats them as
+        # already-loaded; otherwise the first .append() triggers a sync lazy-load
+        # against asyncpg → MissingGreenlet (lazy="select" fires on first touch
+        # even on a transient instance).
         new_dataset.columns = []
         new_dataset.metrics = []
 
         self._dao.session.add(new_dataset)
         await self._dao.session.flush()
 
-        # Eagerly load source relationships before copying
         await self._dao.session.refresh(self._source, ["columns", "metrics"])
 
-        # Copy columns
         if hasattr(self._source, "columns"):
             for col in self._source.columns:
                 new_col = TableColumn(
                     column_name=col.column_name,
-                    # 1:1 with upstream duplicate.py:80 — carry the source
-                    # column's verbose_name onto the copy (was dropped).
                     verbose_name=getattr(col, "verbose_name", None),
                     type=getattr(col, "type", None),
-                    # Upstream hardcodes ``filterable=True, groupby=True`` for
-                    # every duplicated column (duplicate.py:81-82); it does NOT
-                    # copy the source flags.
+                    # Duplicated columns always default to groupby=True, filterable=True
+                    # regardless of source flags.
                     groupby=True,
                     filterable=True,
                     description=getattr(col, "description", None),
@@ -160,7 +130,6 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 )
                 new_dataset.columns.append(new_col)
 
-        # Copy metrics
         if hasattr(self._source, "metrics"):
             for metric in self._source.metrics:
                 new_metric = SqlMetric(
@@ -173,7 +142,6 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 )
                 new_dataset.metrics.append(new_metric)
 
-        # Copy additional fields
         new_dataset.template_params = getattr(  # type: ignore[assignment]
             self._source, "template_params", None
         )

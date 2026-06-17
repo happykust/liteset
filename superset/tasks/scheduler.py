@@ -16,11 +16,8 @@
 # under the License.
 """Report scheduler Celery tasks for Superset.
 
-Ported 1:1 from ``superset_old/tasks/scheduler.py``.  The task names,
-decorator options, control flow and side effects mirror the original.  The
-only structural difference is that — because Celery workers run synchronously
-and never boot the Litestar app — each task takes a synchronous
-:class:`sqlalchemy.orm.Session` from
+Because Celery workers run synchronously and never boot the Litestar app,
+each task takes a synchronous :class:`sqlalchemy.orm.Session` from
 :func:`superset.db.session.get_sync_session` and delegates to the synchronous
 command variants (``ExecuteReportScheduleCommand``,
 ``PruneReportScheduleLogCommand``, ``QueryPruneCommand``, ``LogPruneCommand``).
@@ -64,13 +61,11 @@ def log_task_failure(  # pylint: disable=unused-argument
     retry_kwargs={
         "max_retries": 3,
         "countdown": 60,
-    },  # Retry up to 3 times, wait 60s between
-    retry_backoff=True,  # exponential backoff
+    },
+    retry_backoff=True,
 )
 def scheduler(self: Task) -> None:  # pylint: disable=unused-argument
-    """
-    Celery beat main scheduler for reports
-    """
+    """Celery beat main scheduler for reports."""
     from superset.config import SupersetSettings
     from superset.db.session import get_sync_session
     from superset.extensions import stats_logger_manager

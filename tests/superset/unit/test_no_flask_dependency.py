@@ -18,8 +18,7 @@
 
 Flask AND its ecosystem (flask-appbuilder, flask-login, flask-babel,
 flask-caching, werkzeug, …) must not appear in the Liteset runtime or its
-declared dependencies. ``superset_old/`` is the vendored upstream reference
-and is intentionally excluded.
+declared dependencies.
 """
 
 from __future__ import annotations
@@ -38,7 +37,6 @@ def _is_forbidden(module: str) -> bool:
 
 
 def test_no_flask_ecosystem_imports_in_superset():
-    """No superset/ module may import flask or werkzeug."""
     violations: list[str] = []
     for py_file in Path("superset").rglob("*.py"):
         tree = ast.parse(py_file.read_text())
@@ -54,7 +52,6 @@ def test_no_flask_ecosystem_imports_in_superset():
 
 
 def test_no_flask_ecosystem_in_requirements():
-    """No requirements/*.txt may pin flask or werkzeug."""
     violations: list[str] = []
     for req_file in Path("requirements").glob("*.txt"):
         for raw in req_file.read_text().splitlines():
@@ -68,12 +65,10 @@ def test_no_flask_ecosystem_in_requirements():
 
 
 def test_fallback_module_removed():
-    """superset/fallback.py should no longer exist."""
     assert not Path("superset/fallback.py").exists(), "fallback.py must be deleted"
 
 
 def test_app_factory_no_flask_fallback():
-    """create_app should not accept enable_flask_fallback parameter."""
     import inspect
 
     from superset.app import create_app

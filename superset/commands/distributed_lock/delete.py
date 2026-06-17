@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/distributed_lock/delete.py``."""
+"""Command to delete a distributed lock entry from the key-value store."""
 
 from __future__ import annotations
 
@@ -32,9 +32,8 @@ logger = logging.getLogger(__name__)
 class DeleteDistributedLock(BaseDistributedLockCommand):
     """Delete the ``LOCK`` row for ``self.key`` if present.
 
-    Mirrors the sync original.  SQL errors are rewrapped as
-    :class:`DeleteKeyValueDistributedLockFailedException`, matching the
-    ``@transaction(on_error=...reraise=...)`` decorator on the original.
+    SQL errors are re-raised as
+    :class:`DeleteKeyValueDistributedLockFailedException`.
     """
 
     async def run(self) -> None:

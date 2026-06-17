@@ -16,16 +16,14 @@
 # under the License.
 """Row Level Security controller — CRUD endpoints for RLS filters.
 
-Mirrors ``superset_old.row_level_security.api.RLSRestApi`` 1:1:
-
 * GET    ``/`` — list RLS filters
 * GET    ``/_info`` — API metadata
 * GET    ``/{pk}`` — fetch a single RLS filter
 * GET    ``/related/{column_name}`` — related-field lookup for the UI
 * POST   ``/`` — create an RLS filter (returns ``{id, result: payload}``)
 * PUT    ``/{pk}`` — partial update (returns ``{id, result: payload}``)
-* DELETE ``/?q=[ids]`` — bulk-delete (the only delete endpoint, exactly
-  as in original Superset; there is no ``DELETE /{pk}``)
+* DELETE ``/?q=[ids]`` — bulk-delete (the only delete endpoint;
+  there is no ``DELETE /{pk}``)
 """
 
 from __future__ import annotations
@@ -68,7 +66,6 @@ logger = logging.getLogger(__name__)
 
 
 def _msgspec_to_dict(obj: Any) -> dict[str, Any]:
-    """Convert a msgspec Struct to a plain dict."""
     return {f: getattr(obj, f) for f in obj.__struct_fields__}
 
 
@@ -81,7 +78,6 @@ def _prettify_label(name: str) -> str:
     return name.replace(".", " ").replace("_", " ").title()
 
 
-# Mirrors ``superset_old/row_level_security/api.py:list_columns``.
 _RLS_LIST_COLUMNS: list[str] = [
     "id",
     "name",
@@ -98,7 +94,6 @@ _RLS_LIST_COLUMNS: list[str] = [
     "group_key",
 ]
 
-# Mirrors ``superset_old/row_level_security/api.py:order_columns``.
 _RLS_ORDER_COLUMNS: list[str] = [
     "name",
     "filter_type",
@@ -109,11 +104,7 @@ _RLS_ORDER_COLUMNS: list[str] = [
 
 
 def _serialize_rls_list_item(item: Any) -> dict[str, Any]:
-    """Serialize an RLS rule for the list endpoint.
-
-    Mirrors the FAB-generated payload built from
-    ``superset_old/row_level_security/api.py::RLSRestApi.list_columns``.
-    """
+    """Serialize an RLS rule for the list endpoint."""
     changed_by = getattr(item, "changed_by", None)
     return {
         "id": item.id,
@@ -144,11 +135,7 @@ def _serialize_rls_list_item(item: Any) -> dict[str, Any]:
 
 
 def _serialize_rls_show_item(item: Any) -> dict[str, Any]:
-    """Serialize an RLS rule for the GET ``/{pk}`` endpoint.
-
-    Mirrors ``superset_old/row_level_security/schemas.py::RLSShowSchema``
-    via ``superset_old/row_level_security/api.py::show_columns``.
-    """
+    """Serialize an RLS rule for the GET ``/{pk}`` endpoint."""
     return {
         "id": item.id,
         "name": item.name,
@@ -178,9 +165,6 @@ class RLSController(Controller):
         "rison_params": Provide(provide_rison_query),
     }
 
-    # ------------------------------------------------------------------
-    # GET — list RLS filters
-    # ------------------------------------------------------------------
     @get(
         "/",
         guards=[require_permission("can_read", "Row Level Security")],
@@ -194,12 +178,7 @@ class RLSController(Controller):
 
         Supports Rison-encoded ``q`` query parameters for filtering
         (``filters: [{col, opr, value}]``), ordering (``order_column`` /
-        ``order_direction``), and pagination (``page`` / ``page_size``)
-        — matching ``superset_old/row_level_security/api.py`` 1:1 via
-        ``search_columns = (name, description, filter_type, tables,
-        roles, group_key, clause, created_by, changed_by)`` and
-        ``order_columns = [name, filter_type, clause,
-        changed_on_delta_humanized, group_key]``.
+        ``order_direction``), and pagination (``page`` / ``page_size``).
         """
         from superset.models.connectors import RowLevelSecurityFilter
 
@@ -235,9 +214,6 @@ class RLSController(Controller):
             "result": result,
         }
 
-    # ------------------------------------------------------------------
-    # GET — single RLS filter
-    # ------------------------------------------------------------------
     @get(
         "/{pk:int}",
         guards=[require_permission("can_read", "Row Level Security")],
@@ -247,13 +223,7 @@ class RLSController(Controller):
         dao: CRUDDAOProtocol,
         pk: int,
     ) -> dict[str, Any]:
-        """Get a Row Level Security filter by id.
-
-        Returns the rule's ``name``, ``description``, ``filter_type``,
-        ``clause``, ``group_key``, plus its associated ``tables`` and
-        ``roles`` — mirrors ``RLSShowSchema`` from
-        ``superset_old/row_level_security/schemas.py``.
-        """
+        """Get a Row Level Security filter by id."""
         from sqlalchemy import select
 
         from superset.models.connectors import RowLevelSecurityFilter
@@ -273,9 +243,6 @@ class RLSController(Controller):
         await event_logger.alog_with_context("rls.show", object_ref=str(pk))
         return {"id": pk, "result": _serialize_rls_show_item(item)}
 
-    # ------------------------------------------------------------------
-    # POST — create RLS filter
-    # ------------------------------------------------------------------
     @post(
         "/",
         guards=[require_permission("can_write", "Row Level Security")],
@@ -289,15 +256,10 @@ class RLSController(Controller):
         """Create a new Row Level Security filter.
 
         Body is validated against :class:`RLSPostSchema`. Returns
-        ``{"id": <pk>, "result": <validated payload>}`` — matches
-        original Superset which returns the validated request payload
-        (not the SQLAlchemy instance) under ``result``. See
-        ``superset_old/row_level_security/api.py:202``.
+        ``{"id": <pk>, "result": <validated payload>}``.
 
-        Note: ``filter_unset`` strips optional fields that were absent
-        from the request body (``description``, ``group_key`` default to
-        ``msgspec.UNSET``), mirroring Marshmallow 3 ``Schema.load()``
-        which omits absent optional fields from the returned dict.
+        ``filter_unset`` strips optional fields absent from the request body
+        (``description``, ``group_key`` default to ``msgspec.UNSET``).
         """
         payload = filter_unset(_msgspec_to_dict(data))
         cmd = CreateRLSRuleCommand(dao=dao, data=payload)
@@ -335,9 +297,6 @@ class RLSController(Controller):
         )
         return {"id": item_id, "result": payload}
 
-    # ------------------------------------------------------------------
-    # PUT — update RLS filter
-    # ------------------------------------------------------------------
     @put(
         "/{pk:int}",
         guards=[require_permission("can_write", "Row Level Security")],
@@ -351,11 +310,8 @@ class RLSController(Controller):
     ) -> dict[str, Any] | Response[Any]:
         """Update an existing Row Level Security filter.
 
-        All fields are optional (partial update); only the keys
-        present in the body are applied. Returns ``{"id": <pk>,
-        "result": <patched fields>}`` — matches original Superset which
-        returns the validated request payload (not the SQLAlchemy
-        instance) under ``result``.
+        All fields are optional (partial update); only the keys present in the
+        body are applied. Returns ``{"id": <pk>, "result": <patched fields>}``.
         """
         try:
             payload = filter_unset(_msgspec_to_dict(data))
@@ -394,10 +350,6 @@ class RLSController(Controller):
         await event_logger.alog_with_context("rls.update", object_ref=str(pk))
         return {"id": pk, "result": payload}
 
-    # ------------------------------------------------------------------
-    # DELETE — bulk delete RLS filters (the *only* delete endpoint —
-    # original Superset does not expose ``DELETE /{pk}``).
-    # ------------------------------------------------------------------
     @delete(
         "/",
         guards=[require_permission("can_write", "Row Level Security")],
@@ -410,12 +362,11 @@ class RLSController(Controller):
     ) -> dict[str, str]:
         """Bulk-delete Row Level Security filters.
 
-        ``q=!(<id>,<id>,...)`` Rison-encoded array of ids. The only
-        delete endpoint exposed by this resource — original Superset
-        does not expose a per-id ``DELETE /{pk}``.
+        ``q=!(<id>,<id>,...)`` Rison-encoded array of ids. There is no
+        per-id ``DELETE /{pk}`` endpoint.
 
-        Returns 404 (via :class:`RLSRuleNotFoundError`) if any of the
-        requested ids does not exist — matches original behaviour.
+        Returns 404 (via :class:`RLSRuleNotFoundError`) if any requested id
+        does not exist.
         """
         ids = extract_ids(rison_params)
         cmd = DeleteRLSRuleCommand(dao=dao, model_ids=ids)
@@ -440,9 +391,7 @@ class RLSController(Controller):
 
         Returns the FAB-style ``permissions``, ``add_columns``,
         ``edit_columns``, ``label_columns``, and ``filters`` payload
-        the frontend reads to render the RLS list/edit UIs. Mirrors
-        the auto-generated ``/_info`` from
-        ``superset_old/row_level_security/api.py``.
+        the frontend reads to render the RLS list/edit UIs.
         """
         return await get_info_payload(
             dao=dao,
@@ -466,10 +415,7 @@ class RLSController(Controller):
         """Get related-field options for the RLS edit form.
 
         Used to populate the ``tables``, ``roles``, ``created_by``,
-        and ``changed_by`` selects. Mirrors
-        ``allowed_rel_fields = {"tables", "roles", "created_by",
-        "changed_by"}`` from
-        ``superset_old/row_level_security/api.py``.
+        and ``changed_by`` selects.
         """
         return await get_related_payload(
             dao=dao,

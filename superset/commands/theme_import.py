@@ -15,19 +15,10 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/theme/import_themes.py``.
+"""Standalone theme import helper for the dashboard import pipeline.
 
-The original lived under ``commands/theme/`` (a package); liteset
-keeps the per-resource theme commands in a single ``commands/theme.py``
-module.  We expose ``import_theme`` here so the dashboard import
-pipeline can wire it via the canonical name described in the design
-notes.
-
-The ``superset.commands.theme.importers.v1.utils`` import path used by
-the dashboard importer is wired through this re-export module — see
-:mod:`superset.commands.theme` package shim once the theme command
-module is converted to a package.  Until then importers directly
-``from superset.commands.theme_import import import_theme``.
+Importers use ``from superset.commands.theme_import import import_theme``
+directly.
 """
 
 from __future__ import annotations
@@ -53,19 +44,13 @@ async def import_theme(  # noqa: C901  # complex business logic
     security_manager: Any | None = None,
     current_user: Any | None = None,
 ) -> Theme | None:
-    """Async 1:1 port of ``superset_old.commands.theme.import_themes.import_theme``.
-
-    Handles UUID-based dedup, ``json_data`` dict-to-string serialisation,
-    and owner attribution on creation.
+    """Import a single theme config with UUID-based dedup, ``json_data``
+    dict-to-string serialisation, and owner attribution on creation.
     """
     from sqlalchemy import select as sa_select
 
     from superset.models.core import Theme
 
-    # ``AsyncSecurityManager.can_access`` takes the user explicitly
-    # (keyword-only) — the previous call omitted it (TypeError when this
-    # branch runs, R12-01). Resolve the acting user from the request-scoped
-    # ContextVar, mirroring the upstream request-scoped current user.
     can_write = ignore_permissions
     if not can_write and security_manager is not None:
         from superset.utils.core import get_current_user
@@ -94,8 +79,6 @@ async def import_theme(  # noqa: C901  # complex business logic
             return existing
         cfg["id"] = existing.id
     elif not can_write:
-        # Mirrors the original ``ThemeImportError`` — surface as plain
-        # ``ImportFailedError`` so the orchestrator surfaces it 1:1.
         from superset.exceptions import ImportFailedError
 
         raise ImportFailedError(
@@ -124,7 +107,6 @@ async def import_theme(  # noqa: C901  # complex business logic
     if theme.id is None:
         await session.flush()
 
-    # Add current user as owner / changer on creation.
     if not existing and current_user is not None:
         if hasattr(theme, "changed_by"):
             theme.changed_by = current_user

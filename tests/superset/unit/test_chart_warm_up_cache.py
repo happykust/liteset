@@ -14,27 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Ported from ``tests/unit_tests/commands/chart/warm_up_cache_test.py``.
-
-The Liteset port is :class:`superset.commands.chart.warm_up_cache
-.WarmUpChartCacheCommand` — an async command. It mirrors the upstream
-branching:
-
-* legacy charts (``form_data["viz_type"] in get_active_viz_types()``) go
-  through ``superset.viz.get_viz`` -> ``BaseViz.get_payload`` (the upstream
-  ``_warm_up_legacy_cache`` path);
-* modern charts build query objects from ``chart.query_context`` and run them
-  through ``AsyncQueryContextProcessor`` (the upstream non-legacy path that
-  resolved to ``ChartDataCommand`` under the hood).
-
-The upstream tests patched module-level Flask seams (``get_form_data``,
-``ChartDataCommand``, ``get_dashboard_extra_filters``, ``g``, ``viz_types``,
-``get_viz``, ``db``). Those names don't exist in the async port, so the call
-sites are adapted to the port's seams while preserving the verified behaviour:
-dashboard filters get appended to every query, ``extra_filters`` takes
-precedence over dashboard metadata, the canonical
-``{chart_id, viz_error, viz_status}`` payload shape, and the error paths.
-"""
+"""Tests for WarmUpChartCacheCommand."""
 
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -45,13 +25,6 @@ from superset.models.slice import Slice
 
 
 def _make_command(chart, dashboard_id=None, extra_filters=None):
-    """Build the command with an already-loaded chart (validate is a no-op).
-
-    Mirrors upstream ``ChartWarmUpCacheCommand(chart, dashboard_id,
-    extra_filters)`` where the chart is passed directly. The async port takes
-    a DAO first; a bare ``Mock`` suffices because every code path under test
-    is patched at a higher seam and never touches the session.
-    """
     return WarmUpChartCacheCommand(
         dao=Mock(),
         dashboard_id=dashboard_id,
@@ -61,7 +34,6 @@ def _make_command(chart, dashboard_id=None, extra_filters=None):
 
 
 def _modern_chart(**kwargs):
-    """A modern (non-legacy) chart whose ``form_data`` viz_type is modern."""
     defaults = {
         "id": 123,
         "slice_name": "Test Chart",
@@ -74,12 +46,8 @@ def _modern_chart(**kwargs):
 
 
 def _patch_table():
-    """Make ``chart.table`` (the datasource) resolve on a transient Slice.
-
-    ``_warm_up_non_legacy_cache`` reads ``chart.table`` directly (the upstream
-    ``ChartDataCommand`` resolved the datasource the same way). The relationship
-    is a class attribute, so override it with a property for the test duration.
-    """
+    # chart.table is a class-level SA relationship; override with a property
+    # so the transient Slice resolves a mock datasource without hitting the DB.
     mock_datasource = Mock()
     mock_datasource.id = 1
     mock_datasource.type = "table"
@@ -87,17 +55,12 @@ def _patch_table():
 
 
 def _patch_active_viz_types(types):
-    """Patch the legacy-viz registry consulted by ``run``.
-
-    ``run`` imports ``get_active_viz_types`` from ``superset.viz`` at call
-    time, so patching it there is honoured. The return value only needs
-    ``__contains__`` to behave like the upstream ``viz_types`` list.
-    """
+    # ``run`` imports get_active_viz_types from superset.viz at call time, so
+    # the patch must land there (not on the command module's local binding).
     return patch("superset.viz.get_active_viz_types", return_value=types)
 
 
 async def test_applies_dashboard_filters_to_non_legacy_chart():
-    """Verify dashboard filters are added to every query for non-legacy viz."""
     chart = _modern_chart(id=123)
 
     mock_query = Mock()
@@ -128,23 +91,18 @@ async def test_applies_dashboard_filters_to_non_legacy_chart():
         )
         result = await command.run()
 
-    # Filters were appended to the query.
     assert mock_query.filters == [
         {"col": "country", "op": "in", "val": ["USA", "France"]}
     ]
-    # Dashboard filters were resolved for this chart.
     mock_get_filters.assert_awaited_once_with(123)
-    # force should be set to True: the warm-up forces a cache refresh on the
-    # query context. Upstream asserted ``mock_qc.force is True``; the port
-    # builds a real ``AsyncQueryContext(force=True)`` and forwards ``force=True``
-    # to the mocked processor's ``get_payload`` (the verifiable seam here).
+    # force=True is threaded through to get_payload; upstream verified mock_qc.force
+    # but the port builds a real AsyncQueryContext so we check the processor call arg.
     assert mock_processor.return_value.get_payload.await_args.kwargs["force"] is True
     assert result["chart_id"] == 123
     assert result["viz_error"] is None
 
 
 async def test_no_filters_applied_without_dashboard_id():
-    """Verify no filters are added when dashboard_id is not provided."""
     chart = _modern_chart(id=124, viz_type="big_number")
 
     mock_query = Mock()
@@ -168,12 +126,10 @@ async def test_no_filters_applied_without_dashboard_id():
         )
         await command.run()
 
-    # Filter list unchanged (no dashboard filters added).
     assert mock_query.filters == [{"col": "existing", "op": "==", "val": "filter"}]
 
 
 async def test_extra_filters_parameter_takes_precedence():
-    """Verify extra_filters is used instead of fetching from dashboard."""
     chart = _modern_chart(id=125, viz_type="pie")
 
     mock_query = Mock()
@@ -184,7 +140,6 @@ async def test_extra_filters_parameter_takes_precedence():
     extra_filters_json = '[{"col": "state", "op": "==", "val": "CA"}]'
     command = _make_command(chart, dashboard_id=42, extra_filters=extra_filters_json)
 
-    # Spy on the dashboard-metadata fetch to ensure it is NOT consulted.
     with (
         _patch_active_viz_types({}),
         _patch_table(),
@@ -204,14 +159,11 @@ async def test_extra_filters_parameter_takes_precedence():
         )
         await command.run()
 
-    # The dashboard-metadata path is skipped when extra_filters is provided.
     mock_build_dashboard.assert_not_awaited()
-    # extra_filters were parsed and applied.
     assert mock_query.filters == [{"col": "state", "op": "==", "val": "CA"}]
 
 
 async def test_handles_multiple_queries_in_query_context():
-    """Verify filters are added to ALL queries in the query context."""
     chart = _modern_chart(id=126, viz_type="heatmap_v2")
 
     mock_query1 = Mock()
@@ -255,7 +207,6 @@ async def test_handles_multiple_queries_in_query_context():
 
 
 async def test_handles_empty_dashboard_filters():
-    """Verify graceful handling when dashboard has no filters configured."""
     chart = _modern_chart(id=127, viz_type="echarts_area")
 
     mock_query = Mock()
@@ -282,13 +233,14 @@ async def test_handles_empty_dashboard_filters():
         )
         await command.run()
 
-    # No filters added (empty list case), but the resolver was still called.
     assert mock_query.filters == []
     mock_get_filters.assert_awaited()
 
 
 async def test_invalid_json_in_extra_filters_raises_error():
-    """Verify that invalid JSON in extra_filters surfaces as a viz_error."""
+    """Invalid JSON in extra_filters must surface as viz_error,
+    not propagate as an exception.
+    """
     chart = _modern_chart(id=128, viz_type="pie")
 
     mock_query = Mock()
@@ -296,7 +248,6 @@ async def test_invalid_json_in_extra_filters_raises_error():
     mock_qc = MagicMock()
     mock_qc.queries = [mock_query]
 
-    # Invalid JSON string - missing closing brace.
     invalid_json = '{"col": "state", "op": "==", "val": ["CA"]'
     command = _make_command(chart, dashboard_id=42, extra_filters=invalid_json)
 
@@ -320,7 +271,6 @@ async def test_invalid_json_in_extra_filters_raises_error():
 
 
 async def test_none_query_context_raises_chart_invalid_error():
-    """Verify that an absent query context surfaces as a viz_error."""
     chart = _modern_chart(id=129, viz_type="echarts_timeseries")
     command = _make_command(chart, dashboard_id=None)
 
@@ -342,7 +292,6 @@ async def test_none_query_context_raises_chart_invalid_error():
 
 
 async def test_legacy_chart_without_datasource_raises_error():
-    """Verify that a legacy chart without datasource surfaces a viz_error."""
     chart = Slice(
         id=130,
         slice_name="Legacy Chart",
@@ -374,7 +323,6 @@ async def test_legacy_chart_without_datasource_raises_error():
 
 
 async def test_legacy_chart_warm_up_with_dashboard():
-    """Test successful legacy chart warm-up with dashboard filters."""
     chart = Slice(
         id=131,
         slice_name="Legacy Table",
@@ -416,7 +364,6 @@ async def test_legacy_chart_warm_up_with_dashboard():
 
 
 async def test_legacy_chart_warm_up_without_dashboard():
-    """Test successful legacy chart warm-up without dashboard."""
     chart = Slice(
         id=134,
         slice_name="Legacy Table",
@@ -451,7 +398,6 @@ async def test_legacy_chart_warm_up_without_dashboard():
 
 
 async def test_non_legacy_chart_returns_first_error():
-    """Test that the first query error is returned when multiple exist."""
     chart = _modern_chart(id=132, viz_type="echarts_timeseries")
 
     mock_query = Mock()
@@ -486,14 +432,8 @@ async def test_non_legacy_chart_returns_first_error():
 
 
 async def test_validate_with_integer_chart_id():
-    """Validation resolves an integer chart id from the DB.
-
-    1:1 with upstream ``test_validate_with_integer_chart_id``: passing an
-    integer chart id (133) makes ``validate`` query the session for the
-    matching ``Slice`` and stash it. The upstream assertions
-    (``command._chart_or_id == chart`` and the session query was issued
-    once) map to ``command._chart is chart`` and a single
-    ``session.execute`` round-trip in the async port.
+    """validate with an integer chart_id must issue exactly one session.execute
+    and stash the loaded Slice.
     """
     chart = Slice(id=133, slice_name="Test Chart")
     dao = Mock()
@@ -511,12 +451,7 @@ async def test_validate_with_integer_chart_id():
 
 
 async def test_validate_with_loaded_chart_is_noop():
-    """A command built with a loaded Slice does not hit the session.
-
-    Mirrors upstream ``validate`` resolving an integer chart-id from the DB;
-    in the port, ``validate`` returns immediately when a chart was supplied
-    (the caller eager-loaded it), so no query is issued.
-    """
+    """validate must short-circuit without a DB query when the chart is pre-loaded."""
     chart = Slice(id=133, slice_name="Test Chart")
     dao = Mock()
     dao.session = MagicMock()
@@ -529,7 +464,6 @@ async def test_validate_with_loaded_chart_is_noop():
 
 
 async def test_validate_with_nonexistent_chart_id():
-    """Validation raises when the chart id does not exist."""
     from superset.exceptions import ObjectNotFoundError
 
     dao = Mock()

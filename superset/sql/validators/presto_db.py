@@ -14,8 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Presto / Trino DB SQL validator ported 1:1 from
-``superset_old/sql_validators/presto_db.py``.
+"""Presto / Trino DB SQL validator.
 
 Runs the SQL with ``EXPLAIN (TYPE VALIDATE)`` against the live database
 to surface semantic errors (e.g. missing tables, type mismatches) that
@@ -43,11 +42,6 @@ class PrestoSQLValidationError(Exception):
 
 
 class PrestoDBSQLValidator(BaseSQLValidator):
-    """Validate SQL queries using Presto's built-in EXPLAIN subtype.
-
-    1:1 with ``superset_old/sql_validators/presto_db.py::PrestoDBSQLValidator``.
-    """
-
     name = "PrestoDBSQLValidator"
 
     @classmethod
@@ -60,17 +54,12 @@ class PrestoDBSQLValidator(BaseSQLValidator):
         # pylint: disable=too-many-locals
         db_engine_spec = database.db_engine_spec
 
-        # Hook to allow environment-specific mutation (usually comments) to the SQL
         sql = database.mutate_sql_based_on_config(str(statement))
-
-        # Transform the final statement to an explain call before sending it on
-        # to presto to validate
         sql = f"EXPLAIN (TYPE VALIDATE) {sql}"
 
-        # Invoke the query against presto. NB this deliberately doesn't use the
-        # engine spec's handle_cursor implementation since we don't record
-        # these EXPLAIN queries done in validation as proper Query objects
-        # in the superset ORM.
+        # Deliberately doesn't use the engine spec's handle_cursor implementation
+        # since we don't record these EXPLAIN queries as proper Query objects in
+        # the superset ORM.
         from pyhive.exc import DatabaseError
 
         try:
@@ -112,18 +101,12 @@ class PrestoDBSQLValidator(BaseSQLValidator):
                 ) from db_error
             error_args: dict[str, Any] = db_error.args[0]
 
-            # Confirm the two fields we need to be able to present an annotation
-            # are present in the error response -- a message, and a location.
             if "message" not in error_args:
                 raise PrestoSQLValidationError(
                     "The pyhive presto client did not report an error message"
                 ) from db_error
             if "errorLocation" not in error_args:
-                # Pylint is confused about the type of error_args, despite the hints
-                # and checks above.
                 message = error_args["message"] + "\n(Error location unknown)"
-                # If we have a message but no error location, return the message and
-                # set the location as the beginning.
                 return SQLValidationAnnotation(
                     message=message, line_number=1, start_column=1, end_column=1
                 )
@@ -154,9 +137,8 @@ class PrestoDBSQLValidator(BaseSQLValidator):
     ) -> list[SQLValidationAnnotation]:
         """Validate SQL via Presto's ``EXPLAIN (TYPE VALIDATE)`` subtype.
 
-        1:1 with the original except for using
-        :func:`Database.get_sqla_engine` (sync context manager) rather
-        than the deprecated raw connection helper.
+        Uses :func:`Database.get_sqla_engine` (sync context manager)
+        rather than the deprecated raw connection helper.
         """
         parsed_script = SQLScript(sql, engine=database.db_engine_spec.engine)
 

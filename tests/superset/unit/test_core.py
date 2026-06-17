@@ -14,8 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Ported from tests/unit_tests/core_tests.py (Flask-free)."""
-
 from __future__ import annotations
 
 from copy import deepcopy

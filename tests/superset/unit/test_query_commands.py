@@ -150,10 +150,9 @@ async def test_export_saved_queries(mock_query_dao):
         "sqlalchemy_uri": "sqlite:///test.db",
     }
     mock_q.database = mock_db
-    # validate() now applies the user-scoped access filter (IDOR fix, 1:1 with
-    # the original ``ExportModelsCommand.validate`` → ``find_by_ids`` →
-    # ``SavedQueryFilter`` base_filter). It calls ``dao.count(filters=...)`` and
-    # raises ObjectNotFoundError unless the accessible count == requested count.
+    # validate() applies the user-scoped access filter (IDOR fix): calls
+    # ``dao.count(filters=...)`` and raises ObjectNotFoundError unless the
+    # accessible count == requested count.
     # Mock the count to report the single requested id as accessible (owned).
     mock_query_dao.count = AsyncMock(return_value=1)
     # The export command loads the query via ``session.execute(...).scalars()
@@ -181,9 +180,6 @@ async def test_export_saved_queries(mock_query_dao):
         assert content["sql"] == "SELECT 1"
 
 
-# --- CreateSavedQueryCommand tests ---
-
-
 async def test_create_saved_query_validates_label(mock_query_dao):
     cmd = CreateSavedQueryCommand(dao=mock_query_dao, data={"sql": "SELECT 1"})
     with pytest.raises(CommandInvalidError, match="label"):
@@ -205,7 +201,6 @@ async def test_create_saved_query_success(mock_query_dao):
     mock_instance.sql = "SELECT 1"
     mock_saved_query_cls = MagicMock(return_value=mock_instance)
 
-    # Patch the local import inside run() via superset.models.sql_lab module
     with patch.dict(
         "sys.modules",
         {
@@ -225,9 +220,6 @@ async def test_create_saved_query_success(mock_query_dao):
         # SavedQuery instance was among the adds.
         mock_query_dao.session.add.assert_any_call(mock_instance)
         mock_query_dao.session.flush.assert_awaited()
-
-
-# --- UpdateSavedQueryCommand tests ---
 
 
 async def test_update_saved_query_not_found(mock_query_dao):
@@ -251,9 +243,6 @@ async def test_update_saved_query_success(mock_query_dao):
     result = await cmd.execute()
     assert result.label == "New Label"
     mock_query_dao.session.flush.assert_awaited()
-
-
-# --- DeleteSavedQueryCommand tests ---
 
 
 async def test_delete_saved_query_not_found(mock_query_dao):

@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/chart/importers/v1/__init__.py``."""
+"""Chart import command — v1 format."""
 
 from __future__ import annotations
 
@@ -42,14 +42,12 @@ if TYPE_CHECKING:
 class ImportChartsCommand(AsyncImportModelsCommand):
     """Import charts from a ZIP bundle.
 
-    Ported 1:1 from superset_old/commands/chart/importers/v1/.
     Resolves dependencies: databases -> datasets -> charts.
     Handles UUID-based dedup, annotation filtering, params serialization,
     datasource cross-referencing via UUIDs, and owner management.
     """
 
-    # 1:1 with upstream ``validate_metadata_type(metadata, dao.model_cls.__name__)``
-    # — the manifest's ``type`` must match the exported resource type (``Slice``).
+    # The manifest's ``type`` must match the exported resource type (``Slice``).
     _expected_type = "Slice"
 
     def __init__(
@@ -84,10 +82,7 @@ class ImportChartsCommand(AsyncImportModelsCommand):
         return result is not None
 
     async def run(self) -> None:  # noqa: C901
-        """Orchestrate import: databases -> datasets -> charts.
-
-        Ported 1:1 from ImportChartsCommand._import in the original.
-        """
+        """Orchestrate import: databases -> datasets -> charts."""
         if self._configs is None:
             raise CommandInvalidError("validate() must be called before run()")
         if self._dao is None:
@@ -96,7 +91,6 @@ class ImportChartsCommand(AsyncImportModelsCommand):
         configs = self._configs
         session = self._dao.session
 
-        # 1. Discover datasets associated with charts
         dataset_uuids: set[str] = set()
         for file_name, config in configs.items():
             if file_name.startswith("charts/") and isinstance(config, dict):
@@ -104,7 +98,6 @@ class ImportChartsCommand(AsyncImportModelsCommand):
                 if ds_uuid:
                     dataset_uuids.add(ds_uuid)
 
-        # 2. Discover databases associated with needed datasets
         database_uuids: set[str] = set()
         for file_name, config in configs.items():
             if (
@@ -116,7 +109,6 @@ class ImportChartsCommand(AsyncImportModelsCommand):
                 if db_uuid:
                     database_uuids.add(db_uuid)
 
-        # 3. Import related databases (overwrite=False)
         database_ids: dict[str, int] = {}
         for file_name, config in configs.items():
             if (
@@ -127,7 +119,6 @@ class ImportChartsCommand(AsyncImportModelsCommand):
                 db = await _import_database(session, config)
                 database_ids[str(db.uuid)] = db.id
 
-        # 4. Import datasets with correct parent ref (overwrite=False)
         datasets: dict[str, Any] = {}
         for file_name, config in configs.items():
             if (
@@ -139,7 +130,6 @@ class ImportChartsCommand(AsyncImportModelsCommand):
                 dataset = await _import_dataset(session, config)
                 datasets[str(dataset.uuid)] = dataset
 
-        # 5. Import charts with correct parent ref
         for file_name, config in configs.items():
             if (
                 file_name.startswith("charts/")
@@ -150,7 +140,6 @@ class ImportChartsCommand(AsyncImportModelsCommand):
                 if config.get("viz_type") == "filter_box":
                     continue
 
-                # Update datasource id, type, and name from resolved dataset
                 dataset = datasets[config["dataset_uuid"]]
                 dataset_dict = {
                     "datasource_id": dataset.id,
@@ -180,8 +169,7 @@ class ImportChartsCommand(AsyncImportModelsCommand):
                     )
 
     async def _import_single(self, file_name: str, content: dict[str, Any]) -> None:
-        # Not used — run() handles the full orchestration
-        pass
+        pass  # run() handles full orchestration
 
     def _raw_contents(self) -> dict[str, str] | None:
         """Return the raw bundle ``{filename: yaml_text}`` mapping if available.

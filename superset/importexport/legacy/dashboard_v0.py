@@ -16,8 +16,6 @@
 # under the License.
 """Legacy (v0) dashboard importer.
 
-Direct port of ``superset_old/commands/dashboard/importers/v0.py``.
-
 A v0 dashboard bundle is a single JSON document with two keys:
 
 * ``datasources`` — list of ``SqlaTable`` objects (encoded with
@@ -55,11 +53,6 @@ from superset.utils.dashboard_filter_scopes_converter import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Local re-implementations of the legacy ImportExportMixin helpers.
-# ---------------------------------------------------------------------------
 
 
 def _params_dict(obj: Any) -> dict[str, Any]:
@@ -109,11 +102,11 @@ def _copy_export_fields(obj: Any) -> Any:
 
 
 def _reset_ownership(obj: Any, user: Any | None = None) -> None:
-    """Mirror :func:`ImportExportMixin.reset_ownership` 1:1.
+    """Reset ownership on an imported object.
 
     Owners default to ``[user]`` when supplied so the new dashboard
     belongs to the importing user; otherwise ownership is left to be
-    populated by the caller (mirroring the original ``g.user`` fallback).
+    populated by the caller.
     """
     obj.created_by = None
     obj.changed_by = None
@@ -125,10 +118,8 @@ def _reset_ownership(obj: Any, user: Any | None = None) -> None:
 def _current_orm_user(session: Any) -> Any | None:
     """Resolve the importing user as an ORM row bound to ``session``.
 
-    Mirrors the ``if g and hasattr(g, "user"): self.owners = [g.user]``
-    fallback in the original ``ImportExportMixin.reset_ownership``
-    (superset_old/models/helpers.py:448-457).  The liteset ContextVar may
-    hold a ``CachedUser`` (not ORM-mapped), so re-fetch by id.
+    The liteset ContextVar may hold a ``CachedUser`` (not ORM-mapped),
+    so re-fetch by id.
     """
     from superset.utils.core import get_current_user
 
@@ -147,18 +138,13 @@ def _get_datasource_by_name(
     catalog: str | None,
     schema: str | None,
 ) -> Any | None:
-    """Resolve a :class:`SqlaTable` by name, mirroring the original helper.
-
-    Mirrors ``SqlaTable.get_datasource_by_name`` in
-    ``superset_old/connectors/sqla/models.py``.
-    """
+    """Resolve a :class:`SqlaTable` by name."""
     from superset.models.connectors import SqlaTable
     from superset.models.core import Database
 
-    # 1:1 with the original: the catalog filter ALWAYS applies (None →
-    # ``WHERE catalog IS NULL``), and the schema match is done in Python so
-    # '' and NULL compare equal across dialects
-    # (superset_old/connectors/sqla/models.py:1218-1238).
+    # The catalog filter ALWAYS applies (None → ``WHERE catalog IS NULL``),
+    # and the schema match is done in Python so '' and NULL compare equal
+    # across dialects.
     schema = schema or None
     query = (
         session.query(SqlaTable)
@@ -171,11 +157,6 @@ def _get_datasource_by_name(
         if schema == (tbl.schema or None):
             return tbl
     return None
-
-
-# ---------------------------------------------------------------------------
-# Slice & dashboard import helpers
-# ---------------------------------------------------------------------------
 
 
 def import_chart(
@@ -261,10 +242,8 @@ def import_dashboard(  # noqa: C901
 
     logger.info("Started import of the dashboard: %s", dashboard_to_import)
     logger.info("Dashboard has %d slices", len(dashboard_to_import.slices))
-    # Copy slices because the per-slice import mutates the slice's
-    # dashboard collection.
+    # Copy slices because the per-slice import mutates the slice's dashboard collection.
     slices = copy(dashboard_to_import.slices)
-
     # Clear the slug to avoid uniqueness conflicts on re-import.
     dashboard_to_import.slug = None
 
@@ -290,7 +269,6 @@ def import_dashboard(  # noqa: C901
         new_slc_id = import_chart(session, slc, remote_slc, import_time=import_time)
         new_slice_ids.append(new_slc_id)
         old_to_new_slc_id_dict[slc.id] = new_slc_id
-        # update json metadata that deals with slice ids
         new_slc_id_str = str(new_slc_id)
         old_slc_id_str = str(slc.id)
         if (
@@ -310,11 +288,10 @@ def import_dashboard(  # noqa: C901
     # ``filter_immune_slice_fields`` are converted to ``filter_scopes``;
     # legacy bundles still carry the old keys, which are translated
     # forward here.
-    # Single ``filter_scopes`` variable through all three phases — 1:1 with
-    # upstream v0.py:210-225 (a split ``converted_scopes`` name caused
-    # NameError for bundles carrying ``filter_scopes`` without the legacy
-    # ``filter_immune_*`` keys, and passed the wrong scopes when both were
-    # present).
+    # Single ``filter_scopes`` variable through all three phases; a split
+    # ``converted_scopes`` name caused NameError for bundles carrying
+    # ``filter_scopes`` without the legacy ``filter_immune_*`` keys, and
+    # passed the wrong scopes when both were present.
     # ``Any``-typed: phase 2 holds the int-keyed convert_filter_scopes
     # output, phase 3 the str-keyed metadata dict (upstream is untyped here).
     filter_scopes: Any = {}
@@ -333,7 +310,6 @@ def import_dashboard(  # noqa: C901
             old_filter_scopes=filter_scopes,
         )
 
-    # Override the dashboard if it already exists (matching by remote_id).
     existing_dashboard = None
     for dash in session.query(Dashboard).all():
         if (
@@ -345,8 +321,6 @@ def import_dashboard(  # noqa: C901
     dashboard_to_import = _copy_export_fields(dashboard_to_import)
     dashboard_to_import.id = None
     _reset_ownership(dashboard_to_import, user=_current_orm_user(session))
-    # ``position_json`` may be empty for dashboards built only via the
-    # chart-edit page without re-arranging.
     if dashboard_to_import.position_json:
         alter_positions(dashboard_to_import, old_to_new_slc_id_dict)
     _alter_params(dashboard_to_import, import_time=import_time)
@@ -373,17 +347,13 @@ def import_dashboard(  # noqa: C901
     dashboard.slices = (
         session.query(Slice).filter(Slice.id.in_(old_to_new_slc_id_dict.values())).all()
     )
-    # Migrate any filter-box charts to native dashboard filters.
     migrate_dashboard(dashboard)
     session.flush()
     return dashboard.id
 
 
 def decode_dashboards(o: dict[str, Any]) -> Any:
-    """JSON ``object_hook`` that reconstructs models from the legacy export.
-
-    Mirrors ``superset_old/commands/dashboard/importers/v0.py:decode_dashboards``.
-    """
+    """JSON ``object_hook`` that reconstructs models from the legacy export."""
     from superset.models.connectors import SqlaTable, SqlMetric, TableColumn
     from superset.models.dashboard import Dashboard
     from superset.models.slice import Slice
@@ -435,17 +405,8 @@ def import_dashboards(
         )
 
 
-# ---------------------------------------------------------------------------
-# Public command
-# ---------------------------------------------------------------------------
-
-
 class ImportDashboardsCommand:
-    """Import dashboards in legacy JSON format.
-
-    Direct port of
-    ``superset_old/commands/dashboard/importers/v0.py:ImportDashboardsCommand``.
-    """
+    """Import dashboards in legacy JSON format."""
 
     # pylint: disable=unused-argument
     def __init__(
@@ -489,12 +450,10 @@ class ImportDashboardsCommand:
     def validate(self) -> None:
         """Ensure every file is JSON before any import is attempted.
 
-        1:1 with the original v0 command (superset_old/commands/dashboard/
-        importers/v0.py:340-347): a malformed JSON re-raises the ValueError
-        bare. Converting it to IncorrectVersionError would make the
-        dispatcher silently skip this version and report the misleading
-        "Could not find a valid command to import file" instead of the real
-        JSON parse error.
+        A malformed JSON re-raises the ValueError bare. Converting it to
+        IncorrectVersionError would make the dispatcher silently skip this
+        version and report the misleading "Could not find a valid command to
+        import file" instead of the real JSON parse error.
         """
         for _file_name, content in self.contents.items():
             try:

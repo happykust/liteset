@@ -30,14 +30,8 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy.engine import make_url
 
-# ---------------------------------------------------------------------------
-# Minimal mock DB object used across tests
-# ---------------------------------------------------------------------------
-
 
 class _DB:
-    """Minimal database mock that satisfies get_sync_engine's introspection."""
-
     sqlalchemy_uri = "sqlite:///test.db"
     sqlalchemy_uri_decrypted = sqlalchemy_uri
     impersonate_user = False
@@ -57,16 +51,15 @@ class _DB:
 # ---------------------------------------------------------------------------
 # Finding 2: adjust_engine_params exception propagates (not swallowed)
 # Regression: liteset had `try: ... except Exception: logger.debug(...)` around
-# the adjust_engine_params call.  The original
-# (superset_old/models/core.py:500-505) calls it bare — exceptions propagate.
+# the adjust_engine_params call.  It is called bare — exceptions propagate.
 # ---------------------------------------------------------------------------
 
 
 def test_adjust_engine_params_exception_propagates(monkeypatch: Any) -> None:
     """adjust_engine_params raising must propagate out of _build_engine_kwargs_sync.
 
-    Original: superset_old/models/core.py:500-505 calls adjust_engine_params
-    with no surrounding try-except; exceptions propagate to the caller.
+    The function calls adjust_engine_params with no surrounding try-except;
+    exceptions propagate to the caller.
     Liteset regression: the call was wrapped in `except Exception: logger.debug`
     which silently swallowed the error and continued with the unmodified URI —
     the connection would then succeed against the wrong namespace or fail later
@@ -95,11 +88,8 @@ def test_adjust_engine_params_exception_propagates(monkeypatch: Any) -> None:
 
 
 def test_adjust_engine_params_success_updates_uri(monkeypatch: Any) -> None:
-    """When adjust_engine_params succeeds, the returned URL is used (not ignored).
-
-    This is the happy-path counterpart: confirms the result of
-    adjust_engine_params is applied to sync_uri.
-    """
+    # Happy-path counterpart: the result of adjust_engine_params must be
+    # applied to sync_uri, not ignored.
     import superset.utils.database as ud
 
     spec = MagicMock()
@@ -120,7 +110,6 @@ def test_adjust_engine_params_success_updates_uri(monkeypatch: Any) -> None:
     )
 
     spec.adjust_engine_params.assert_called_once()
-    # The returned URL should be rendered back into sync_uri.
     assert "adjusted" in result_uri
 
 
@@ -128,20 +117,13 @@ def test_adjust_engine_params_success_updates_uri(monkeypatch: Any) -> None:
 # Finding 1: ENGINE_CONTEXT_MANAGER scope — all parameter prep inside the CM
 # Regression: liteset called _build_engine_kwargs_sync and
 # _apply_connection_hooks OUTSIDE the CM, then only called create_engine
-# inside it.  The original (superset_old/models/core.py:469-478) runs the
-# entire _get_sqla_engine body (including adjust_engine_params, impersonation,
-# update_params_from_encrypted_extra, and DB_CONNECTION_MUTATOR) inside the
-# engine_context_manager.
+# inside it.  The function runs the entire _get_sqla_engine body (including
+# adjust_engine_params, impersonation, update_params_from_encrypted_extra,
+# and DB_CONNECTION_MUTATOR) inside the engine_context_manager.
 # ---------------------------------------------------------------------------
 
 
 def test_engine_context_manager_wraps_param_preparation(monkeypatch: Any) -> None:
-    """_build_engine_kwargs_sync and _apply_connection_hooks must be called
-    while the ENGINE_CONTEXT_MANAGER is active.
-
-    1:1 with superset_old/models/core.py:469-478 where the entire
-    _get_sqla_engine body runs inside engine_context_manager.
-    """
     import superset.utils.database as ud
 
     call_log: list[str] = []
@@ -188,7 +170,6 @@ def test_engine_context_manager_wraps_param_preparation(monkeypatch: Any) -> Non
     with ud.get_sync_engine(_DB()):
         pass
 
-    # Verify that both param-prep calls happen AFTER cm_enter and BEFORE cm_exit.
     assert "cm_enter" in call_log
     assert "build_kwargs" in call_log
     assert "apply_hooks" in call_log
@@ -251,9 +232,6 @@ def test_engine_context_manager_exception_in_param_prep_propagates(
 # (post-impersonation) sqlalchemy_url it was passed, so DB_CONNECTION_MUTATOR
 # received the impersonated name instead of the original effective_username.
 #
-# Original: superset_old/models/core.py:507 computes effective_username BEFORE
-# impersonate_user (line 527-534) and uses the same value for both
-# impersonate_user and DB_CONNECTION_MUTATOR (line 544).
 # ---------------------------------------------------------------------------
 
 
@@ -262,7 +240,7 @@ def test_build_engine_kwargs_returns_pre_impersonation_effective_username() -> N
 
     When impersonate_user rewrites the URL username, the 3rd returned value
     must be the username computed BEFORE the rewrite (from the post-adjust,
-    pre-impersonation URL) — 1:1 with superset_old/models/core.py:507.
+    pre-impersonation URL).
     """
     import superset.utils.database as ud
 
@@ -320,8 +298,6 @@ def test_db_connection_mutator_receives_pre_impersonation_username(
     url.username; after impersonation rewrites the URL the recomputed value
     diverges from the original.
 
-    Original: superset_old/models/core.py:507 captures effective_username BEFORE
-    impersonate_user (line 527) and reuses it for DB_CONNECTION_MUTATOR (line 544).
     """
     import superset.utils.database as ud
 

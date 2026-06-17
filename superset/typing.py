@@ -41,12 +41,8 @@ class GenericDataType(IntEnum):
     BOOLEAN = 3
 
 
-# ---------------------------------------------------------------------------
-# Type aliases ported from superset_old/superset_typing.py
-# These are re-exported here so ``from superset.typing import X`` keeps working
-# for all callers that previously used ``from superset.superset_typing import X``.
-# ---------------------------------------------------------------------------
-
+# Re-exported so ``from superset.typing import X`` keeps working for callers that
+# previously used ``from superset.superset_typing import X``.
 SQLType = Union[TypeEngine[Any], type[TypeEngine[Any]]]
 
 
@@ -177,8 +173,6 @@ class DatasourceProtocol(Protocol):
 
 @runtime_checkable
 class CRUDDAOProtocol(Protocol):
-    """Protocol for standard CRUD DAO operations."""
-
     async def find_by_id(self, model_id: int | str) -> Any: ...
     async def find_by_ids(self, model_ids: Sequence[int | str]) -> list[Any]: ...
     async def find_all(
@@ -203,8 +197,6 @@ class CRUDDAOProtocol(Protocol):
 
 @runtime_checkable
 class ChartDAOProtocol(CRUDDAOProtocol, Protocol):
-    """Protocol for AsyncChartDAO."""
-
     async def get_by_id_or_uuid(self, id_or_uuid: int | str) -> Any: ...
     async def find_by_id_with_options(
         self, chart_id: int, options: list[Any] | None = None
@@ -217,8 +209,6 @@ class ChartDAOProtocol(CRUDDAOProtocol, Protocol):
 
 @runtime_checkable
 class DashboardDAOProtocol(CRUDDAOProtocol, Protocol):
-    """Protocol for AsyncDashboardDAO."""
-
     async def get_by_id_or_slug(self, id_or_slug: int | str) -> Any: ...
     async def get_full_by_id_or_slug(
         self,
@@ -252,8 +242,6 @@ class DashboardDAOProtocol(CRUDDAOProtocol, Protocol):
 
 @runtime_checkable
 class DatabaseDAOProtocol(CRUDDAOProtocol, Protocol):
-    """Protocol for AsyncDatabaseDAO."""
-
     async def get_ssh_tunnel(self, database_id: int) -> Any: ...
     async def validate_uniqueness(self, database_name: str) -> bool: ...
     async def get_related_objects(self, database_id: int) -> dict[str, Any]: ...
@@ -270,8 +258,6 @@ class DatabaseDAOProtocol(CRUDDAOProtocol, Protocol):
 
 @runtime_checkable
 class DatasetDAOProtocol(CRUDDAOProtocol, Protocol):
-    """Protocol for AsyncDatasetDAO."""
-
     async def validate_uniqueness(
         self,
         database_id: int,
@@ -289,16 +275,12 @@ class DatasetDAOProtocol(CRUDDAOProtocol, Protocol):
 
 @runtime_checkable
 class EmbeddedDAOProtocol(CRUDDAOProtocol, Protocol):
-    """Protocol for AsyncEmbeddedDashboardDAO."""
-
     async def upsert(self, dashboard_id: int, allowed_domains: list[str]) -> Any: ...
     async def find_by_dashboard_id(self, dashboard_id: int) -> Any: ...
 
 
 @runtime_checkable
 class KeyValueDAOProtocol(Protocol):
-    """Protocol for AsyncKeyValueDAO."""
-
     async def set_value(
         self,
         resource: str,
@@ -324,8 +306,6 @@ class KeyValueDAOProtocol(Protocol):
 
 @runtime_checkable
 class QueryDAOProtocol(CRUDDAOProtocol, Protocol):
-    """Protocol for AsyncQueryDAO."""
-
     async def stop_query(self, client_id: str) -> Any: ...
     async def get_queries_changed_after(
         self, user_id: int, last_updated_ms: float | int
@@ -334,22 +314,16 @@ class QueryDAOProtocol(CRUDDAOProtocol, Protocol):
 
 @runtime_checkable
 class ColumnDAOProtocol(CRUDDAOProtocol, Protocol):
-    """Protocol for AsyncDatasetColumnDAO."""
-
     async def find_by_dataset_and_id(self, dataset_id: int, column_id: int) -> Any: ...
 
 
 @runtime_checkable
 class MetricDAOProtocol(CRUDDAOProtocol, Protocol):
-    """Protocol for AsyncDatasetMetricDAO."""
-
     async def find_by_dataset_and_id(self, dataset_id: int, metric_id: int) -> Any: ...
 
 
 @runtime_checkable
 class DatasourceDAOProtocol(Protocol):
-    """Protocol for AsyncDatasourceDAO."""
-
     async def get_datasource(
         self, datasource_type: str, datasource_id: int
     ) -> Any | None: ...
@@ -410,8 +384,6 @@ class SecurityManagerProtocol(Protocol):
 
 @runtime_checkable
 class RoleDAOProtocol(Protocol):
-    """Protocol for AsyncRoleDAO."""
-
     async def search(
         self,
         name_filter: str | None = None,
@@ -424,8 +396,6 @@ class RoleDAOProtocol(Protocol):
 
 @runtime_checkable
 class UserProtocol(Protocol):
-    """Protocol for the current_user dependency."""
-
     @property
     def id(self) -> int: ...
 

@@ -14,29 +14,18 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/dashboard/filter_state/create.py``.
+"""Create command for dashboard filter state entries.
 
-Mirrors the original layout — one Command per file under
-``commands/dashboard/filter_state/``.
+Storage goes through ``cache_manager.filter_state_cache``; the slot honours
+``FILTER_STATE_CACHE_CONFIG["CACHE_TYPE"]`` (metastore by default, Redis when
+configured) and owns the TTL (``CACHE_DEFAULT_TIMEOUT``).  Entry keys are
+``cache_key(resource_id, key)`` strings so that rows persist across server
+restarts.
 
-Storage goes through ``cache_manager.filter_state_cache`` exactly like the
-original (``superset_old/commands/dashboard/filter_state/create.py:42``):
-the slot honours ``FILTER_STATE_CACHE_CONFIG["CACHE_TYPE"]`` (metastore by
-default, Redis when configured) and owns the TTL
-(``CACHE_DEFAULT_TIMEOUT``).  Entry keys are the upstream
-``cache_key(resource_id, key)`` strings, so metastore rows land in the
-``superset_metastore_cache`` resource under uuid3 — entries written by an
-upstream Superset instance keep resolving after a migration.
-
-The original keys the per-tab dedup with
-``cache_key(session.get("_id"), tab_id, resource_id)`` so that repeated
-opens of the same session+tab+dashboard reuse the same key.  In
-Liteset there is no server-side session id, so the deterministic-key path uses
-``uuid5(NAMESPACE_DNS, "{user_id}:{dashboard_id}:{tab_id}")`` — same
-purpose, sourced from the JWT-authenticated user instead of the
-``session._id`` cookie.  When ``tab_id`` is falsy (None or empty string)
-we fall back to a random UUID, matching the original's falsy check
-(``if not key or not tab_id: key = random_key()``).
+Per-tab dedup uses a deterministic ``uuid5(NAMESPACE_DNS,
+"{user_id}:{dashboard_id}:{tab_id}")`` key sourced from the JWT-authenticated
+user.  When ``tab_id`` is falsy (None or empty string) a random UUID is used
+instead.
 """
 
 from __future__ import annotations
@@ -83,11 +72,8 @@ class CreateFilterStateCommand(AsyncBaseCommand[str]):
         self._cache = cache if cache is not None else _default_cache()
 
     async def validate(self) -> None:
-        # Dashboard must exist and be accessible — raises
-        # ``TemporaryCacheResourceNotFoundError`` /
-        # ``TemporaryCacheAccessDeniedError`` 1:1 with the original.
-        # Pass the Dashboard DAO (which has get_by_id_or_slug) — NOT the KV DAO.
-        # The real user is required so the can_access_dashboard gate is enforced.
+        # Pass Dashboard DAO (has get_by_id_or_slug), not the KV DAO.
+        # Real user required so can_access_dashboard gate is enforced.
         await check_access(
             self._dashboard_dao,
             self._dashboard_id,
@@ -96,21 +82,14 @@ class CreateFilterStateCommand(AsyncBaseCommand[str]):
         )
 
     async def run(self) -> str:
-        # Deterministic per-tab token: uuid5(user:dashboard:tab) replaces the
-        # original's session-contextual mapping (see module docstring).
-        # Falsy tab_id (None or "") always produces a fresh random key,
-        # matching the original ``if not key or not tab_id: key = random_key()``
-        # (superset_old/commands/dashboard/filter_state/create.py:37).
+        # Deterministic per-tab key: uuid5(user:dashboard:tab); falsy tab_id → random.
         if self._tab_id:
             seed = f"{self._user_id}:{self._dashboard_id}:{self._tab_id}"
             key = str(uuid.uuid5(uuid.NAMESPACE_DNS, seed))
         else:
             key = str(uuid.uuid4())
 
-        # 1:1 with ``cache_manager.filter_state_cache.set(
-        # cache_key(resource_id, key), entry)`` — the slot stamps the TTL
-        # (CACHE_DEFAULT_TIMEOUT) on every write, so a re-create resets the
-        # TTL window.
+        # Every write resets the TTL (CACHE_DEFAULT_TIMEOUT).
         entry = {"owner": self._user_id, "value": self._value}
         await self._cache.set(cache_key(self._dashboard_id, key), entry)
         return key

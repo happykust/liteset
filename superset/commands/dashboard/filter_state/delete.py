@@ -14,10 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/dashboard/filter_state/delete.py``.
+"""Delete command for dashboard filter state entries.
 
-Storage goes through ``cache_manager.filter_state_cache`` — see create.py
-for the CACHE_TYPE / key-format notes.
+Storage goes through ``cache_manager.filter_state_cache``; see create.py
+for CACHE_TYPE / key-format notes.
 """
 
 from __future__ import annotations
@@ -56,8 +56,7 @@ class DeleteFilterStateCommand(AsyncBaseCommand[bool]):
         self._cache = cache if cache is not None else _default_cache()
 
     async def validate(self) -> None:
-        # Pass the Dashboard DAO (which has get_by_id_or_slug) — NOT the KV DAO.
-        # The real user is required so the can_access_dashboard gate is enforced.
+        # Pass Dashboard DAO (has get_by_id_or_slug), not the KV DAO.
         await check_access(
             self._dashboard_dao,
             self._dashboard_id,
@@ -66,9 +65,8 @@ class DeleteFilterStateCommand(AsyncBaseCommand[bool]):
         )
 
     async def run(self) -> bool:
-        # 1:1 with original — read the entry first, raise
-        # ``TemporaryCacheAccessDeniedError`` if the current user is not
-        # the owner, then delete.  Returns ``False`` for missing keys.
+        # Raise TemporaryCacheAccessDeniedError if the current user is not the
+        # owner; returns False for missing keys (no 404).
         ck = cache_key(self._dashboard_id, self._key)
         entry = await self._cache.get(ck)
         if entry is None:

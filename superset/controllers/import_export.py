@@ -16,15 +16,11 @@
 # under the License.
 """Import/export controller for full asset bundles.
 
-1:1 port of ``superset_old/importexport/api.py`` (``ImportExportRestApi``).
-
-The original FAB ``method_permission_name`` map
-(``superset_old/views/base_api.py:258-280``) renames ``export`` ->
-``mulexport`` and ``import_`` -> ``add``, and FAB derives the resource name
-from the class name ``ImportExportRestApi`` (the original sets no
-``class_permission_name`` override).  The permission tuples below restore
-those exact names so existing roles (``can_mulexport on ImportExportRestApi``
-/ ``can_add on ImportExportRestApi``) keep passing the guard.
+The FAB ``method_permission_name`` map renames ``export`` -> ``mulexport`` and
+``import_`` -> ``add``, and FAB derives the resource name from the class name
+``ImportExportRestApi``.  The permission tuples below restore those exact names
+so existing roles (``can_mulexport on ImportExportRestApi`` /
+``can_add on ImportExportRestApi``) keep passing the guard.
 """
 
 from __future__ import annotations
@@ -62,14 +58,13 @@ class ImportExportController(Controller):
         session: Any,
         current_user: UserProtocol,
     ) -> Response[bytes]:
-        """GET /api/v1/assets/export/ -- export all assets as ZIP."""
         from datetime import datetime
 
         from superset.importexport.manager import AsyncFullAssetManager
 
-        # ONE timestamp for both the internal ZIP root and the download
-        # filename — 1:1 with the original which assigns it once (an export
-        # spanning a second boundary previously produced mismatched names).
+        # ONE timestamp for both the internal ZIP root and the download filename —
+        # assigned once so an export spanning a second boundary doesn't produce
+        # mismatched names.
         timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
         root = f"assets_export_{timestamp}"
 
@@ -114,9 +109,7 @@ class ImportExportController(Controller):
 
         # Original posts the field as ``bundle``; ``file`` kept as an alias.
         file: UploadFile | None = data.get("bundle") or data.get("file")
-        # ``request.files.get("bundle")`` falsy -> ``response_400()``.
         if file is None:
-            # Original ``response_400()`` -> HTTP 400.
             from superset.exceptions import CommandException
 
             exc = CommandException("Request is incorrect: bundle is required")
@@ -125,26 +118,19 @@ class ImportExportController(Controller):
 
         content = await file.read()
 
-        # ``if not is_zipfile(upload): raise IncorrectFormatError("Not a ZIP file")``
         if not is_zipfile(io.BytesIO(content)):
             raise IncorrectFormatError("Not a ZIP file")
 
-        # ``contents = get_contents_from_bundle(bundle)`` strips the root
-        # folder via ``remove_root`` and keeps only valid YAML entries.
         from superset.commands.importers.v1.utils import get_contents_from_bundle
 
         with ZipFile(io.BytesIO(content)) as bundle:
             contents = get_contents_from_bundle(bundle)
 
-        # ``if not contents: raise NoValidFilesFoundError()``
         if not contents:
             raise NoValidFilesFoundError()
 
-        # ``sparse = request.form.get("sparse") == "true"`` — strict string
-        # comparison (multipart values arrive as strings).
         sparse = data.get("sparse") == "true"
 
-        # ``json.loads(request.form[...]) if ... in request.form else None``
         def _parse_json(raw: str | dict[str, Any] | None) -> dict[str, Any] | None:
             if raw is None:
                 return None
@@ -158,9 +144,6 @@ class ImportExportController(Controller):
         )
 
         manager = AsyncFullAssetManager(session)
-        # Any schema/import failure raises (CommandInvalidError/IncorrectFormat/
-        # NoValidFilesFound) and is surfaced as the matching 4xx by the global
-        # exception handler — the manager no longer swallows them into a 200.
         await manager.import_assets(
             contents=contents,
             overwrite=bool(data.get("overwrite", False)),
@@ -177,5 +160,4 @@ class ImportExportController(Controller):
             user_id=current_user.id if current_user else None,
         )
 
-        # Original returns ``self.response(200, message="OK")``.
         return {"message": "OK"}

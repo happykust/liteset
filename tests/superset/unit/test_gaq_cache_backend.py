@@ -19,14 +19,10 @@
 These tests verify that:
 1. ``_build_gaq_redis`` raises ``UnsupportedCacheBackendError`` for any
    CACHE_TYPE that is not ``'RedisCache'`` or ``'RedisSentinelCache'``
-   (including None/absent) — 1:1 with
-   ``superset_old/async_events/async_query_manager.py::get_cache_backend``
-   which raises ``UnsupportedCacheBackendError("Unsupported cache backend
-   configuration")`` as its final else-branch.
+   (including None/absent).
 
 2. The cleanup background task is only started when GLOBAL_ASYNC_QUERIES is
-   enabled — 1:1 with ``SupersetAppInitializer.configure_async_queries``
-   which gates ``async_query_manager_factory.init_app`` on the feature flag.
+   enabled.
 """
 
 from __future__ import annotations
@@ -67,8 +63,8 @@ def _settings(**kw: object) -> SimpleNamespace:
 def test_build_gaq_redis_raises_for_unsupported_cache_type() -> None:
     """CACHE_TYPE='MemcachedCache' must raise UnsupportedCacheBackendError.
 
-    1:1 with original get_cache_backend: any type other than 'RedisCache' or
-    'RedisSentinelCache' raises rather than silently falling back.
+    Any type other than 'RedisCache' or 'RedisSentinelCache' raises rather
+    than silently falling back.
     """
     settings = _settings(
         global_async_queries_cache_backend={"CACHE_TYPE": "MemcachedCache"}
@@ -139,8 +135,8 @@ def test_build_gaq_redis_unsupported_error_message() -> None:
 def test_gaq_disabled_uses_fallback_redis_not_build_gaq() -> None:
     """When GLOBAL_ASYNC_QUERIES is False, _build_gaq_redis must NOT be called.
 
-    1:1 with configure_async_queries: async_query_manager_factory.init_app
-    (and therefore get_cache_backend) is only invoked when the feature flag is on.
+    async_query_manager_factory.init_app (and therefore get_cache_backend) is
+    only invoked when the feature flag is on.
 
     This test patches the feature_flag_manager singleton directly (the one that
     on_startup imports from superset.utils.feature_flags) so the flag check

@@ -1,9 +1,3 @@
-"""Integration tests for authentication flows.
-
-Tests the full auth chain: middleware -> session decoder / JWT -> DAO -> user.
-Uses in-memory SQLite with real FAB-compatible table schemas.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -98,9 +92,6 @@ class FabPermissionView(Base):
     view_menu = relationship("FabViewMenu")
 
 
-# --- Mock data classes ---
-
-
 @dataclass
 class MockRole:
     id: int = 1
@@ -126,9 +117,6 @@ class MockDashboard:
     roles: list = field(default_factory=list)
     owners: list = field(default_factory=list)
     created_by_fk: int | None = None
-
-
-# --- Fixtures ---
 
 
 @pytest.fixture
@@ -232,11 +220,7 @@ async def whoami(request: Request[Any, Any, Any]) -> dict[str, Any]:
     }
 
 
-# --- Tests ---
-
-
 async def test_cookie_auth_full_flow(db_engine):
-    """Test full cookie auth flow: cookie -> decode -> DB lookup -> user."""
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
 
     async def mock_resolve(self, connection, user_id):
@@ -288,7 +272,6 @@ async def test_cookie_auth_full_flow(db_engine):
 
 
 async def test_inactive_user_rejected(db_engine):
-    """Inactive users should be rejected."""
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
 
     async def mock_resolve(self, connection, user_id):
@@ -351,10 +334,8 @@ async def test_inactive_user_rejected(db_engine):
 async def test_csrf_token_endpoint():
     """CSRF token endpoint requires ``can_read on SecurityRestApi``.
 
-    1:1 upstream ``@protect()`` + ``@permission_name("read")``
-    (superset_old/security/api.py:111-115); the PVM is part of
-    ``_STANDARD_VIEW_PERMISSIONS`` (sync_roles.py:405) so every standard
-    role carries it. Supply an authenticated user holding the PVM via
+    The PVM is part of ``_STANDARD_VIEW_PERMISSIONS`` (sync_roles.py:405) so every
+    standard role carries it. Supply an authenticated user holding the PVM via
     middleware so the request reaches the handler and returns a token.
     """
     from litestar.middleware import ASGIMiddleware
@@ -393,7 +374,6 @@ async def test_csrf_token_endpoint():
 
 
 async def test_csrf_token_endpoint_requires_auth():
-    """Unauthenticated callers get 401 from the csrf endpoint guard."""
     from litestar.middleware import ASGIMiddleware
 
     class _InjectAnonUser(ASGIMiddleware):
@@ -416,7 +396,6 @@ async def test_csrf_token_endpoint_requires_auth():
 
 
 async def test_guest_token_flow():
-    """Test guest token creation and validation via JWT."""
     create_guest_access_token(
         secret_key=SECRET_KEY,
         user={"username": "embed_user", "first_name": "Embed", "last_name": "User"},
@@ -441,7 +420,6 @@ async def test_guest_token_flow():
 
 
 async def test_redis_cache_hit():
-    """Test that Redis cache hit returns CachedUser with roles."""
     mock_redis = AsyncMock()
     cached_user_data = json.dumps(
         {
@@ -489,7 +467,6 @@ async def test_redis_cache_hit():
 
 
 async def test_redis_cache_rejects_inactive():
-    """Deactivated users in Redis cache should be rejected."""
     mock_redis = AsyncMock()
     cached_user_data = json.dumps(
         {
@@ -540,7 +517,6 @@ async def test_redis_cache_rejects_inactive():
 
 
 async def test_redis_cache_invalidation():
-    """Test that cache invalidation deletes correct keys."""
     from superset.security.manager import AsyncSecurityManager
 
     mock_redis = AsyncMock()
@@ -558,9 +534,6 @@ async def test_redis_cache_invalidation():
 
 
 async def test_anonymous_public_user_fallback():
-    """Anonymous/public user should get Public role access when AUTH_ROLE_PUBLIC is
-    set.
-    """
     from superset.security.manager import AsyncSecurityManager
 
     mock_dao = AsyncMock()
@@ -571,7 +544,6 @@ async def test_anonymous_public_user_fallback():
 
 
 async def test_group_based_access(db_engine):
-    """DAO exposes group-based permission methods with correct signatures."""
     async with AsyncSession(db_engine, expire_on_commit=False) as sess:
         dao = AsyncSecurityDAO(
             sess,
@@ -592,7 +564,6 @@ async def test_group_based_access(db_engine):
 
 
 async def test_dashboard_rbac_enabled():
-    """When DASHBOARD_RBAC=True, access is based on role matching."""
     from superset.security.manager import AsyncSecurityManager
 
     mock_dao = AsyncMock()
@@ -612,7 +583,6 @@ async def test_dashboard_rbac_enabled():
 
 
 async def test_dashboard_rbac_enabled_no_match():
-    """When DASHBOARD_RBAC=True and roles don't match, access is denied."""
     from superset.security.manager import AsyncSecurityManager
 
     mock_dao = AsyncMock()
@@ -632,7 +602,6 @@ async def test_dashboard_rbac_enabled_no_match():
 
 
 async def test_dashboard_rbac_disabled():
-    """When DASHBOARD_RBAC=False, access uses standard datasource checks."""
     from superset.security.manager import AsyncSecurityManager
 
     mock_dao = AsyncMock()
@@ -652,7 +621,6 @@ async def test_dashboard_rbac_disabled():
 
 
 async def test_catalog_access_hierarchy():
-    """Test catalog access within database->catalog->schema hierarchy."""
     from superset.security.manager import AsyncSecurityManager
 
     mock_dao = AsyncMock()
@@ -670,7 +638,6 @@ async def test_catalog_access_hierarchy():
 
 
 async def test_guest_token_with_invalid_resources():
-    """Guest tokens with invalid resource entries should fail validation."""
     from superset.security.guest import validate_guest_token_resources_schema
 
     errors = validate_guest_token_resources_schema(
@@ -685,7 +652,6 @@ async def test_guest_token_with_invalid_resources():
 
 
 async def test_user_with_no_roles():
-    """User with no roles should have no access."""
     from superset.security.manager import AsyncSecurityManager
 
     mock_dao = AsyncMock()
@@ -699,7 +665,6 @@ async def test_user_with_no_roles():
 
 
 async def test_can_access_all_databases_admin():
-    """Admin users should pass can_access_all_databases check."""
     from superset.security.manager import AsyncSecurityManager
 
     mock_dao = AsyncMock()

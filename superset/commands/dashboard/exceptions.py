@@ -14,12 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Dashboard-specific exceptions.
-
-The async port re-uses the centralized exceptions from
-:mod:`superset.exceptions`.  Per-resource exception aliases are exposed here
-to mirror the layout of ``superset_old/commands/dashboard/exceptions.py``.
-"""
+"""Dashboard-specific exceptions."""
 
 from __future__ import annotations
 
@@ -32,43 +27,26 @@ from superset.exceptions import (
 
 
 class DashboardNotFoundError(ObjectNotFoundError):
-    """Raised when a dashboard cannot be located.
-
-    1:1 with ``superset_old.commands.dashboard.exceptions.DashboardNotFoundError``.
-    """
+    """Raised when a dashboard cannot be located."""
 
     def __init__(self, dashboard_id: str | int | None = None) -> None:
         super().__init__("Dashboard", dashboard_id)
 
 
 class DashboardAccessDeniedError(ForbiddenError):
-    """Raised when the current user is not allowed to access a dashboard.
-
-    1:1 with ``superset_old.commands.dashboard.exceptions.DashboardAccessDeniedError``.
-    """
+    """Raised when the current user is not allowed to access a dashboard."""
 
     message = "You don't have access to this dashboard."
 
 
 class DashboardDeleteFailedReportsExistError(CommandInvalidError):
-    """A dashboard can't be deleted because alerts/reports reference it.
-
-    1:1 port of
-    ``superset_old.commands.dashboard.exceptions.DashboardDeleteFailedReportsExistError``.
-    The human-readable message (with the offending report names) is supplied
-    by the delete command. Maps to HTTP 422 like the original.
-    """
+    """Deletion blocked because alerts/reports reference this dashboard (HTTP 422)."""
 
     status_code = 422
 
 
 class DashboardSlugExistsValidationError(CommandInvalidError):
-    """Slug uniqueness violation — field-keyed leaf error.
-
-    1:1 with ``superset_old.commands.dashboard.exceptions
-    .DashboardSlugExistsValidationError`` (marshmallow ``ValidationError``
-    with ``field_name="slug"`` and message "Must be unique").
-    """
+    """Slug uniqueness violation — field-keyed 422 error."""
 
     status_code = 422
     message = "Must be unique"
@@ -78,13 +56,7 @@ class DashboardSlugExistsValidationError(CommandInvalidError):
 
 
 class DashboardInvalidError(CommandInvalidError):
-    """Accumulating dashboard validation error.
-
-    1:1 with ``superset_old.commands.dashboard.exceptions
-    .DashboardInvalidError`` — the registered handler emits
-    ``{"message": normalized_messages()}`` (per-field 422), matching upstream
-    FAB ``response_422(message=ex.normalized_messages())``.
-    """
+    """Accumulating dashboard validation error (per-field 422)."""
 
     status_code = 422
     message = "Dashboard parameters are invalid."

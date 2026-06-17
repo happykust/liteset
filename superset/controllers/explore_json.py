@@ -16,9 +16,6 @@
 # under the License.
 """Legacy ``/superset/explore_json`` controller (deprecated, eol 5.0.0).
 
-1:1 port of the upstream ``Superset.explore_json`` and
-``Superset.explore_json_data`` views from ``superset_old/views/core.py``.
-
 The modern frontend uses ``/api/v1/chart/data``; this legacy surface is
 preserved so existing installations / clients (e.g. deck.gl viz types and
 older embeds that POST/GET ``form_data``) keep working.  Three routes:
@@ -27,7 +24,7 @@ older embeds that POST/GET ``form_data``) keep working.  Three routes:
 * ``GET|POST /superset/explore_json/``
 * ``GET     /superset/explore_json/data/<cache_key>``
 
-Control flow mirrors the original:
+Control flow:
 
 * ``explore_json`` resolves a ``response_type`` from the query string
   (``json`` default; ``csv``/``xlsx``/``query``/``results``/``samples``),
@@ -90,9 +87,8 @@ def get_datasource_info(
 ) -> tuple[int, str | None]:
     """Resolve ``(datasource_id, datasource_type)`` from URL args + form_data.
 
-    1:1 port of ``superset_old/views/utils.py::get_datasource_info``.  The
-    ``form_data["datasource"]`` ``"<id>__<type>"`` string takes precedence
-    over the URL-supplied values; ``"None__<type>"`` flags a deleted dataset.
+    The ``form_data["datasource"]`` ``"<id>__<type>"`` string takes precedence
+    over URL-supplied values; ``"None__<type>"`` flags a deleted dataset.
 
     :raises SupersetException: if no datasource id can be determined.
     """
@@ -127,11 +123,9 @@ def _parse_request_form_data(form_data_str: str | bytes) -> dict[str, Any]:
 async def _extract_form_data(request: Request[Any, Any, Any]) -> dict[str, Any]:
     """Extract the explore ``form_data`` from a GET or POST request.
 
-    Mirrors ``superset.utils.core.get_form_data`` (the upstream original):
-    the body's ``form_data`` field (POST), or the ``form_data`` query-string
-    arg (GET), JSON-decoded.  The request-global form_data is not available in
-    the async web path, so we read directly from the request like the existing
-    ``/superset/explore_json`` inline handler did.
+    Reads the body's ``form_data`` field (POST), or the ``form_data``
+    query-string arg (GET), JSON-decoded.  The request-global form_data is not
+    available in the async web path, so we read directly from the request.
     """
     form_data: dict[str, Any] = {}
 
@@ -166,9 +160,7 @@ async def _extract_form_data(request: Request[Any, Any, Any]) -> dict[str, Any]:
 def _resolve_response_type(request: Request[Any, Any, Any]) -> str:
     """Resolve the ``response_type`` from the request query string.
 
-    1:1 with the original loop over ``ChartDataResultFormat`` +
-    ``ChartDataResultType``: the first ``?<flag>=true`` wins; ``json`` is
-    the default.
+    The first ``?<flag>=true`` wins; ``json`` is the default.
     """
     for flag in _RESPONSE_TYPE_FLAGS:
         if request.query_params.get(flag) == "true":
@@ -182,8 +174,8 @@ async def _generate_json(
 ) -> Response[Any]:
     """Serialize the viz output per ``response_type``.
 
-    1:1 port of ``Superset.generate_json`` — dispatches CSV / query /
-    results / samples, defaulting to the full JSON payload.
+    Dispatches to CSV / query / results / samples handlers, defaulting to
+    the full JSON payload.
     """
     if response_type == "csv":
         csv_str = await viz_obj.get_csv()
@@ -197,8 +189,6 @@ async def _generate_json(
         )
 
     if response_type == "query":
-        # Generated SQL without executing the query (mirrors
-        # ``Superset.get_query_string_response``).
         query = None
         try:
             query_obj = viz_obj.query_obj()
@@ -222,7 +212,6 @@ async def _generate_json(
         )
 
     if response_type == "results":
-        # Raw df payload (mirrors ``Superset.get_raw_results``).
         payload = await viz_obj.get_df_payload()
         if viz_obj.has_error(payload):
             return Response(
@@ -247,8 +236,6 @@ async def _generate_json(
         )
 
     if response_type == "samples":
-        # Mirrors ``Superset.get_samples`` — the new viz ``get_samples``
-        # already returns the data/colnames/coltypes/rowcount dict.
         samples = await viz_obj.get_samples()
         return Response(
             content=viz_obj.json_dumps(samples),
@@ -272,8 +259,7 @@ class ExploreJsonController(Controller):
     Registered at the app root so the paths resolve at exactly
     ``/superset/explore_json/...``.  Guarded with ``can_read`` on ``Chart``
     (the same guard the modern ``/api/v1/chart/data`` endpoints use) plus an
-    in-handler datasource read-access check, mirroring the original
-    ``@has_access_api`` + ``viz_obj.raise_for_access()``.
+    in-handler datasource read-access check.
     """
 
     path = "/"
@@ -347,7 +333,7 @@ class ExploreJsonController(Controller):
         datasource_type: str | None,
         datasource_id: int | None,
     ) -> Response[Any]:
-        """Core ``explore_json`` handler — 1:1 with the upstream original."""
+        """Core ``explore_json`` handler (shared by GET and POST routes)."""
         settings = cast("SupersetSettings", getattr(state, "settings", None))
 
         response_type = _resolve_response_type(request)
@@ -377,8 +363,7 @@ class ExploreJsonController(Controller):
 
         force = request.query_params.get("force") == "true"
 
-        # Filter REJECTED_FORM_DATA_KEYS when JS controls are disabled
-        # (mirrors ``get_form_data`` → ``add_sqllab_custom_filters`` denylist).
+        # Filter REJECTED_FORM_DATA_KEYS when JS controls are disabled.
         from superset.utils.feature_flags import feature_flag_manager
 
         if not feature_flag_manager.is_feature_enabled("ENABLE_JAVASCRIPT_CONTROLS"):
@@ -477,8 +462,7 @@ class ExploreJsonController(Controller):
             # worker reconstructs the same GuestUser (hence the same RLS cache
             # key), keeping the key consistent between submit and the data fetch.
             # Only the *dispatched* metadata carries the token — the 202 response
-            # returns the clean ``job_metadata`` (1:1 with the original, which
-            # never echoes the token back to the client).
+            # returns the clean ``job_metadata`` (the token is never echoed back).
             dispatch_metadata = await maybe_forward_guest_token(
                 job_metadata,
                 request=request,
@@ -541,11 +525,10 @@ class ExploreJsonController(Controller):
     ) -> Response[Any]:
         """GET /superset/explore_json/data/<cache_key> — serve cached result.
 
-        1:1 port of ``Superset.explore_json_data``: load the cached
-        ``{form_data, response_type}`` written by
-        ``load_explore_json_into_cache``, rebuild the viz with
+        Loads the cached ``{form_data, response_type}`` written by
+        ``load_explore_json_into_cache``, rebuilds the viz with
         ``force_cached=True`` (cache hit, no warehouse re-execution), and
-        ``generate_json``.
+        calls ``generate_json``.
         """
         from superset.common.query_context_processor import load_cached_explore_form
         from superset.extensions import cache_manager
@@ -556,8 +539,6 @@ class ExploreJsonController(Controller):
             getattr(cache_manager, "cache", None), cache_key
         )
         if not cached:
-            # Original raised ``CacheLoadError`` → ``handle_api_exception``
-            # 404.  Mirror that with a 404.
             return Response(
                 content={"error": "Cached data not found"},
                 status_code=404,
@@ -626,9 +607,6 @@ class ExploreJsonController(Controller):
         )
         return result
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
     @staticmethod
     async def _load_datasource(
         session: AsyncSession,
@@ -658,12 +636,5 @@ class ExploreJsonController(Controller):
         user: UserProtocol,
         datasource: Any,
     ) -> None:
-        """Enforce datasource read access (1:1 ``viz_obj.raise_for_access``).
-
-        The original called ``viz_obj.raise_for_access()`` →
-        ``security_manager.raise_for_access(viz=viz_obj)``.  In the async
-        port the viz placeholder is a no-op, so we enforce datasource access
-        directly via the security manager — the same path the modern
-        chart-data processor uses.
-        """
+        """Enforce datasource read access via the security manager."""
         await security_manager.raise_for_access(user=user, datasource=datasource)

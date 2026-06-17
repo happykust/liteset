@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dataset/columns/delete.py``."""
+"""Command to delete a column from a dataset."""
 
 from __future__ import annotations
 
@@ -47,13 +47,9 @@ class DeleteDatasetColumnCommand(AsyncBaseCommand[None]):
         self._column: Any | None = None
 
     async def validate(self) -> None:
-        # 1:1 with upstream ``DeleteDatasetColumnCommand.validate``: resolve
-        # the column scoped to the dataset FIRST (missing dataset or column →
-        # 404 ``DatasetColumnNotFoundError``), THEN check ownership on the
-        # COLUMN itself.  ``TableColumn`` has no ``owners`` relationship, so
-        # ``raise_for_ownership`` denies every non-admin — effectively
-        # admin-only, exactly like upstream (R14-07); dataset owners manage
-        # columns through ``PUT /dataset/{pk}`` instead.
+        # ``TableColumn`` has no ``owners`` relationship, so raise_for_ownership
+        # denies every non-admin — effectively admin-only; dataset owners manage
+        # columns through ``PUT /dataset/{pk}``.
         self._column = await self._column_dao.find_by_dataset_and_id(
             self._dataset_id, self._column_id
         )

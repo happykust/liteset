@@ -42,8 +42,7 @@ logger = logging.getLogger(__name__)
 class DatasourceController(Controller):
     """Datasource API endpoints.
 
-    Provides access to datasources by type and ID, mirroring the original
-    ``DatasourceRestApi`` and ``Datasource`` view endpoints.
+    Provides access to datasources by type and ID.
     """
 
     path = "/api/v1/datasource"
@@ -54,9 +53,8 @@ class DatasourceController(Controller):
 
     @get(
         "/{datasource_type:str}/{datasource_id:int}",
-        # Original DatasourceRestApi has ``class_permission_name = "Datasource"``
-        # (superset_old/datasource/api.py:35) — permissions are registered
-        # under the "Datasource" view menu, not the class name.
+        # Permissions are registered under the "Datasource" view menu,
+        # not the class name.
         guards=[require_permission("can_get", "Datasource")],
     )
     async def get_datasource(
@@ -75,9 +73,6 @@ class DatasourceController(Controller):
 
         Returns the datasource attributes as a dict.
         """
-        # Validate datasource_type via DatasourceType enum coercion — 1:1 with
-        # original ``DatasourceType(datasource_type)`` which raises ValueError
-        # for unknown types.
         try:
             DatasourceType(datasource_type)
         except ValueError:
@@ -105,8 +100,7 @@ class DatasourceController(Controller):
         # Enforce datasource access — this endpoint exposes schema, columns and
         # (for virtual datasets) the SQL; without the check any authenticated
         # user (e.g. Gamma) could read it, bypassing the dataset access control
-        # (``GET /dataset/{id}`` correctly 404s). Mirrors ``get_column_values``
-        # / upstream ``datasource.raise_for_access()``.
+        # (``GET /dataset/{id}`` correctly 404s).
         if hasattr(security_manager, "raise_for_access"):
             try:
                 await self._call_raise_for_access(
@@ -118,7 +112,6 @@ class DatasourceController(Controller):
                     status_code=403,
                 )
 
-        # Build response from datasource attributes
         result: dict[str, Any] = {
             "id": getattr(datasource, "id", None),
             "type": datasource_type,
@@ -131,12 +124,10 @@ class DatasourceController(Controller):
             "sql": getattr(datasource, "sql", None),
         }
 
-        # Include database name if the relationship is loaded
         database = getattr(datasource, "database", None)
         if database is not None:
             result["database_name"] = getattr(database, "database_name", None)
 
-        # Include column names if loaded
         columns = getattr(datasource, "columns", None)
         if columns is not None:
             result["columns"] = [
@@ -166,21 +157,16 @@ class DatasourceController(Controller):
     ) -> None:
         """Dispatch raise_for_access via the correct path for the datasource type.
 
-        Mirrors the original ``datasource.raise_for_access()`` dispatch:
-
-        * ``Query.raise_for_access()`` calls
-          ``security_manager.raise_for_access(query=self)``
-          → Path 1 (database + per-table permission check).
-        * ``SqlaTable.raise_for_access()`` calls
-          ``security_manager.raise_for_access(datasource=self)``
-          → Path 3 (datasource / schema access check).
+        * ``Query`` objects must be passed as ``query=`` (Path 1: database +
+          per-table permission check).
+        * ``SqlaTable`` objects must be passed as ``datasource=`` (Path 3:
+          datasource / schema access check).
 
         Passing a Query as ``datasource=`` (Path 3) would evaluate
         ``Query.perm`` (``"[db].[tab](id:N)"``) as a datasource_access
-        permission string — a format never registered upstream — and would
-        grant access only to admins and owners, denying users who have only
-        table-level permissions.  The original correctly routes through
-        Path 1, which parses the SQL and checks per-table grants.
+        permission string — a format never registered — and would grant access
+        only to admins and owners, silently denying users with only
+        table-level permissions.
         """
         if datasource_type == DatasourceType.QUERY:
             await security_manager.raise_for_access(query=datasource, user=current_user)
@@ -223,9 +209,8 @@ class DatasourceController(Controller):
     def _resolve_row_limit() -> int:
         """Return the effective row limit for filter column value queries.
 
-        Mirrors upstream ``apply_max_row_limit(FILTER_SELECT_ROW_LIMIT)``:
-        ``min(SQL_MAX_ROW, FILTER_SELECT_ROW_LIMIT)``. Falls back to 10 000
-        if settings cannot be loaded.
+        Returns ``min(SQL_MAX_ROW, FILTER_SELECT_ROW_LIMIT)``. Falls back
+        to 10 000 if settings cannot be loaded.
         """
         try:
             from superset import config as _config
@@ -249,7 +234,7 @@ class DatasourceController(Controller):
         """Call ``datasource.async_values_for_column`` and return the result.
 
         Handles ``KeyError`` (unknown column → 400) and ``NotImplementedError``
-        (unsupported datasource type → 400) exactly as the original does.
+        (unsupported datasource type → 400).
         """
         row_limit = self._resolve_row_limit()
         try:
@@ -257,8 +242,6 @@ class DatasourceController(Controller):
                 column_name=column_name,
                 limit=row_limit,
                 rls_filters=rls_clauses or None,
-                # 1:1 upstream datasource/api.py: denormalize unless the
-                # dataset is configured with normalized columns.
                 denormalize_column=not getattr(datasource, "normalize_columns", False),
             )
             await event_logger.alog_with_context(
@@ -297,10 +280,7 @@ class DatasourceController(Controller):
 
         For datasources that inherit the sync ``values_for_column`` (e.g.
         ``Query`` via ``ExploreMixin``), executes it in a worker thread to
-        return real distinct column values — 1:1 with the original
-        ``DatasourceRestApi.get_column_values`` which calls
-        ``datasource.values_for_column(...)`` unconditionally for all
-        datasource types including ``query``.
+        return real distinct column values.
 
         Falls back to an empty list only when neither
         ``async_values_for_column`` nor ``values_for_column`` is present
@@ -366,10 +346,8 @@ class DatasourceController(Controller):
 
     @get(
         "/{datasource_type:str}/{datasource_id:int}/column/{column_name:str}/values/",
-        # Original ``@protect()`` generates ("can_get_column_values",
-        # "Datasource") (superset_old/datasource/api.py:43 +
-        # class_permission_name); the perm is NOT in READ_ONLY_PERMISSION,
-        # so plain Gamma does not receive it.
+        # "can_get_column_values" is NOT in READ_ONLY_PERMISSION, so plain
+        # Gamma does not receive it by default.
         guards=[require_permission("can_get_column_values", "Datasource")],
     )
     async def get_column_values(
@@ -385,8 +363,6 @@ class DatasourceController(Controller):
 
         Returns distinct values for a datasource column (used for filter UIs).
         """
-        # Validate datasource_type via DatasourceType enum coercion — 1:1 with
-        # original ``DatasourceType(datasource_type)`` (returns 400 on ValueError).
         try:
             DatasourceType(datasource_type)
         except ValueError:
@@ -411,11 +387,9 @@ class DatasourceController(Controller):
                 status_code=404,
             )
 
-        # Enforce datasource-level access BEFORE reading any values — 1:1 with
-        # upstream ``datasource/api.py::get_column_values`` which calls
-        # ``datasource.raise_for_access()`` first. Without it, any authenticated
-        # user (e.g. Gamma with no datasource access) could read distinct column
-        # values of ANY datasource → data leak.
+        # Enforce datasource-level access BEFORE reading any values — without
+        # this check any authenticated user (e.g. Gamma with no datasource
+        # access) could read distinct column values of ANY datasource → data leak.
         if hasattr(security_manager, "raise_for_access"):
             try:
                 await self._call_raise_for_access(
@@ -436,18 +410,10 @@ class DatasourceController(Controller):
         set_current_user(current_user)
 
         # Gather Row-Level Security filter clauses for this datasource.
-        # Mirrors ``query_context_processor._get_query_result`` and matches
-        # the original sync ``values_for_column`` which calls
-        # ``self.get_sqla_row_level_filters`` internally.
         rls_clauses = await self._fetch_rls_clauses(
             security_manager, datasource, current_user
         )
 
-        # Use the async port of ``values_for_column``. The original sync
-        # implementation in ``helpers.py`` requires a sync SQLAlchemy
-        # engine that we don't wire up in the Litestar port; instead we
-        # provide ``SqlaTable.async_values_for_column`` which runs
-        # against the existing asyncpg connection pool.
         if hasattr(datasource, "async_values_for_column"):
             return await self._invoke_async_values(
                 datasource=datasource,

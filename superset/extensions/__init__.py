@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Module-level extension singletons (mirrors ``superset_old/extensions``).
+"""Module-level extension singletons.
 
 Hosts the singletons that legacy code expects to import from
 ``superset.extensions``:
@@ -49,16 +49,7 @@ from superset.stats_logger import StatsLoggerManager
 from superset.utils.encrypt import EncryptedFieldFactory
 from superset.utils.machine_auth import MachineAuthProviderFactory
 
-# ---------------------------------------------------------------------------
-# Singletons.  All are initialised lazily; ``superset.app.on_startup``
-# wires real Redis / settings into them at runtime.  Tests / CLI tools
-# that don't go through ``on_startup`` get the default (no-op) behaviour.
-# ---------------------------------------------------------------------------
-
 encrypted_field_factory = EncryptedFieldFactory()
-
-# Configured by ``superset.app.on_startup`` once settings are loaded.
-# Webdriver / Celery report code reads this lazily via ``.instance``.
 machine_auth_provider_factory = MachineAuthProviderFactory()
 
 cache_manager = CacheManager()

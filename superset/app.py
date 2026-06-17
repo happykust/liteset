@@ -98,12 +98,11 @@ def _build_exception_handlers() -> dict[Any, Any]:
       caps in the msgspec schemas the asyncpg error reached 500.
     """
     # Accumulating *InvalidError* validation errors emit a
-    # ``{"message": {field: [messages]}}`` 422 body 1:1 with the upstream
-    # ``response_422(message=ex.normalized_messages())``. Registered more
-    # specifically than ``SupersetException`` so they win via MRO resolution;
-    # scoped to the resources whose commands raise field-keyed errors
-    # (dataset, dashboard, database, annotation layer) — every other command
-    # keeps flat strings.
+    # ``{"message": {field: [messages]}}`` 422 body.
+    # Registered more specifically than ``SupersetException`` so they win via
+    # MRO resolution; scoped to the resources whose commands raise field-keyed
+    # errors (dataset, dashboard, database, annotation layer) — every other
+    # command keeps flat strings.
     from superset.commands.annotation_layer.exceptions import (
         AnnotationLayerInvalidError,
     )
@@ -120,9 +119,8 @@ def _build_exception_handlers() -> dict[Any, Any]:
         DashboardInvalidError: dataset_invalid_error_handler,
         DatabaseInvalidError: dataset_invalid_error_handler,
         AnnotationLayerInvalidError: dataset_invalid_error_handler,
-        # ReportScheduleInvalidError overrides normalized_messages() to emit the
-        # {field: [messages]} mapping (e.g. {"owners": [...]}) — 1:1 with upstream
-        # reports/api.py response_422(message=ex.normalized_messages()).
+        # ReportScheduleInvalidError overrides normalized_messages() to emit
+        # the {field: [messages]} mapping (e.g. {"owners": [...]}).
         ReportScheduleInvalidError: dataset_invalid_error_handler,
         SupersetException: superset_exception_handler,
         _ValidationException: validation_error_handler,
@@ -231,10 +229,8 @@ async def _seed_one_theme(
 ) -> None:
     """Upsert one system theme in its own independent transaction.
 
-    Async equivalent of ``superset_old/commands/theme/seed.py::_upsert_system_theme``
-    decorated with ``@transaction()``: each call opens, commits (or rolls back),
-    and closes its own DB session so that a failure on one theme never reverts a
-    previously committed sibling theme.
+    Each call opens, commits (or rolls back), and closes its own DB session so
+    that a failure on one theme never reverts a previously committed sibling.
     """
     import json as _json
 
@@ -243,8 +239,7 @@ async def _seed_one_theme(
     from superset.models.core import Theme
 
     async with session_factory() as _session:
-        # Handle UUID-only references by copying the referenced theme's
-        # definition — 1:1 with superset_old/commands/theme/seed.py:53-83.
+        # Handle UUID-only references by copying the referenced theme's definition.
         if "uuid" in theme_config and len(theme_config) == 1:
             original_uuid = theme_config["uuid"]
             ref_stmt = select(Theme).where(Theme.uuid == original_uuid)
@@ -300,8 +295,8 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
     settings: SupersetSettings = app.state.settings
 
     # ── check_secret_key ──────────────────────────────────────────────────
-    # 1:1 with SupersetAppInitializer.check_secret_key: refuse to start (or
-    # warn in debug/test mode) when SECRET_KEY is the default placeholder.
+    # Refuse to start (or warn in debug/test mode) when SECRET_KEY is the
+    # default placeholder.
     _check_secret_key(settings)
 
     # ── i18n: load translation catalogs ───────────────────────────────────
@@ -464,16 +459,11 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
     # override is needed here.
 
     # ── Step 11: setup_event_logger (part B) ──────────────────────────────
-    # Now that the session factory exists, wire the module-level
-    # ``superset.events.event_logger`` singleton.  This mirrors the original
-    # ``SupersetAppInitializer.setup_event_logger`` which stored the resolved
-    # logger in ``_event_logger["event_logger"]`` so every controller that
-    # did ``from superset.utils.log import event_logger`` got the DB-backed
-    # impl, not the debug fallback.
-    #
-    # If EVENT_LOGGER is set to a custom instance in superset_config.py we
-    # use that; otherwise we default to AsyncDBEventLogger(session_factory)
-    # which persists audit rows to the metadata DB.
+    # Wire the module-level ``superset.events.event_logger`` singleton now
+    # that the session factory exists.  If EVENT_LOGGER is set to a custom
+    # instance in superset_config.py we use that; otherwise we default to
+    # AsyncDBEventLogger(session_factory) which persists audit rows to the
+    # metadata DB.
     try:
         import superset.events as _events_mod
         from superset.events import (
@@ -512,14 +502,12 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
         app.state.redis = None
 
     # Initialize a dedicated Redis client for Global Async Query event streams.
-    # 1:1 with ``SupersetAppInitializer.configure_async_queries`` which only calls
-    # ``async_query_manager_factory.init_app(app)`` (and thus ``get_cache_backend``)
-    # when ``GLOBAL_ASYNC_QUERIES`` is enabled.  When disabled, we fall back to the
-    # shared auth-cache Redis (``app.state.redis``) so DI providers that read
-    # ``state.event_redis`` still work without a NoneType dereference.
+    # Only when GLOBAL_ASYNC_QUERIES is enabled; when disabled we fall back to
+    # the shared auth-cache Redis so DI providers reading ``state.event_redis``
+    # still work without a NoneType dereference.
     if feature_flag_manager.is_feature_enabled("GLOBAL_ASYNC_QUERIES"):
-        # Raises UnsupportedCacheBackendError for unsupported CACHE_TYPE — 1:1 with
-        # the original hard startup failure on misconfiguration.
+        # Raises UnsupportedCacheBackendError for unsupported CACHE_TYPE —
+        # hard startup failure on misconfiguration is intentional.
         app.state.event_redis = _build_gaq_redis(settings)
     else:
         app.state.event_redis = app.state.redis
@@ -634,11 +622,9 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
             theme_seeds.append(("THEME_DARK", theme_dark))
 
         if theme_seeds:
-            # Each theme is processed in its own independent transaction via
-            # _seed_one_theme(), matching superset_old/commands/theme/seed.py
-            # which decorates _upsert_system_theme with @transaction() so each
-            # call commits independently — partial success is preserved when one
-            # theme's DB operation fails and the other succeeds.
+            # Each theme is processed in its own independent transaction so
+            # partial success is preserved when one theme's DB operation fails
+            # and the other succeeds.
             for theme_name, theme_config in theme_seeds:
                 if callable(theme_config):
                     theme_config = theme_config()
@@ -671,10 +657,8 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
     app.state.active_websockets = {}
 
     # Start periodic channel cleanup only when GLOBAL_ASYNC_QUERIES is enabled.
-    # 1:1 with the original: ``configure_async_queries`` only calls ``init_app``
-    # (which registers the cleanup handler) when the feature flag is active.
-    # Starting the cleanup task when GAQ is disabled would sweep streams that
-    # were never written — harmless but diverges from the original contract.
+    # Starting it when GAQ is disabled would sweep streams that were never
+    # written — harmless but wasteful.
     _cleanup_redis = app.state.event_redis
     if (
         feature_flag_manager.is_feature_enabled("GLOBAL_ASYNC_QUERIES")
@@ -765,9 +749,6 @@ async def on_shutdown(app: Litestar) -> None:
 def _check_secret_key(settings: SupersetSettings) -> None:
     """Refuse to start (or warn in debug/test mode) when SECRET_KEY is the
     default placeholder.
-
-    1:1 with ``SupersetAppInitializer.check_secret_key`` in
-    ``superset_old/initialization/__init__.py``.
     """
 
     def _log_default_secret_key_warning() -> None:
@@ -792,7 +773,6 @@ def _check_secret_key(settings: SupersetSettings) -> None:
     if secret_key_val != CHANGE_ME_SECRET_KEY:
         return
 
-    # is_test(): mirrors ``superset_old/utils/core.py::is_test()``
     _is_test = os.environ.get("SUPERSET_TESTENV", "false").lower() in (
         "true",
         "1",
@@ -811,15 +791,9 @@ def _check_secret_key(settings: SupersetSettings) -> None:
 def _validate_global_async_queries_config(settings: SupersetSettings) -> None:
     """Validate Global Async Queries config at app build time.
 
-    1:1 with the original ``AsyncQueryManager.init_app`` guard, which only ran
-    when the ``GLOBAL_ASYNC_QUERIES`` feature flag was enabled
-    (``configure_async_queries`` → ``init_app``) and refused to start the app
-    if:
+    Refuses to start the app if:
       1. CACHE_CONFIG or DATA_CACHE_CONFIG has a null/None cache type, or
       2. the JWT secret is shorter than 32 bytes.
-
-    Both checks mirror ``superset_old/async_events/async_query_manager.py::init_app``
-    exactly.
     """
     if not getattr(settings, "global_async_queries", False):
         return
@@ -927,10 +901,8 @@ def _build_redis_sentinel_client(cache_config: dict[str, Any]) -> Any:
     sentinel_kwargs: dict[str, Any] = {}
     if sentinel_password:
         sentinel_kwargs["password"] = sentinel_password
-    # ``db`` reaches the master connection via connection kwargs in the
-    # original (superset_old/async_events/cache_backend.py:207 builds
-    # ``{"db": config.get("CACHE_REDIS_DB", 0)}`` and Sentinel forwards
-    # connection kwargs to ``master_for`` connections).
+    # ``db`` reaches the master connection via connection kwargs forwarded
+    # by Sentinel to ``master_for`` connections.
     master_kwargs: dict[str, Any] = {"decode_responses": True, "db": db}
     if password:
         master_kwargs["password"] = password
@@ -948,21 +920,13 @@ def _build_redis_sentinel_client(cache_config: dict[str, Any]) -> Any:
 def _build_gaq_redis(settings: SupersetSettings) -> Any:
     """Build an async Redis client from GLOBAL_ASYNC_QUERIES_CACHE_BACKEND config.
 
-    1:1 port of ``superset_old/async_events/async_query_manager.py::get_cache_backend``
-    which reads the ``GLOBAL_ASYNC_QUERIES_CACHE_BACKEND`` dict and constructs a
-    ``RedisCacheBackend`` or ``RedisSentinelCacheBackend``.  Here we build the
-    async-native equivalent using ``redis.asyncio`` so the event streams work in
-    the ASGI process without blocking the event loop.
-
     Supported ``CACHE_TYPE`` values:
     - ``"RedisCache"``           → ``redis.asyncio.Redis`` (direct connection)
     - ``"RedisSentinelCache"``   → ``redis.asyncio.Sentinel`` (HA topology)
 
     Raises ``UnsupportedCacheBackendError`` for any other CACHE_TYPE (including
-    absent/None), 1:1 with the original ``get_cache_backend`` which raises
-    ``UnsupportedCacheBackendError("Unsupported cache backend configuration")``
-    as its final else-branch.  This is only called when GLOBAL_ASYNC_QUERIES is
-    enabled; callers are responsible for the feature-flag guard.
+    absent/None). Only called when GLOBAL_ASYNC_QUERIES is enabled; callers are
+    responsible for the feature-flag guard.
     """
     from superset.async_events.manager import UnsupportedCacheBackendError
 
@@ -981,35 +945,23 @@ def _build_gaq_redis(settings: SupersetSettings) -> Any:
 
 
 def _build_cors_config(settings: SupersetSettings) -> CORSConfig | None:
-    """Map the upstream ``CORS_OPTIONS`` dict onto Litestar's
-    ``CORSConfig``.
+    """Map the ``CORS_OPTIONS`` dict onto Litestar's ``CORSConfig``.
 
-    1:1 with ``superset_old/initialization/__init__.py::configure_middlewares``
-    which, when ``self.config["ENABLE_CORS"]`` was set, applied the upstream
-    CORS extension to the app with ``self.config["CORS_OPTIONS"]``.
+    When ``ENABLE_CORS`` is false, returns ``None`` (no CORS at all).
 
-    When ``ENABLE_CORS`` is false, CORS is OFF (returns ``None`` — no permissive
-    default), matching upstream where the CORS extension is never registered.
+    ``CORS_OPTIONS`` → ``CORSConfig`` field mapping:
+    * ``origins``              → ``allow_origins``
+    * ``methods``              → ``allow_methods``
+    * ``allow_headers``        → ``allow_headers``
+    * ``expose_headers``       → ``expose_headers``
+    * ``supports_credentials`` → ``allow_credentials``
+    * ``max_age``              → ``max_age``
 
-    The upstream CORS option -> Litestar ``CORSConfig`` field mapping:
+    Upstream defaults applied for omitted keys (``origins='*'``, all standard
+    methods, ``allow_headers='*'``, ``supports_credentials=False``).
 
-    * ``origins``             -> ``allow_origins``
-    * ``methods``             -> ``allow_methods``
-    * ``allow_headers``       -> ``allow_headers``
-    * ``expose_headers``      -> ``expose_headers``
-    * ``supports_credentials``-> ``allow_credentials``
-    * ``max_age``             -> ``max_age``
-
-    The upstream defaults are applied for keys the user omits so the wildcard
-    behaviour matches upstream (defaults: ``origins='*'``, all
-    standard methods, ``allow_headers='*'``, ``supports_credentials=False``).
-
-    Limitation: the upstream ``resources`` option (per-path scoping / regex
-    resource maps) has no equivalent in Litestar's ``CORSConfig``, which is
-    applied app-wide. The ``resources`` key is therefore ignored; the common
-    upstream ``CORS_OPTIONS`` does not set it (it only scopes via ``origins``),
-    so this matches the broad-application case. ``send_wildcard``/``vary_header``
-    and other upstream-CORS-only knobs are likewise not expressible and ignored.
+    The upstream ``resources`` per-path-scoping option has no Litestar
+    equivalent and is ignored.
     """
     if not settings.enable_cors:
         return None
@@ -1050,8 +1002,7 @@ def create_app(  # noqa: C901
         # secret_key is resolved at runtime from env vars or superset_config.py
         settings = SupersetSettings()  # type: ignore[call-arg]
 
-    # When Global Async Queries is enabled, refuse to start with a weak JWT
-    # secret (1:1 with the original AsyncQueryManager.init_app guard).
+    # When Global Async Queries is enabled, refuse to start with a weak JWT secret.
     _validate_global_async_queries_config(settings)
 
     # Import core API controllers (Phase 4)
@@ -1241,10 +1192,8 @@ def create_app(  # noqa: C901
             "global_async_queries_redis_stream_prefix",
             "async-events-",
         )
-        # Use the dedicated event_redis client (built from
-        # GLOBAL_ASYNC_QUERIES_CACHE_BACKEND) when available; fall back to
-        # the shared auth-cache Redis (state.redis).  1:1 with the original
-        # AsyncQueryManager.init_app which called get_cache_backend(app.config).
+        # Use the dedicated event_redis client when available; fall back to
+        # the shared auth-cache Redis.
         _event_redis = getattr(state, "event_redis", None) or getattr(
             state, "redis", None
         )
@@ -1362,12 +1311,10 @@ def create_app(  # noqa: C901
                 else []
             ),
             SecurityHeadersMiddleware(),
-            # RateLimitMiddleware mirrors the upstream rate limiter: gated on the
-            # RATELIMIT_ENABLED master switch (off by default outside
-            # production, so dev/testing is unaffected), it applies the
-            # RATELIMIT_APPLICATION limit to every request and the
-            # AUTH_RATE_LIMIT to login POSTs.  Placed after ProxyFix so the
-            # client IP used as the limit key is the corrected one.
+            # RateLimitMiddleware: gated on the RATELIMIT_ENABLED master switch
+            # (off by default outside production).  Applies RATELIMIT_APPLICATION
+            # to every request and AUTH_RATE_LIMIT to login POSTs.  Placed after
+            # ProxyFix so the client IP used as the limit key is the corrected one.
             RateLimitMiddleware(),
             LocaleMiddleware(),
             # HTTPHeadersMiddleware applies OVERRIDE_HTTP_HEADERS / HTTP_HEADERS /
@@ -1382,11 +1329,8 @@ def create_app(  # noqa: C901
             RequestContextMiddleware(),
             SupersetAuthMiddleware,
             # AsyncTokenMiddleware mints / refreshes the ``async-token`` JWT
-            # cookie on authenticated responses — 1:1 with the original
-            # ``register_request_handlers`` after-request hook.  Gated on the
-            # same two flags the original used (``configure_async_queries`` ran
-            # only under GLOBAL_ASYNC_QUERIES, and ``init_app`` registered the
-            # handler only when REGISTER_REQUEST_HANDLERS was set).  Placed after
+            # cookie on authenticated responses.  Gated on the same two flags
+            # (GLOBAL_ASYNC_QUERIES + REGISTER_REQUEST_HANDLERS).  Placed after
             # the auth middleware so ``scope["user"]`` is populated when the
             # cookie is built on ``http.response.start``.
             *(

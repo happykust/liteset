@@ -134,7 +134,7 @@ def test_sqllab_bootstrap_with_data():
 
 
 def test_sqllab_permalink_body_default():
-    # 1:1 with original: dbId/name/sql are required (allow_none=False).
+    # dbId/name/sql are required (allow_none=False).
     # Constructing without required fields must raise TypeError.
     with pytest.raises(TypeError):
         SqlLabPermalinkSchema()
@@ -148,7 +148,7 @@ def test_sqllab_permalink_body_default():
 
 
 def test_sqllab_permalink_body_with_state():
-    # 1:1 with original: fields map directly (rename="camel" maps db_id→dbId
+    # Fields map directly (rename="camel" maps db_id→dbId
     # on encode; constructor uses snake_case kwarg names).
     body = SqlLabPermalinkSchema(db_id=1, name="My Tab", sql="SELECT 1")
     assert body.db_id == 1
@@ -156,7 +156,7 @@ def test_sqllab_permalink_body_with_state():
 
 
 def test_sqllab_permalink_body_json_roundtrip():
-    # 1:1 with original field set: dbId, name, sql round-trip via msgspec
+    # dbId, name, sql round-trip via msgspec
     # with rename="camel" (snake→camel on encode, camel→snake on decode).
     body = SqlLabPermalinkSchema(db_id=5, name="My Tab", sql="SELECT 42")
     encoded = msgspec.json.encode(body)

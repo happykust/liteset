@@ -15,14 +15,10 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Selenium / Playwright webdriver wrappers — port of
-``superset_old/utils/webdriver.py`` to Liteset.
+"""Selenium / Playwright webdriver wrappers.
 
-The original module read every webdriver / screenshot tunable from
-``app.config[...]``.  Liteset has no legacy app context: this
-module reads the same settings off :class:`SupersetSettings`, lazily
-cached at module level (see :func:`cached_settings`), so the synchronous
-Selenium / Playwright code path keeps its original shape.
+Webdriver and screenshot settings are read from :class:`SupersetSettings`,
+lazily cached at module level (see :func:`cached_settings`).
 
 All Selenium and Playwright calls are intentionally synchronous: this
 module is invoked from Celery tasks running on a thread, not from the
@@ -93,11 +89,6 @@ else:
         sync_playwright = None
 
 
-# ---------------------------------------------------------------------------
-# Settings access
-# ---------------------------------------------------------------------------
-
-
 @functools.lru_cache(maxsize=1)
 def cached_settings() -> Any:
     """Return a process-wide cached :class:`SupersetSettings`.
@@ -121,11 +112,6 @@ def _cfg(key: str, default: Any = None) -> Any:
     return getattr(cached_settings(), key, default)
 
 
-# ---------------------------------------------------------------------------
-# Standalone-mode enums (consumed by ChartScreenshot/DashboardScreenshot)
-# ---------------------------------------------------------------------------
-
-
 class DashboardStandaloneMode(Enum):
     HIDE_NAV = 1
     HIDE_NAV_AND_TITLE = 2
@@ -135,11 +121,6 @@ class DashboardStandaloneMode(Enum):
 class ChartStandaloneMode(Enum):
     HIDE_NAV = "true"
     SHOW_NAV = 0
-
-
-# ---------------------------------------------------------------------------
-# Base proxy
-# ---------------------------------------------------------------------------
 
 
 # pylint: disable=too-few-public-methods
@@ -153,11 +134,6 @@ class WebDriverProxy(ABC):
     @abstractmethod
     def get_screenshot(self, url: str, element_name: str, user: User) -> bytes | None:
         """Run the webdriver and return a screenshot."""
-
-
-# ---------------------------------------------------------------------------
-# Playwright implementation
-# ---------------------------------------------------------------------------
 
 
 class WebDriverPlaywright(WebDriverProxy):
@@ -382,11 +358,6 @@ class WebDriverPlaywright(WebDriverProxy):
                     url,
                 )
             return img
-
-
-# ---------------------------------------------------------------------------
-# Selenium implementation
-# ---------------------------------------------------------------------------
 
 
 class WebDriverSelenium(WebDriverProxy):

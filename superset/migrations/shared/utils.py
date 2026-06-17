@@ -14,18 +14,15 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Subset of ``superset_old/migrations/shared/utils.py`` needed by the
-runtime ``migrate-viz`` CLI command.
+"""Migration shared utilities needed by the runtime ``migrate-viz`` CLI command.
 
-The original module was a kitchen-sink of Alembic helpers; here we
-only port the two functions the migrate-viz pipeline depends on
+This module exposes two functions the migrate-viz pipeline depends on
 (``paginated_update`` and ``try_load_json``) plus :func:`has_table`
 which the chart-migration processors call to gate behaviour.
 
 Heavy Alembic-only utilities (``assign_uuids``, schema migration helpers
-…) live in upstream ``superset_old.migrations.shared.utils`` and are
-imported on demand by Alembic version files; they are unrelated to the
-runtime CLI surface.
+…) are imported on demand by Alembic version files and are unrelated to
+the runtime CLI surface.
 """
 
 from __future__ import annotations
@@ -38,8 +35,7 @@ from sqlalchemy.orm import Query, Session
 
 from superset.utils import json
 
-# 1:1 with superset_old/migrations/shared/utils.py:54 — the BATCH_SIZE
-# environment variable overrides the default of 1000.
+# The BATCH_SIZE environment variable overrides the default of 1000.
 DEFAULT_BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 1000))
 
 
@@ -50,10 +46,9 @@ def paginated_update(
 ) -> Iterator[Any]:
     """Yield model instances in fixed-size batches.
 
-    1:1 port of ``superset_old.migrations.shared.utils.paginated_update``
-    — the only adaptation is that the sync :class:`~sqlalchemy.orm.Session`
-    is resolved via :func:`sqlalchemy.inspect` (works for both ``Query``
-    objects and ``select()`` statements).
+    The sync :class:`~sqlalchemy.orm.Session` is resolved via
+    :func:`sqlalchemy.inspect` (works for both ``Query`` objects and
+    ``select()`` statements).
     """
     total = query.count()
     processed = 0
@@ -93,9 +88,9 @@ def try_load_json(data: Optional[str]) -> dict[str, Any]:
 def has_table(table_name: str) -> bool:
     """Return whether *table_name* exists in the current Alembic context.
 
-    1:1 port — used by chart-migration processors to gate per-table
-    transforms.  Imports the Alembic ``op`` lazily so the helper is
-    safe to call from non-Alembic contexts (returns ``False`` then).
+    Used by chart-migration processors to gate per-table transforms.
+    Imports the Alembic ``op`` lazily so the helper is safe to call from
+    non-Alembic contexts (returns ``False`` then).
     """
     try:
         from alembic import op

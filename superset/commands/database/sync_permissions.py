@@ -15,18 +15,16 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/database/sync_permissions.py``.
+"""Command for syncing catalog/schema permissions for a database connection.
 
-Syncs catalog/schema permissions for a database connection.  Faithful to the
-original ``SyncPermissionsCommand``: it (a) creates ``catalog_access`` /
-``schema_access`` permissions for newly discovered catalogs/schemas, and (b)
-when the connection was *renamed* (``old_db_connection_name`` differs from the
-current name) renames the existing name-based view-menus and the dependent
-``catalog_perm`` / ``schema_perm`` columns on datasets and charts.
+Creates ``catalog_access`` / ``schema_access`` permissions for newly
+discovered catalogs/schemas, and when the connection is *renamed*
+(``old_db_connection_name`` differs from the current name) renames the
+existing name-based view-menus and the dependent ``catalog_perm`` /
+``schema_perm`` columns on datasets and charts.
 
-It runs either inline (sync mode) or via the ``sync_database_permissions``
-Celery task (when ``SYNC_DB_PERMISSIONS_IN_ASYNC_MODE`` is enabled), exactly
-like the original ``run`` method.
+Runs either inline or via the ``sync_database_permissions`` Celery task
+when ``SYNC_DB_PERMISSIONS_IN_ASYNC_MODE`` is enabled.
 """
 
 from __future__ import annotations
@@ -71,8 +69,7 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
     def old_db_connection_name(self) -> str:
         """Name the existing (pre-rename) permissions are keyed on.
 
-        Defaults to the current database name, i.e. "no rename" — mirrors the
-        original ``old_db_connection_name`` property.
+        Defaults to the current database name when no rename has occurred.
         """
         return (
             self._old_db_connection_name
@@ -99,26 +96,18 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
         if self._ssh_tunnel is None:
             self._ssh_tunnel = await self._dao.get_ssh_tunnel(self._database_id)
 
-        # Need user info to impersonate for OAuth2 connections.
         user = None
         if self._username and self._security_manager is not None:
             user = await self._security_manager.dao.get_user_by_username(self._username)
         if not self._username or user is None:
             raise UserNotFoundInSessionError()
 
-        # Pre-flight connectivity check — mirrors the original ``validate``'s
-        # ``ping(engine)``, SSH-tunnelled connections included: the engine is
-        # built through the tunnel via ``override_ssh_tunnel``.
         database = self._database
         ssh_tunnel = self._ssh_tunnel
 
         def _ping() -> bool:
-            # Honour TEST_DATABASE_CONNECTION_TIMEOUT — the original wraps
-            # the ping in ``timeout(...)`` (commands/database/utils.py:44);
-            # without it an unreachable database stalls the worker thread
-            # indefinitely.  Same SigalrmTimeout pattern as
-            # ``test_connection._ping`` (no-op off the main thread, like the
-            # original's defensive fallback).
+            # Honour TEST_DATABASE_CONNECTION_TIMEOUT; without it an
+            # unreachable database stalls the worker thread indefinitely.
             from superset.commands.database.test_connection import (
                 _ping_timeout_seconds,
             )
@@ -141,7 +130,7 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
             raise DatabaseConnectionFailedError()
 
     async def run(self) -> dict[str, Any]:
-        """Trigger the perm sync in sync or async mode (mirrors original ``run``)."""
+        """Trigger the perm sync in sync or async mode."""
         if self._security_manager is None:
             return {"message": "Security manager not provided"}
 
@@ -189,7 +178,6 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
                         perm,
                     )
                     if not existing_pvm:
-                        # New catalog — add catalog + schema perms (new name).
                         await sm.add_permission_view_menu(
                             "catalog_access",
                             sm.get_catalog_perm(db_name, catalog),
@@ -203,7 +191,6 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
                             schema_perm_count += 1
                         continue
             except OAuth2RedirectError:
-                # raise OAuth2 exceptions as-is
                 raise
             except DatabaseConnectionFailedError:
                 logger.warning(
@@ -213,7 +200,6 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
                 )
                 continue
 
-            # add possible new schemas in catalog
             schema_perm_count += await self._refresh_schemas(catalog, schemas)
 
             if old_name != db_name:
@@ -228,12 +214,7 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
         }
 
     async def _get_catalog_names(self) -> set[str | None]:
-        """Load catalog names. Mirrors original ``_get_catalog_names``.
-
-        The new ``Database`` model exposes ``get_inspector`` (sync) rather than
-        ``get_all_catalog_names``; we replicate the original logic and run the
-        blocking inspector calls in a thread.  OAuth2 redirects propagate as-is.
-        """
+        """Load catalog names; runs blocking inspector calls in a thread."""
         import asyncio
 
         db = self._database
@@ -241,10 +222,8 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
             return {None}
 
         try:
-            # Adding permissions to all catalogs (and their schemas) can be slow.
-            # If the database does not support cross-catalog queries and the
-            # multi-catalog feature is not enabled, only the default catalog
-            # needs permissions.
+            # If cross-catalog queries and multi-catalog are both disabled,
+            # only the default catalog needs permissions (avoids slow enumeration).
             if not (
                 getattr(db.db_engine_spec, "supports_cross_catalog_queries", False)
                 or getattr(db, "allow_multi_catalog", False)
@@ -253,11 +232,6 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
                 return {default_catalog}
 
             def _fetch_catalogs() -> set[str]:
-                # ``_sync_check_for_oauth2`` mirrors the except-block of the
-                # original ``get_all_catalog_names`` (superset_old/models/
-                # core.py:932-939): a QUERY-TIME exception that
-                # ``needs_oauth2`` triggers the OAuth2 dance
-                # (OAuth2RedirectError) instead of a generic connection error.
                 from superset.utils.database import _sync_check_for_oauth2
 
                 with _sync_check_for_oauth2(db):
@@ -266,7 +240,6 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
 
             return await asyncio.to_thread(_fetch_catalogs)
         except OAuth2RedirectError:
-            # raise OAuth2 exceptions as-is
             raise
         except GenericDBException as ex:
             from superset.commands.database.exceptions import (
@@ -276,7 +249,7 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
             raise DatabaseConnectionFailedError() from ex
 
     async def _get_schema_names(self, catalog: str | None) -> set[str]:
-        """Load schema names for a catalog. Mirrors original ``_get_schema_names``."""
+        """Load schema names for a catalog."""
         import asyncio
 
         db = self._database
@@ -284,8 +257,6 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
         try:
 
             def _fetch_schemas() -> set[str]:
-                # Same OAuth2 query-time check as ``_fetch_catalogs`` — 1:1
-                # with ``get_all_schema_names`` (superset_old/models/core.py).
                 from superset.utils.database import _sync_check_for_oauth2
 
                 with _sync_check_for_oauth2(db):
@@ -296,7 +267,6 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
 
             return await asyncio.to_thread(_fetch_schemas)
         except OAuth2RedirectError:
-            # raise OAuth2 exceptions as-is
             raise
         except GenericDBException as ex:
             from superset.commands.database.exceptions import (
@@ -308,11 +278,7 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
     async def _refresh_schemas(
         self, catalog: str | None, schemas: Iterable[str]
     ) -> int:
-        """Add new schemas that don't have permissions yet.
-
-        "Existing" is keyed on the OLD connection name, exactly like the
-        original ``_refresh_schemas``.  Returns the number of perms added.
-        """
+        """Add schema permissions not yet present; keyed on old connection name."""
         sm = self._security_manager
         added = 0
         for schema in schemas:
@@ -331,15 +297,10 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
     async def _rename_database_in_permissions(
         self, catalog: str | None, schemas: Iterable[str]
     ) -> None:
-        """Rename name-based perms + dependent dataset/chart perm columns.
+        """Rename name-based perms and dependent dataset/chart perm columns.
 
-        Mirrors the original ``_rename_database_in_permissions``.  The catalog
-        permission is re-pointed to a find-or-created new-named view-menu (via
-        ``view_menu_id`` to avoid lazy-loading ``PermissionView.view_menu``);
-        the schema view-menu is renamed in place exactly as the original does
-        (``existing_pvm.view_menu.name = new``).  Both reach the same end state:
-        the ``catalog_access`` / ``schema_access`` permission keyed on the new
-        name, plus the dependent dataset/chart ``catalog_perm`` / ``schema_perm``.
+        Re-points catalog permissions via ``view_menu_id`` to avoid lazy-loading
+        ``PermissionView.view_menu`` under AsyncSession.
         """
         from superset.db.daos.dataset import AsyncDatasetDAO
 
@@ -351,12 +312,6 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
             sm.get_catalog_perm(db_name, catalog) if catalog else None
         )
 
-        # rename existing catalog permission: find-or-create the new-named
-        # view-menu and re-point the ``catalog_access`` permission-view at it.
-        # Mirrors the original's ``add_vm(new)`` + ``existing_pvm.view_menu = new``;
-        # we set ``view_menu_id`` to avoid lazy-loading the relationship under
-        # AsyncSession, and find-or-create avoids a UNIQUE(``ab_view_menu.name``)
-        # collision when a view-menu with the new name already exists.
         if catalog:
             new_catalog_vm = await sm.add_view_menu(new_catalog_perm_name)
             old_catalog_perm = sm.get_catalog_perm(old_name, catalog)
@@ -370,13 +325,11 @@ class SyncPermissionsCommand(AsyncBaseCommand[dict[str, Any]]):
         for schema in schemas:
             new_schema_perm_name = sm.get_schema_perm(db_name, schema, catalog=catalog)
 
-            # rename existing schema view-menu
             old_schema_perm = sm.get_schema_perm(old_name, schema, catalog=catalog)
             existing_vm = await sm.find_view_menu(old_schema_perm)
             if existing_vm:
                 existing_vm.name = new_schema_perm_name
 
-            # rename permissions on datasets and charts
             datasets = await self._dao.get_datasets(
                 self._database_id,
                 catalog=catalog,

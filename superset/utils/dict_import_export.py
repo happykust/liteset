@@ -14,9 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of the original ``superset_old/utils/dict_import_export.py``.
-
-Two helpers, both used by Superset's ``init`` / CLI export commands:
+"""Utilities for Superset's ``init`` / CLI export commands.
 
 * :func:`export_schema_to_dict` — emit the schema description for every
   exportable model (``{databases: [<schema dict>]}``).
@@ -47,8 +45,8 @@ logger = logging.getLogger(__name__)
 def export_schema_to_dict(back_references: bool) -> dict[str, Any]:
     """Return the schema description for every exportable model.
 
-    Direct port of the original — :class:`Database` is the only top-level
-    exportable model in Superset, so the output is::
+    :class:`Database` is the only top-level exportable model in Superset,
+    so the output is::
 
         {"databases": [<Database.export_schema() dict>]}
     """
@@ -70,17 +68,11 @@ def export_to_dict(
 ) -> dict[str, Any]:
     """Serialise every :class:`Database` row to a plain dict.
 
-    1:1 sync port of ``superset_old/utils/dict_import_export.py``::
-
-        dbs = db.session.query(Database)
-        databases = [db.export_to_dict(...) for db in dbs]
-
-    The original was sync (called from CLI / Celery), so we keep that
-    contract here: open a short-lived sync :class:`Session` against the
-    metadata DB (mirrors :func:`superset.utils.rls._metadata_sync_engine`),
-    issue ``SELECT * FROM dbs``, and let
-    :meth:`ImportExportMixin.export_to_dict` build the YAML-friendly
-    dict for each row.
+    Opens a short-lived sync :class:`Session` via
+    :func:`superset.utils.rls._metadata_sync_engine`, queries all
+    :class:`Database` rows, and calls
+    :meth:`ImportExportMixin.export_to_dict` on each to build the
+    YAML-friendly dict.
 
     Callers running inside the ASGI request lifecycle should use
     :func:`export_to_dict_async` instead and pass their existing

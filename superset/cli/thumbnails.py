@@ -40,9 +40,8 @@ def _compute_one_thumbnail(
 ) -> None:
     """Trigger (async) or run (sync, in-process) one thumbnail computation.
 
-    The synchronous path calls the bare task function — mirroring the original
-    CLI's ``func(None, model.id, force=force)`` — so ``compute-thumbnails``
-    without ``-a`` actually renders rather than no-op'ing.
+    The synchronous path calls the bare task function directly, so
+    ``compute-thumbnails`` without ``-a`` actually renders rather than no-op'ing.
     """
     action = "Triggering" if asynchronous else "Processing"
     try:

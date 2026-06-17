@@ -16,8 +16,7 @@
 # under the License.
 """Shared key-value entries — permalink salts, etc.
 
-Async port of superset_old/key_value/shared_entries.py.  Stores
-well-known singleton values (e.g. permalink hashing salts) in the
+Stores well-known singleton values (e.g. permalink hashing salts) in the
 ``key_value`` table under the ``app`` resource, keyed by a
 deterministic UUID derived from the SharedKey name.
 """
@@ -61,7 +60,6 @@ async def set_shared_value(
 async def get_permalink_salt(session: AsyncSession, key: SharedKey) -> str:
     """Get or create a permalink hashing salt.
 
-    Ported 1:1 from superset_old/key_value/shared_entries.py:42-48.
     If the salt doesn't exist yet, generates a new 48-byte random
     salt and persists it.
     """

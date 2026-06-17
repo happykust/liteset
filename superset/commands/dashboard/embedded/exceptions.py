@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/dashboard/embedded/exceptions.py``."""
+"""Exceptions for embedded dashboard commands."""
 
 from __future__ import annotations
 
@@ -30,11 +30,8 @@ class EmbeddedDashboardNotFoundError(ObjectNotFoundError):
         embedded_dashboard_uuid: Optional[str] = None,
         exception: Optional[Exception] = None,  # noqa: ARG002
     ) -> None:
-        # ``ObjectNotFoundError`` only accepts ``(object_type, object_id)`` in
-        # Liteset, but the legacy signature included an optional ``exception``
-        # argument used solely as the ``__cause__`` in raise-chains. Preserve
-        # the old call signature for compatibility while ignoring the extra
-        # argument here (callers may still ``raise ... from ex``).
+        # Legacy signature included an ``exception`` arg used only as __cause__
+        # in raise-chains. Accept it for compatibility but ignore it here.
         super().__init__("EmbeddedDashboard", embedded_dashboard_uuid)
 
 

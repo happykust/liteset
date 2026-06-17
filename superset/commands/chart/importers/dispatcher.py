@@ -14,18 +14,17 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/chart/importers/dispatcher.py``.
+"""Chart import dispatcher.
 
 Dispatches a chart import to the registered command versions (currently
-only v1) until one matches the supplied contents, preserving the upstream
-version-fallback semantics:
+only v1) until one matches the supplied contents:
 
 * :class:`IncorrectVersionError` from a version → skip to the next one;
 * :class:`CommandInvalidError` / validation error from a matched version →
   reraise (real validation errors must not be masked by trying older
   formats);
-* no version matched → final
-  ``CommandInvalidError("Could not find a valid command to import file")``.
+* no version matched → ``CommandInvalidError("Could not find a valid command
+  to import file")``.
 """
 
 from __future__ import annotations
@@ -59,8 +58,6 @@ class ImportChartsCommand(AsyncBaseCommand[None]):
         self.kwargs = kwargs
 
     async def run(self) -> None:
-        # iterate over all commands until we find a version that can
-        # handle the contents
         for version in command_versions:
             command = version(self.contents, *self.args, **self.kwargs)
             try:
@@ -69,11 +66,9 @@ class ImportChartsCommand(AsyncBaseCommand[None]):
             except IncorrectVersionError:
                 logger.debug("File not handled by command, skipping")
             except (CommandInvalidError, CommandException):
-                # found right version, but file is invalid
                 logger.info("Command failed validation")
                 raise
             except Exception:
-                # validation succeeded but something went wrong
                 logger.exception("Error running import command")
                 raise
 

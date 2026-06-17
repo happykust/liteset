@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/dashboard/permalink/get.py``."""
+"""Get command for dashboard permalinks."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 
 
 class DashboardPermalinkGetFailedError(CommandException):
-    """1:1 port of ``superset_old/dashboards/permalink/exceptions.py:30``."""
+    """Raised when a dashboard permalink lookup fails."""
 
     message = "An error occurred while accessing the value."
 
@@ -54,10 +54,8 @@ class GetDashboardPermalinkCommand(AsyncBaseCommand[dict[str, Any]]):
     async def run(self) -> dict[str, Any]:
         session: AsyncSession = self._dao.session
         salt = await get_permalink_salt(session, SharedKey.DASHBOARD_PERMALINK_SALT)
-        # 1:1 with the original run() except-clause (superset_old/commands/
-        # dashboard/permalink/get.py:51-57): parse/decode/get failures are
-        # DOMAIN errors → DashboardPermalinkGetFailedError (CommandException,
-        # HTTP 500) — NOT a 404 (404 is reserved for a missing/expired entry).
+        # Parse/decode/get failures → 500 (DashboardPermalinkGetFailedError);
+        # 404 is reserved for missing/expired entries only.
         try:
             entry_id = decode_permalink_id(self._key, salt=salt)
             value = await self._dao.get_value_by_key(

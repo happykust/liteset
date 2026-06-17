@@ -16,11 +16,9 @@
 # under the License.
 """SQL Lab permalink commands.
 
-Re-exports of the existing permalink command surface (owned by W1) so
-that ``from superset.commands.sqllab import CreateSqlLabPermalinkCommand``
-keeps working after we restructured ``commands/sqllab.py`` into a
-package. The actual implementations live below — they are unchanged
-from the previous monolithic file.
+Create and retrieve SQL Lab editor state permalinks stored as key-value
+entries. Each POST creates a new entry; the integer id is hashids-encoded
+as the URL key.
 """
 
 from __future__ import annotations
@@ -46,10 +44,6 @@ class _SqlLabPermalinkGetFailedError(SupersetException):
     """Raised when a permalink key is malformed or cannot be decoded.
 
     Maps to HTTP 500 via the global ``superset_exception_handler``.
-    Port of ``SqlLabPermalinkGetFailedError(CommandException)`` from
-    ``superset_old/sqllab/permalink/exceptions.py``.  CommandException
-    inherits ``SupersetException.status = 500`` with no override, so the
-    original ``@safe`` decorator also returns HTTP 500 for this error.
     """
 
     status_code = 500
@@ -62,7 +56,6 @@ class _SqlLabPermalinkGetFailedError(SupersetException):
 class CreateSqlLabPermalinkCommand(AsyncBaseCommand[str]):
     """Create a SQL Lab permalink — always inserts a new KV row.
 
-    Port of superset_old/commands/sql_lab/permalink/create.py.
     Every POST unconditionally creates a new KeyValueEntry (no
     deduplication); the returned hashids-encoded integer id is the
     URL key.
@@ -120,9 +113,7 @@ class GetSqlLabPermalinkCommand(AsyncBaseCommand[dict[str, Any]]):
         from superset.key_value.utils import decode_permalink_id
         from superset.utils.core import error_msg_from_exception
 
-        # Legacy permalink keys: stored as ``kv:<int>`` before the hashids
-        # migration.  Port 1:1 from
-        # superset_old/commands/sql_lab/permalink/get.py:44-54.
+        # Legacy permalink keys: stored as ``kv:<int>`` before the hashids migration.
         if self._key.startswith("kv:"):
             kv_id = int(self._key[3:])
             try:
@@ -151,10 +142,7 @@ class GetSqlLabPermalinkCommand(AsyncBaseCommand[dict[str, Any]]):
             KeyValueCodecDecodeException,
             KeyValueGetFailedError,
         ) as ex:
-            # Malformed / invalid permalink key — HTTP 500, matching the
-            # original ``SqlLabPermalinkGetFailedError`` which inherits
-            # CommandException → SupersetException.status = 500.
-            # (superset_old/commands/sql_lab/permalink/get.py:56-68)
+            # Malformed / invalid permalink key — HTTP 500.
             raise _SqlLabPermalinkGetFailedError(str(ex)) from ex
         except Exception as ex:  # noqa: BLE001
             raise _SqlLabPermalinkGetFailedError(error_msg_from_exception(ex)) from ex

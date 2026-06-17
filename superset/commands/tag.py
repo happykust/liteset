@@ -31,9 +31,9 @@ logger = logging.getLogger(__name__)
 
 
 async def _resolve_tagged_object(session: Any, object_type: str, object_id: int) -> Any:
-    """Async port of ``commands/tag/utils.py::to_object_model`` — resolve a
-    chart/dashboard/query by id (owners eager-loaded for the ownership check).
-    Returns ``None`` for types without an ownership model (e.g. dataset).
+    """Resolve a chart/dashboard/query by id (owners eager-loaded for the
+    ownership check). Returns ``None`` for types without an ownership model
+    (e.g. dataset).
     """
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
@@ -67,8 +67,7 @@ async def _skip_unowned_objects(
 ) -> set[tuple[str, int]]:
     """Return the ``(object_type, object_id)`` pairs the user may NOT tag.
 
-    1:1 with ``CreateCustomTagWithRelationshipsCommand.validate`` — skip an
-    object when ``raise_for_ownership`` denies AND the user isn't its
+    Skips an object when ``raise_for_ownership`` denies AND the user isn't its
     ``created_by``. Admins own everything → nothing skipped. No security
     manager (e.g. internal callers) → skip nothing.
     """
@@ -78,9 +77,6 @@ async def _skip_unowned_objects(
     from superset.exceptions import SupersetSecurityException
 
     user_id = getattr(current_user, "id", None)
-    # 1:1 with superset_old/commands/tag/create.py:89-119:
-    # resolution errors are collected and raised as 422 after the loop,
-    # not silently swallowed (which would allow tagging without ownership check).
     exceptions: list[Exception] = []
     for obj in objects_to_tag:
         if not isinstance(obj, (list, tuple)) or len(obj) != 2:
@@ -128,30 +124,14 @@ class CreateTagCommand(AsyncBaseCommand[Any]):
 
     async def run(self) -> Any:
         name = self._data["name"]
-        # Unconditional assignment — 1:1 with upstream
-        # ``tag.description = self._properties.get("description", "")``
-        # (commands/tag/create.py:85): re-submitting an existing tag with an
-        # empty/absent description CLEARS it.
+        # Re-submitting an existing tag with no description clears it (not a no-op).
         tag = await self._dao.get_by_name(name, "custom")
         tag.description = self._data.get("description", "")
-        # Create tagged object associations if provided.
-        #
-        # Each entry is a ``[object_type, object_id]`` PAIR — the shape both
-        # the frontend (TagModal ``['dashboard', id]`` / BulkTagModal
-        # ``[resourceName, id]``) and ``TagPostSchema`` (``list[list[str|int]]``)
-        # use, NOT a dict. The previous ``obj["object_type"]`` indexed a list by
-        # a string key → ``TypeError`` → HTTP 500 on EVERY custom-tag-with-
-        # objects create (both ``POST /tag/`` and ``/tag/bulk_create``).
+        # Each entry is a [object_type, object_id] pair (not a dict).
         from superset.models.tags import ObjectType
 
         objects_to_tag = self._data.get("objects_to_tag", []) or []
 
-        # Ownership-skip check — 1:1 with upstream
-        # ``CreateCustomTagWithRelationshipsCommand.validate`` (superset_old/
-        # commands/tag/create.py:88-116): objects the requesting user neither
-        # owns nor created are silently excluded from tagging. The single
-        # ``POST /tag/`` path previously called ``CreateTagCommand`` without
-        # passing security_manager, so the skip was never applied.
         normalized: list[Any] = []
         for obj in objects_to_tag:
             if not isinstance(obj, (list, tuple)) or len(obj) != 2:
@@ -171,22 +151,15 @@ class CreateTagCommand(AsyncBaseCommand[Any]):
         for obj in normalized:
             object_type, object_id = obj[0], obj[1]
             pair = (str(object_type), int(object_id))
-            # Validate the object type up front — ``ObjectType[object_type]``
-            # downstream would ``KeyError`` → 500 on an unknown type. Mirror
-            # upstream's ``invalid object type`` 4xx.
+            # ``ObjectType[unknown_type]`` would KeyError → 500; validate here for 4xx.
             if str(object_type) not in ObjectType.__members__:
                 raise CommandInvalidError(f"invalid object type {object_type}")
             if pair in skipped:
                 continue
             pairs.append(pair)
 
-        # RECONCILE (not insert-only) — 1:1 with upstream
-        # ``CreateCustomTagWithRelationshipsCommand.run`` →
-        # ``TagDAO.create_tag_relationship(objects_to_tag, tag, bulk_create)``:
-        # with ``bulk_create=False`` (single POST /tag/) associations absent
-        # from the submitted list are DELETED (empty list wipes all), so
-        # re-submitting an existing tag name REPLACES its object set; the
-        # bulk path (``bulk_create=True``) stays insert-only.
+        # With bulk_create=False: absent associations are deleted (full replace);
+        # bulk_create=True is insert-only.
         await self._dao.create_tag_relationship(
             pairs, tag, bulk_create=self._bulk_create
         )
@@ -206,11 +179,6 @@ class UpdateTagCommand(AsyncBaseCommand[Any]):
         if self._item is None:
             raise ObjectNotFoundError("Tag", self._pk)
 
-        # Validate object types in objects_to_tag — 1:1 with upstream
-        # ``UpdateTagCommand.validate`` (superset_old/commands/tag/update.py:61-71)
-        # which calls ``to_object_type()`` and raises ``TagInvalidError`` for
-        # invalid types. We use ``CommandInvalidError`` (422) as the liteset
-        # equivalent.
         if objects_to_tag := self._data.get("objects_to_tag"):
             from superset.models.tags import ObjectType
 
@@ -235,20 +203,12 @@ class UpdateTagCommand(AsyncBaseCommand[Any]):
                 )
 
     async def run(self) -> Any:
-        # ``objects_to_tag`` is NOT a column/relationship on ``Tag`` — passing
-        # it to ``dao.update`` set a bogus Python attr (silent no-op), so tag
-        # EDITs never reconciled their tagged objects. Strip it and reconcile
-        # via ``create_tag_relationship`` (add new + delete removed), 1:1 with
-        # upstream ``UpdateTagCommand.run``.
+        # ``objects_to_tag`` is not a model column; passing it to dao.update
+        # is a silent no-op.
         objects_to_tag = self._data.get("objects_to_tag", [])
         scalar_data = {k: v for k, v in self._data.items() if k != "objects_to_tag"}
-        # 1:1 with superset_old/commands/tag/update.py:48:
-        #   ``self._model.description = self._properties.get('description')``
-        # The original always writes description (None when absent from PUT
-        # body), clearing it to NULL. The controller strips UNSET fields via
-        # ``filter_unset`` before calling this command, so description may be
-        # absent from self._data — we must re-inject it explicitly so the DAO
-        # always sets the column (to None = clear, or to the provided value).
+        # Re-inject description so DAO always writes it (None = clear);
+        # controller strips UNSET fields.
         scalar_data["description"] = self._data.get("description")
         item = await self._dao.update(self._item, scalar_data)
 
@@ -281,9 +241,7 @@ class DeleteTagCommand(AsyncBaseCommand[None]):
 class BulkDeleteTagCommand(AsyncBaseCommand[int]):
     """Bulk delete tags by name.
 
-    Matches original Superset's ``DeleteTagsCommand`` at
-    superset_old/commands/tag/delete.py:89-96 — receives a list of tag
-    *names*, validates each exists, then delegates to
+    Receives a list of tag *names*, validates each exists, then delegates to
     ``TagDAO.delete_tags`` which removes both the tag rows and the
     associated ``tagged_object`` entries.
     """
@@ -295,10 +253,6 @@ class BulkDeleteTagCommand(AsyncBaseCommand[int]):
     async def validate(self) -> None:
         if not self._tag_names:
             raise CommandInvalidError("No tag names provided for bulk delete")
-        # Validate every requested tag exists — 1:1 with upstream
-        # ``DeleteTagsCommand.validate`` (superset_old/commands/tag/delete.py:98-105)
-        # which collects ALL missing tags and raises ``TagInvalidError``
-        # (422) with the full list, not a 404 on the first miss.
         exceptions: list[Exception] = []
         for name in self._tag_names:
             if not await self._dao.find_by_name(name):
@@ -334,14 +288,11 @@ class BulkCreateTagCommand(AsyncBaseCommand[dict[str, list[Any]]]):
                 raise CommandInvalidError("All tags must have a name")
 
     async def run(self) -> dict[str, list[Any]]:
-        """Create each custom tag + its relationships, returning the upstream
-        ``{objects_tagged, objects_skipped}`` payload.
+        """Create each custom tag + its relationships.
 
-        Mirrors ``tags/api.py::bulk_create`` which accumulates the tagged and
-        ownership-skipped ``(type, id)`` pairs across all tags. The port
-        previously returned a bare ``[{id, name}]`` list → the frontend
-        ``BulkTagModal`` (reads ``result.objects_tagged``/``objects_skipped``)
-        threw on every success.
+        Returns ``{objects_tagged, objects_skipped}`` — the ownership-skipped
+        ``(type, id)`` pairs are collected across all tags so the frontend
+        ``BulkTagModal`` can display what was and wasn't tagged.
         """
         all_tagged: set[tuple[str, int]] = set()
         all_skipped: set[tuple[str, int]] = set()
@@ -359,7 +310,6 @@ class BulkCreateTagCommand(AsyncBaseCommand[dict[str, list[Any]]]):
             )
             all_skipped |= skipped
             all_tagged |= set(objects_to_tag)
-            # Only tag the objects the user is allowed to.
             tag_data = {
                 **tag_data,
                 "objects_to_tag": [list(p) for p in objects_to_tag if p not in skipped],

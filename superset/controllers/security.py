@@ -209,8 +209,7 @@ class SecurityController(Controller):
     ) -> dict[str, str]:
         """Generate and return a CSRF token.
 
-        Compatible with the upstream ``generate_csrf()``.
-        Frontend stores this and sends it in ``X-CSRFToken``
+        Frontend stores this and sends it in the ``X-CSRFToken``
         header on POST/PUT/DELETE requests.
         """
         from superset.middleware.csrf import (
@@ -335,14 +334,12 @@ class SecurityController(Controller):
                 "(guest_token_jwt_secret or secret_key)"
             )
 
-        # 1:1 with superset_old config GUEST_TOKEN_JWT_EXP_SECONDS = 300 (5 min).
+        # Default: GUEST_TOKEN_JWT_EXP_SECONDS = 300 (5 min).
         exp_seconds: int = getattr(settings, "guest_token_jwt_exp_seconds", 300)
 
         # Resolve audience: GUEST_TOKEN_JWT_AUDIENCE config or WEBDRIVER_BASEURL.
-        # Mirrors original _get_guest_token_jwt_audience():
-        #   audience = get_conf()["GUEST_TOKEN_JWT_AUDIENCE"] or get_url_host()
-        # get_url_host() returns app.config["WEBDRIVER_BASEURL"] — a configured
-        # base URL, NOT the attacker-controllable Host request header.
+        # WEBDRIVER_BASEURL is a configured base URL, NOT the attacker-controllable
+        # Host request header.
         audience_setting = getattr(settings, "guest_token_jwt_audience", None)
         if audience_setting is not None:
             audience = (
@@ -409,7 +406,6 @@ class SecurityController(Controller):
                 detail=f"Invalid order column: {order_column}",
             )
 
-        # Extract filters — mirrors original filter_dict loop (security/api.py:305-319)
         name_filter: str | None = None
         user_ids_filter: str | None = None
         permission_ids_filter: str | None = None

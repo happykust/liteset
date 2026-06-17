@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/security/create.py``."""
+"""Command for creating Row Level Security filters."""
 
 from __future__ import annotations
 
@@ -31,11 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class CreateRLSRuleCommand(AsyncBaseCommand[Any]):
-    """Create a new Row Level Security filter.
-
-    Async port of
-    ``superset_old.commands.security.create.CreateRLSRuleCommand``.
-    """
+    """Create a new Row Level Security filter."""
 
     def __init__(self, dao: Any, data: dict[str, Any]) -> None:
         self._dao = dao
@@ -45,10 +41,6 @@ class CreateRLSRuleCommand(AsyncBaseCommand[Any]):
 
     async def validate(self) -> None:
         roles = await populate_roles(self._dao.session, self._roles)
-        # Resolve dataset ids to ``SqlaTable`` objects — inlined from the
-        # legacy sync ``CreateRLSRuleCommand.validate``.  Raises
-        # :class:`DatasourceNotFoundValidationError` if any of the requested
-        # ids does not exist.
         tables: list[Any] = []
         if self._tables:
             from superset.models.connectors import SqlaTable
@@ -63,8 +55,7 @@ class CreateRLSRuleCommand(AsyncBaseCommand[Any]):
 
     async def run(self) -> Any:
         item = await self._dao.create(self._properties)
-        # Flush so the autoincrement ``id`` is populated before the controller
-        # builds ``{"id": item.id, "result": …}`` — without this, the create
-        # response carried ``"id": null``. Matches css_template / tag / theme.
+        # Flush so the autoincrement ``id`` is populated before the controller builds
+        # the ``{"id": item.id, "result": …}`` response — without this, id is null.
         await self._dao.session.flush()
         return item

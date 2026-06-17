@@ -29,10 +29,6 @@ from sqlalchemy.orm import relationship
 
 from superset.models.helpers import AuditMixinNullable, Base, BinaryUUID
 
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
-
 
 class EmbeddedDashboard(Base, AuditMixinNullable):
     """An embedded dashboard configuration."""
@@ -61,8 +57,7 @@ class EmbeddedDashboard(Base, AuditMixinNullable):
     def allowed_domains(self) -> list[str]:
         """List of domains allowed to embed the dashboard.
 
-        Empty list means any domain can embed. Mirrors the original
-        Superset model at superset_old/models/embedded_dashboard.py:54-60.
+        Empty list means any domain can embed.
         """
         if not self.allow_domain_list:
             return []

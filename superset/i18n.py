@@ -30,7 +30,6 @@ _current_locale: contextvars.ContextVar[str] = contextvars.ContextVar(
     "current_locale", default="en"
 )
 
-# locale -> {msgid -> translated}
 _translations: dict[str, dict[str, str]] = {}
 
 # locale -> {singular msgid -> [form0, form1, ...]} (plural variants)
@@ -40,7 +39,6 @@ _plural_rules: dict[str, Any] = {}
 
 
 def init_translations(translations: dict[str, dict[str, str]]) -> None:
-    """Load translation catalogs at startup."""
     _translations.update(translations)
 
 
@@ -65,7 +63,7 @@ def init_plural_data(
 
 
 def ngettext(singular: str, plural: str, num: int, **variables: Any) -> str:
-    """Plural-aware translation — mirrors the upstream ``ngettext``.
+    """Plural-aware translation.
 
     Selects the plural form for ``num`` using the locale's Plural-Forms
     rule (so e.g. Russian's three forms resolve correctly); falls back to
@@ -85,7 +83,6 @@ def ngettext(singular: str, plural: str, num: int, **variables: Any) -> str:
         if 0 <= idx < len(forms) and forms[idx]:
             result = forms[idx]
     if result is None:
-        # Fall back to the flat catalog / untranslated msgid.
         catalog = _translations.get(locale, {})
         msgid = singular if num == 1 else plural
         result = catalog.get(msgid, msgid)
@@ -94,7 +91,6 @@ def ngettext(singular: str, plural: str, num: int, **variables: Any) -> str:
 
 
 def set_locale(locale: str) -> contextvars.Token[str]:
-    """Set locale and return token for reset."""
     return _current_locale.set(locale)
 
 
@@ -107,7 +103,7 @@ def gettext(msgid: str, **variables: Any) -> str:
 
     When ``variables`` are supplied the translated string is interpolated
     via ``result % variables`` so that ``%(name)s``-style placeholders are
-    filled in (mirrors the legacy gettext API surface).
+    filled in.
     """
     locale = _current_locale.get()
     catalog = _translations.get(locale, {})

@@ -74,7 +74,6 @@ async def populate_roles(
 ) -> list[Any]:
     """Resolve role ids to ``Role`` objects.
 
-    Async port of ``superset_old/commands/utils.py:populate_roles``.
     Returns ``[]`` for an empty/None list. Raises
     :class:`RolesNotFoundValidationError` if any id can't be resolved.
     """
@@ -99,8 +98,6 @@ async def populate_owner_list(
     default_to_user: bool,
 ) -> list[Any]:
     """Resolve owner ids to User objects.
-
-    Async port of ``superset_old/commands/utils.py:populate_owner_list``.
 
     - When ``owner_ids`` is empty and ``default_to_user`` is True, the
       current user becomes the only owner.
@@ -137,7 +134,6 @@ async def compute_owner_list(
 ) -> list[Any]:
     """Compute final owner list for an update.
 
-    Async port of ``superset_old/commands/utils.py:compute_owner_list``.
     Preserves existing owners when ``new_owner_ids`` is ``None``;
     otherwise resolves and validates the supplied ids.
     """
@@ -164,8 +160,6 @@ async def validate_tags(
 ) -> None:
     """Validate the tags list for an update command.
 
-    Async port of ``superset_old/commands/utils.py::validate_tags``.
-
     Users with ``can_write`` on ``Tag`` are allowed to both create new tags
     and manage tag associations with objects. Users with ``can_tag`` on
     ``object_type`` are only allowed to manage existing tags' associations
@@ -180,16 +174,13 @@ async def validate_tags(
     :raises TagNotFoundValidationError: if a new tag id does not exist
     """
 
-    # `tags` not part of the update payload
     if new_tag_ids is None:
         return
 
-    # No changes in the list
     current_custom_tags = [tag.id for tag in current_tags if tag.type == TagType.custom]
     if Counter(current_custom_tags) == Counter(new_tag_ids):
         return
 
-    # No perm to tag assets
     if not (
         await security_manager.can_access("can_write", "Tag", user=user)
         or await security_manager.can_access(
@@ -201,7 +192,6 @@ async def validate_tags(
         )
         raise TagForbiddenError(validation_error)
 
-    # Validate if new tags already exist
     from superset.db.daos.tag import AsyncTagDAO
 
     tag_dao = AsyncTagDAO(security_manager.dao.session)
@@ -222,8 +212,6 @@ async def update_tags(
     session: AsyncSession,
 ) -> None:
     """Update the tag relationship for an object on an update command.
-
-    Async port of ``superset_old/commands/utils.py::update_tags``.
 
     :param object_type: the object type being tagged
     :param object_id: the object (dashboard, chart, etc) id

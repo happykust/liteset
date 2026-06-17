@@ -14,12 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Dataset-specific exceptions.
-
-The async port re-uses the centralized exceptions from
-:mod:`superset.exceptions` and adds dataset-only ones (1:1 with
-``superset_old/commands/dataset/exceptions.py``).
-"""
+"""Dataset-specific exception classes."""
 
 from __future__ import annotations
 
@@ -38,26 +33,20 @@ if TYPE_CHECKING:
 
 
 def get_dataset_exist_error_msg(table: Table) -> str:
-    # 1:1 with ``superset_old/commands/dataset/exceptions.py:32``.
     return _("Dataset %(table)s already exists", table=table)
 
 
 class DatasetValidationError(CommandInvalidError):
     """Lightweight per-field dataset validation error.
 
-    Port of the marshmallow ``ValidationError`` subclasses in
-    ``superset_old/commands/dataset/exceptions.py``.  Each instance carries a
-    ``field_name`` and a list of human-readable messages so an accumulating
-    :class:`DatasetInvalidError` can merge them into the ``{field: [messages]}``
-    body that upstream FAB returns via
-    ``response_422(message=ex.normalized_messages())``.
-
-    The async port does not use marshmallow; ``normalized_messages()`` is
-    reimplemented here to produce the exact same shape marshmallow would.
+    Each instance carries a ``field_name`` and a list of human-readable
+    messages so an accumulating :class:`DatasetInvalidError` can merge them
+    into the ``{field: [messages]}`` 422 body via ``normalized_messages()``.
     """
 
     status_code = 422
-    # Marshmallow uses the ``"_schema"`` key for field-less ValidationErrors.
+    # "_schema" is the Marshmallow key for field-less ValidationErrors; kept for
+    # compatibility with any consumer that parses the per-field 422 body shape.
     field_name: str = "_schema"
 
     def __init__(
@@ -79,7 +68,7 @@ class DatasetValidationError(CommandInvalidError):
 
 
 class MultiCatalogDisabledValidationError(DatasetValidationError):
-    """1:1 with ``superset_old`` ``MultiCatalogDisabledValidationError``."""
+    """Raised when the connection does not support multiple catalogs."""
 
     field_name = "catalog"
 
@@ -90,7 +79,7 @@ class MultiCatalogDisabledValidationError(DatasetValidationError):
 
 
 class DatabaseNotFoundValidationError(DatasetValidationError):
-    """1:1 with ``superset_old`` ``DatabaseNotFoundValidationError``."""
+    """Raised when the specified database does not exist."""
 
     field_name = "database"
 
@@ -99,7 +88,7 @@ class DatabaseNotFoundValidationError(DatasetValidationError):
 
 
 class DatasetExistsValidationError(DatasetValidationError):
-    """1:1 with ``superset_old`` ``DatasetExistsValidationError``."""
+    """Raised when a dataset with the given table name already exists."""
 
     field_name = "table"
 
@@ -108,7 +97,7 @@ class DatasetExistsValidationError(DatasetValidationError):
 
 
 class DatasetColumnNotFoundValidationError(DatasetValidationError):
-    """1:1 with ``superset_old`` ``DatasetColumnNotFoundValidationError``."""
+    """Raised when one or more submitted column IDs do not exist on the dataset."""
 
     field_name = "columns"
 
@@ -117,7 +106,7 @@ class DatasetColumnNotFoundValidationError(DatasetValidationError):
 
 
 class DatasetColumnsDuplicateValidationError(DatasetValidationError):
-    """1:1 with ``superset_old`` ``DatasetColumnsDuplicateValidationError``."""
+    """Raised when submitted columns contain duplicate names."""
 
     field_name = "columns"
 
@@ -126,7 +115,7 @@ class DatasetColumnsDuplicateValidationError(DatasetValidationError):
 
 
 class DatasetColumnsExistsValidationError(DatasetValidationError):
-    """1:1 with ``superset_old`` ``DatasetColumnsExistsValidationError``."""
+    """Raised when new columns conflict with existing column names on the dataset."""
 
     field_name = "columns"
 
@@ -135,7 +124,7 @@ class DatasetColumnsExistsValidationError(DatasetValidationError):
 
 
 class DatasetMetricsNotFoundValidationError(DatasetValidationError):
-    """1:1 with ``superset_old`` ``DatasetMetricsNotFoundValidationError``."""
+    """Raised when one or more submitted metric IDs do not exist on the dataset."""
 
     field_name = "metrics"
 
@@ -144,7 +133,7 @@ class DatasetMetricsNotFoundValidationError(DatasetValidationError):
 
 
 class DatasetMetricsDuplicateValidationError(DatasetValidationError):
-    """1:1 with ``superset_old`` ``DatasetMetricsDuplicateValidationError``."""
+    """Raised when submitted metrics contain duplicate names."""
 
     field_name = "metrics"
 
@@ -153,7 +142,7 @@ class DatasetMetricsDuplicateValidationError(DatasetValidationError):
 
 
 class DatasetMetricsExistsValidationError(DatasetValidationError):
-    """1:1 with ``superset_old`` ``DatasetMetricsExistsValidationError``."""
+    """Raised when new metrics conflict with existing metric names on the dataset."""
 
     field_name = "metrics"
 
@@ -162,7 +151,7 @@ class DatasetMetricsExistsValidationError(DatasetValidationError):
 
 
 class TableNotFoundValidationError(DatasetValidationError):
-    """1:1 with ``superset_old`` ``TableNotFoundValidationError``."""
+    """Raised when the target physical table cannot be found in the database."""
 
     field_name = "table"
 
@@ -181,7 +170,7 @@ class TableNotFoundValidationError(DatasetValidationError):
 
 
 class OwnersNotFoundValidationError(DatasetValidationError):
-    """1:1 with ``superset_old`` ``OwnersNotFoundValidationError``."""
+    """Raised when one or more submitted owner IDs do not exist."""
 
     field_name = "owners"
 
@@ -190,7 +179,7 @@ class OwnersNotFoundValidationError(DatasetValidationError):
 
 
 class DatasetDataAccessIsNotAllowed(DatasetValidationError):  # noqa: N818
-    """1:1 with ``superset_old`` ``DatasetDataAccessIsNotAllowed``."""
+    """Raised when the user lacks access to the SQL statement's data sources."""
 
     field_name = "sql"
 
@@ -199,10 +188,7 @@ class DatasetDataAccessIsNotAllowed(DatasetValidationError):  # noqa: N818
 
 
 class DatasourceTypeInvalidError(DatasetValidationError):
-    """1:1 with ``superset_old`` ``commands/exceptions.py::DatasourceTypeInvalidError``.
-
-    Used by the duplicate command to reject non-virtual datasets.
-    """
+    """Raised by the duplicate command to reject non-virtual (physical) datasets."""
 
     field_name = "datasource_type"
 
@@ -213,13 +199,9 @@ class DatasourceTypeInvalidError(DatasetValidationError):
 class DatasetInvalidError(CommandInvalidError):
     """Accumulating dataset validation error.
 
-    Port of ``superset_old/commands/dataset/exceptions.py::DatasetInvalidError``
-    combined with ``CommandInvalidError.normalized_messages`` from
-    ``superset_old/commands/exceptions.py``.  Holds a list of per-field child
-    errors (:class:`DatasetValidationError`) and merges their
-    ``normalized_messages()`` into a single ``{field: [messages]}`` dict so the
-    dataset controller can emit the per-field 422 body 1:1 with upstream FAB
-    ``response_422(message=ex.normalized_messages())``.
+    Holds a list of per-field :class:`DatasetValidationError` children and
+    merges their ``normalized_messages()`` into a ``{field: [messages]}`` dict
+    for the per-field 422 response body.
     """
 
     status_code = 422
@@ -229,9 +211,6 @@ class DatasetInvalidError(CommandInvalidError):
         self,
         exceptions: list[DatasetValidationError] | None = None,
     ) -> None:
-        # Call super first so CommandInvalidError.__init__ initialises
-        # self._exceptions; then overwrite with our typed list so that
-        # append/extend/normalized_messages work on the correct collection.
         super().__init__(message=str(self.message))
         self._exceptions: list[DatasetValidationError] = list(  # type: ignore[assignment]
             exceptions or []
@@ -244,8 +223,6 @@ class DatasetInvalidError(CommandInvalidError):
         self._exceptions.extend(exceptions)
 
     def normalized_messages(self) -> dict[str, list[str]]:
-        # Mirrors upstream ``CommandInvalidError.normalized_messages`` which
-        # uses ``dict.update`` (last write wins for a repeated field key).
         errors: dict[str, list[str]] = {}
         for exception in self._exceptions:
             errors.update(exception.normalized_messages())
@@ -253,45 +230,33 @@ class DatasetInvalidError(CommandInvalidError):
 
 
 class WarmUpCacheTableNotFoundError(CommandException):
-    # ``status`` mirrors ``superset_old/commands/dataset/exceptions.py:205``
-    # (1:1 with original).  ``status_code`` is kept in sync so the Liteset
-    # exception-to-HTTP mapping (which keys off ``status_code`` everywhere
-    # else) still emits the correct 404.
+    # Both ``status`` and ``status_code`` kept in sync — different exception
+    # handlers key off different fields, both must agree on 404.
     status = 404
     status_code = 404
     message = _("The provided table was not found in the provided database")
 
 
 class DatasetCreateFailedError(CommandInvalidError):
-    # 1:1 with ``superset_old/commands/dataset/exceptions.py:165``.  The
-    # original maps to 422 via the API view's explicit handler; here the
-    # ``status_code`` carries that mapping (CommandInvalidError = 422).
     status_code = 422
     message = _("Dataset could not be created.")
 
 
 class DatasetRefreshFailedError(CommandInvalidError):
-    # 1:1 with ``superset_old/commands/dataset/exceptions.py:177`` (which
-    # subclasses ``UpdateFailedError`` and surfaces "Dataset could not be
-    # updated." → 422).
     status_code = 422
     message = _("Dataset could not be updated.")
 
 
 class DatasetForbiddenDataURI(ImportFailedError):  # noqa: N818
-    # 1:1 with original. Returns 500 when Data URI is forbidden.
     message = _("Data URI is not allowed.")
 
 
 def dataset_invalid_error_handler(request: Any, exc: DatasetInvalidError) -> Any:
-    """Litestar handler for :class:`DatasetInvalidError`.
+    """Litestar exception handler for :class:`DatasetInvalidError`.
 
-    Emits the per-field 422 body 1:1 with upstream FAB
-    ``response_422(message=ex.normalized_messages())`` — i.e.
-    ``{"message": {field: [messages]}}`` — instead of the port-wide
-    flat-string ``{"message": "..."}`` shape produced by
-    ``superset_exception_handler``.  Registered only for datasets; every other
-    command keeps the flat-string convention.
+    Returns a per-field 422 body ``{"message": {field: [messages]}}`` instead
+    of the flat-string ``{"message": "..."}`` shape. Registered only for
+    datasets; other commands use the flat-string convention.
     """
     from litestar import Response
     from litestar.enums import MediaType

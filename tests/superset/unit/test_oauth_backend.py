@@ -105,10 +105,6 @@ async def test_handle_callback_rejects_provider_mismatch():
         )
 
 
-# ---------------------------------------------------------------------------
-# get_user_info — per-provider identity mapping (openshift / authentik / azure)
-# ---------------------------------------------------------------------------
-
 _ENDPOINTS = {
     "userinfo_url": "",
     "jwks_uri": "",
@@ -164,7 +160,7 @@ async def test_get_user_info_authentik_maps_nickname_and_preferred_username():
 
 async def test_get_user_info_azure_unsafe_decode_is_default():
     """Azure default (verify_signature unset) decodes the id_token without
-    network validation — 1:1 with FAB's default branch."""
+    network validation."""
     backend = _backend()
     id_token = _unsigned_jwt(
         {"oid": "az-oid", "given_name": "Bob", "upn": "bob@corp.com", "roles": ["r1"]}
@@ -197,11 +193,6 @@ async def test_get_user_info_azure_verify_signature_validates(monkeypatch):
             token_resp={"id_token": id_token},
             endpoints=_ENDPOINTS,
         )
-
-
-# ---------------------------------------------------------------------------
-# OIDC nonce is minted into the authorize URL and the signed state
-# ---------------------------------------------------------------------------
 
 
 def _backend_with_authorize_url() -> OAuthAuthBackend:

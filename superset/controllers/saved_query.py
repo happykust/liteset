@@ -64,9 +64,6 @@ if TYPE_CHECKING:
     from superset.db.daos.query import AsyncSavedQueryDAO
 
 
-# ---------------------------------------------------------------------------
-# Custom RISON filters for saved queries
-# ---------------------------------------------------------------------------
 def _filter_is_fav(current_user: Any, model_cls: Any, value: Any) -> Any:
     from sqlalchemy import select as sa_select
 
@@ -85,11 +82,7 @@ def _filter_is_fav(current_user: Any, model_cls: Any, value: Any) -> Any:
 
 
 def _filter_all_text(model_cls: Any, value: Any) -> Any:
-    """Full-text OR-search across schema, label, description and sql.
-
-    1:1 port of ``superset_old/queries/saved_queries/filters.py::
-    SavedQueryAllTextFilter``.
-    """
+    """Full-text OR-search across schema, label, description and sql."""
     if not value:
         return None
     from sqlalchemy import or_
@@ -106,12 +99,9 @@ def _filter_all_text(model_cls: Any, value: Any) -> Any:
 def _filter_tags(model_cls: Any, value: Any) -> Any:
     """Filter saved queries by tag name (substring match).
 
-    1:1 port of ``superset_old/queries/saved_queries/filters.py::
-    SavedQueryTagNameFilter`` which used ``BaseTagNameFilter``.  The
-    original joined via ``SavedQuery.tags`` → ``Tag.name.ilike``; we
-    replicate via the ``TaggedObject`` association table so we stay
-    portable across both the legacy ``M2M via SavedQuery.tags`` and
-    the newer ``TaggedObject`` approach.
+    Joins via the ``TaggedObject`` association table so this works across
+    both the legacy M2M via ``SavedQuery.tags`` and the newer
+    ``TaggedObject`` approach.
     """
     if not value:
         return None
@@ -129,11 +119,7 @@ def _filter_tags(model_cls: Any, value: Any) -> Any:
 
 
 def _filter_tag_id(model_cls: Any, value: Any) -> Any:
-    """Filter saved queries by tag ID.
-
-    1:1 port of ``superset_old/queries/saved_queries/filters.py::
-    SavedQueryTagIdFilter`` which used ``BaseTagIdFilter``.
-    """
+    """Filter saved queries by tag ID."""
     if value is None:
         return None
     from sqlalchemy import select as sa_select
@@ -161,14 +147,12 @@ def _saved_query_custom_filters(current_user: Any) -> dict[str, Any]:
 
 
 def _saved_query_sql_tables(query: Any) -> list[dict[str, Any]]:
-    """Best-effort port of ``SavedQuery.sql_tables`` (via ``SqlTablesMixin``).
+    """Best-effort extraction of SQL tables referenced by a saved query.
 
-    1:1 with ``superset_old/models/sql_lab.py:82-93``: the original
-    ``SqlTablesMixin.sql_tables`` property parses SQL via Jinja + sqlglot
-    and returns the referenced tables, falling back to ``[]`` on any
-    parse/security/template error. Serialises each ``Table`` dataclass to
-    ``{table, schema, catalog}`` matching the JSON shape the frontend
-    expects.
+    Parses SQL via Jinja + sqlglot and returns the referenced tables, falling
+    back to ``[]`` on any parse/security/template error. Serialises each
+    ``Table`` dataclass to ``{table, schema, catalog}`` matching the JSON
+    shape the frontend expects.
     """
     sql = getattr(query, "sql", None)
     database = getattr(query, "database", None)
@@ -279,7 +263,6 @@ class SavedQueryController(Controller):
         import humanize as _humanize
 
         now = _dt.now()
-        # Build a lookup from query id -> last_run for humanized delta
         last_run_map: dict[int, Any] = {}
         for q in queries:
             last_run_map[q.id] = getattr(q, "last_run", None)
@@ -289,10 +272,6 @@ class SavedQueryController(Controller):
             row["last_run_delta_humanized"] = (
                 _humanize.naturaltime(now - last_run) if last_run else ""
             )
-            # sql_tables — 1:1 with ``SqlTablesMixin.sql_tables`` in
-            # ``superset_old/models/sql_lab.py:82-93``: parse SQL via
-            # Jinja + sqlglot and return referenced tables, falling back
-            # to ``[]`` on any error.
             row["sql_tables"] = _saved_query_sql_tables(q)
         return payload
 
@@ -443,10 +422,8 @@ class SavedQueryController(Controller):
             object_ref=f"saved_query:{query.id}",
             user_id=current_user.id,
         )
-        # Full show_columns representation — 1:1 with FAB's post() which
-        # serialises the created object with show_columns (the previous thin
-        # ``{"label", "sql"}`` dict broke the frontend's preview modal).
-        # Eager-load the relationships from_model reads synchronously.
+        # Full show_columns representation — eager-load the relationships
+        # that from_model reads synchronously.
         await cast("AsyncSavedQueryDAO", dao).session.refresh(
             query, ["changed_by", "created_by", "database"]
         )
@@ -497,7 +474,7 @@ class SavedQueryController(Controller):
             object_ref=f"saved_query:{pk}",
             user_id=current_user.id,
         )
-        # Full show_columns representation — 1:1 with FAB's put() (see create).
+        # Full show_columns representation — see create() above.
         await cast("AsyncSavedQueryDAO", dao).session.refresh(
             query, ["changed_by", "created_by", "database"]
         )
@@ -557,8 +534,7 @@ class SavedQueryController(Controller):
         await event_logger.alog_with_context(
             "saved_query.bulk_delete", extra={"count": len(ids)}
         )
-        # Mirror superset_old/queries/saved_queries/api.py ``bulk_delete``:
-        # locale-aware ngettext keyed on len(item_ids).
+        # Locale-aware ngettext keyed on len(item_ids).
         from superset.i18n import ngettext
 
         msg = ngettext(
@@ -584,10 +560,8 @@ class SavedQueryController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             raise CommandInvalidError("At least one ID is required for export")
-        # 1:1 with ``superset_old/queries/saved_queries/api.py:286-296``:
-        # ``root = f"saved_query_export_{timestamp}"``, entries written as
-        # ``f"{root}/{file_name}"``, download named ``f"{root}.zip"``. The
-        # importer's ``remove_root`` (``parts[1:]``) strips it on re-import.
+        # Root dir: ``saved_query_export_{timestamp}``; entries written as
+        # ``{root}/{file_name}``; the importer's ``remove_root`` strips it on re-import.
         timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
         root = f"saved_query_export_{timestamp}"
         cmd = ExportSavedQueriesCommand(
@@ -620,8 +594,7 @@ class SavedQueryController(Controller):
     ) -> dict[str, str]:
         # Read the multipart body manually (see parse_import_request): the
         # ``data: UploadFile = Body(MULTI_PART)`` injection 500'd when no file
-        # field was present (Litestar StopIteration). Missing upload -> 4xx —
-        # 1:1 with upstream ``if not upload: return self.response_400()``.
+        # field was present (Litestar StopIteration). Missing upload → 4xx.
         (
             buf,
             _filename,

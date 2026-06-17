@@ -22,8 +22,7 @@ The strategy classes (:class:`TopNDashboardsStrategy`,
 engine the Celery worker uses).  These tests build the required rows (visit
 ``Log`` entries, custom ``Tag`` / ``TaggedObject`` rows, and a small unicode
 dataset + chart + dashboard) through that sync session, run the real strategy,
-and assert on the produced task list — 1:1 with
-``tests/integration_tests/strategy_tests.py``.
+and assert on the produced task list.
 
 The harness ``db_session`` (async, rolled back) is NOT used here because the
 strategy opens its own sync session and would not see uncommitted async writes;
@@ -48,7 +47,6 @@ from superset.tasks.cache import DashboardTagsStrategy, TopNDashboardsStrategy
 
 UNICODE_TBL_NAME = "unicode_test"
 
-# 1:1 port of the inline unicode loader rows.
 _UNICODE_DATA = [
     {"phrase": "Под"},
     {"phrase": "řšž"},
@@ -62,7 +60,6 @@ _UNICODE_DATA = [
 
 
 def _sync_uri() -> str:
-    """psycopg2 URI for the configured (asyncpg) metadata/examples database."""
     from superset.config import SupersetSettings
 
     settings = SupersetSettings()  # type: ignore[call-arg]
@@ -95,7 +92,6 @@ def _get_dash_by_slug(session, slug: str) -> Dashboard:
 async def test_top_n_dashboards_strategy(db_session) -> None:
     session = get_sync_session()
     try:
-        # create a top visited dashboard
         session.query(Log).delete()
         session.commit()
 
@@ -182,7 +178,6 @@ async def test_dashboard_tags_strategy(db_session) -> None:
         strategy = DashboardTagsStrategy(["tag1"])
         assert strategy.get_tasks() == []
 
-        # tag dashboard 'births' with `tag1`
         tag1 = _get_or_create_tag(session, "tag1")
         births = _get_dash_by_slug(session, "births")
         tag1_payloads = [{"chart_id": chart.id} for chart in births.slices]
@@ -203,7 +198,6 @@ async def test_dashboard_tags_strategy(db_session) -> None:
 
         assert strategy.get_tasks() == []
 
-        # tag first slice of the unicode dashboard
         dash = _get_dash_by_slug(session, "unicode-test")
         chart = dash.slices[0]
         tag2_payloads = [{"chart_id": chart.id}]
@@ -223,7 +217,6 @@ async def test_dashboard_tags_strategy(db_session) -> None:
         assert len(strategy.get_tasks()) == len(tag1_payloads + tag2_payloads)
     finally:
         cleanup = get_sync_session()
-        # Remove tagged objects and tags we created.
         for tag_name in ("tag1", "tag2"):
             tag = cleanup.query(Tag).filter_by(name=tag_name).one_or_none()
             if tag:
@@ -231,7 +224,6 @@ async def test_dashboard_tags_strategy(db_session) -> None:
                     cleanup.delete(o)
                 cleanup.delete(tag)
         cleanup.commit()
-        # Remove the unicode dashboard / slice / dataset.
         dash = cleanup.query(Dashboard).filter_by(slug="unicode-test").one_or_none()
         if dash:
             cleanup.delete(dash)

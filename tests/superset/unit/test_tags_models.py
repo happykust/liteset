@@ -20,7 +20,7 @@ The Liteset port of ``get_tag`` is async (lives in :mod:`superset.tags.core`)
 and reads via ``AsyncSession.execute(select(...))`` rather than the legacy
 ``session.query(...)`` API; new rows are created inside a ``begin_nested``
 savepoint and ``flush``-ed (no ``commit`` in the helper itself). The
-assertions below mirror the upstream intent: tag names must be plain ``str``
+assertions below verify that tag names must be plain ``str``
 (never ``Markup``), stripped of surrounding whitespace, and existing tags must
 be returned without inserting a new row.
 """
@@ -61,12 +61,8 @@ def _make_session(existing_tag: Tag | None = None) -> MagicMock:
 
 
 async def test_get_tag_returns_plain_string_not_markup() -> None:
-    """
-    Test that get_tag() returns a Tag with a plain string name, not a Markup object.
-
-    This verifies the fix for issue #32484 where escape() was wrapping tag names
-    in Markup objects, causing MySQL driver errors.
-    """
+    # Fix for issue #32484: escape() wrapped tag names in Markup objects,
+    # causing MySQL driver errors.
     session = _make_session(existing_tag=None)
 
     tag_name = "test-tag-name"
@@ -81,10 +77,6 @@ async def test_get_tag_returns_plain_string_not_markup() -> None:
 
 
 async def test_get_tag_with_special_characters() -> None:
-    """
-    Test that get_tag() correctly handles tag names with special characters
-    without converting them to Markup objects.
-    """
     tag_names = [
         "tag-with-dashes",
         "tag_with_underscores",
@@ -109,12 +101,8 @@ async def test_get_tag_with_special_characters() -> None:
 
 
 async def test_get_tag_with_html_characters() -> None:
-    """
-    Test that get_tag() handles HTML special characters correctly.
-
-    Even though these characters might have been escaped before, they should
-    now be stored as plain strings to avoid MySQL driver issues.
-    """
+    # These characters were escaped before; they must now stay plain strings
+    # to avoid MySQL driver issues.
     tag_names = [
         "tag<with>brackets",
         "tag&with&ampersands",
@@ -132,12 +120,10 @@ async def test_get_tag_with_html_characters() -> None:
         assert not isinstance(result.name, Markup), (
             f"Tag name '{tag_name}' should NOT be a Markup object"
         )
-        # Name should remain unchanged (not HTML-escaped)
         assert result.name == tag_name, f"Tag name should not be escaped: '{tag_name}'"
 
 
 async def test_get_tag_strips_whitespace() -> None:
-    """Test that get_tag() strips leading and trailing whitespace from tag names."""
     tag_names_with_whitespace = [
         ("  tag-with-leading-spaces", "tag-with-leading-spaces"),
         ("tag-with-trailing-spaces  ", "tag-with-trailing-spaces"),
@@ -160,11 +146,6 @@ async def test_get_tag_strips_whitespace() -> None:
 
 
 async def test_get_tag_returns_existing_tag() -> None:
-    """
-    Test that get_tag() returns existing tag from database.
-
-    Verifies it doesn't create a new one.
-    """
     existing_tag = Tag(name="existing-tag", type=TagType.custom)
     existing_tag.id = 42
 
@@ -178,7 +159,6 @@ async def test_get_tag_returns_existing_tag() -> None:
 
 
 async def test_get_tag_creates_new_tag() -> None:
-    """Test that get_tag() creates and flushes a new tag when it doesn't exist."""
     session = _make_session(existing_tag=None)
 
     tag_name = "new-tag"
@@ -200,7 +180,6 @@ async def test_get_tag_creates_new_tag() -> None:
 
 
 async def test_get_tag_with_different_tag_types() -> None:
-    """Test that get_tag() works correctly with all TagType values."""
     tag_types = [
         TagType.custom,
         TagType.type,
@@ -223,10 +202,6 @@ async def test_get_tag_with_different_tag_types() -> None:
 
 
 async def test_tag_name_type_after_database_operation() -> None:
-    """
-    Simulate the complete flow to ensure tag name remains a string
-    throughout the database operation lifecycle.
-    """
     session = _make_session(existing_tag=None)
 
     tag_name = "mysql-compatibility-test"

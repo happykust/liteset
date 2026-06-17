@@ -15,15 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Apache Impala engine spec -- sync-compatible.
-
-Ported 1:1 from ``superset_old/db_engine_specs/impala.py`` with legacy
-imports replaced:
-
-* ``db.session`` -> ``sqlalchemy.orm.object_session(query)`` (the same
-  substitution the Hive spec uses);
-* ``app.config["DB_POLL_INTERVAL_SECONDS"]`` -> ``SupersetSettings``.
-"""
+"""Apache Impala database engine spec."""
 
 from __future__ import annotations
 
@@ -47,8 +39,6 @@ QUERY_PROGRESS_REGEX = re.compile(r"Query.*: (?P<query_progress>[0-9]+)%")
 
 
 class ImpalaEngineSpec(BaseEngineSpec):
-    """Engine spec for Cloudera's Impala"""
-
     engine = "impala"
     engine_name = "Apache Impala"
 
@@ -113,7 +103,6 @@ class ImpalaEngineSpec(BaseEngineSpec):
 
     @classmethod
     def handle_cursor(cls, cursor: Any, query: Query) -> None:
-        """Stop query and updates progress information"""
         # pylint: disable=import-outside-toplevel
         import time
 
@@ -135,16 +124,12 @@ class ImpalaEngineSpec(BaseEngineSpec):
                 if session is not None:
                     session.refresh(query)
                     query = session.query(type(query)).filter_by(id=query_id).one()
-                # if query cancelation was requested prior to the handle_cursor
-                # call, but the query was still executed (stop_query sets the
-                # early-cancel extra) — stop query
                 if query.extra.get(QUERY_EARLY_CANCEL_KEY):
                     cursor.cancel_operation()
                     cursor.close_operation()
                     cursor.close()
                     break
 
-                #  updates progress info by log
                 try:
                     log = cursor.get_log() or ""
                 except Exception:  # pylint: disable=broad-except  # noqa: BLE001

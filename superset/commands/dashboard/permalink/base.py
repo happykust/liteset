@@ -14,18 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/dashboard/permalink/base.py``.
-
-The base class binds the per-resource ``KeyValueResource`` and the
-``SharedKey`` used to look up the install-wide hashids salt that encodes
-permalink ids into URL-friendly strings.
-
-In the original Apache Superset the codec is a ``MarshmallowKeyValueCodec``
-wrapping ``DashboardPermalinkSchema``.  Liteset has dropped Marshmallow
-in favour of msgspec / plain JSON, so the codec is implemented inside the
-concrete create/get commands using ``json.dumps`` / ``json.loads`` —
-matching the on-disk format the original schema produced.
-"""
+"""Base class for dashboard permalink commands."""
 
 from __future__ import annotations
 
@@ -39,11 +28,7 @@ from superset.key_value.types import KeyValueResource, SharedKey
 
 
 class BaseDashboardPermalinkCommand(AsyncBaseCommand, ABC):  # type: ignore[type-arg]
-    """Common base for dashboard permalink commands.
-
-    Async port of
-    ``superset_old.commands.dashboard.permalink.base.BaseDashboardPermalinkCommand``.
-    """
+    """Common base for dashboard permalink commands."""
 
     resource = KeyValueResource.DASHBOARD_PERMALINK
 

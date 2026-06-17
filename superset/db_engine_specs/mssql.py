@@ -15,11 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Microsoft SQL Server engine spec -- sync-compatible.
-
-Ported 1:1 from ``superset_old/db_engine_specs/mssql.py`` with legacy
-imports removed.  Only overridden methods and attributes are included.
-"""
+"""Microsoft SQL Server database engine spec."""
 
 from __future__ import annotations
 
@@ -42,13 +38,8 @@ from superset.typing import GenericDataType
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# GUID type for uniqueidentifier columns
-# ---------------------------------------------------------------------------
-
-
 class GUID(TypeDecorator):
-    """A type for SQL Server's uniqueidentifier, stored as stringified UUIDs."""
+    """SQL Server ``uniqueidentifier`` stored as stringified UUID (CHAR(36))."""
 
     impl = CHAR
     cache_ok = True
@@ -59,9 +50,7 @@ class GUID(TypeDecorator):
 
     @classmethod
     def _compiler_dispatch(cls, _visitor: Any, **_kw: Any) -> str:
-        """Compile to CHAR(36) — 1:1 with the original GUID
-        (superset_old/models/sql_types/mssql_sql_types.py:43-45); without
-        this override the type compiles to bare CHAR (= CHAR(1))."""
+        # Without this override the type compiles to bare CHAR (= CHAR(1)).
         return "CHAR(36)"
 
     def process_bind_param(self, value: str, dialect: Any) -> str | None:
@@ -76,10 +65,6 @@ class GUID(TypeDecorator):
             return None
         return uuid.UUID(value)
 
-
-# ---------------------------------------------------------------------------
-# Regular expressions to catch custom errors
-# ---------------------------------------------------------------------------
 
 CONNECTION_ACCESS_DENIED_REGEX = re.compile("Adaptive Server connection failed")
 CONNECTION_INVALID_HOSTNAME_REGEX = re.compile(
@@ -202,7 +187,6 @@ class MssqlEngineSpec(BaseEngineSpec):
         if not cursor.description:
             return []
         data = super().fetch_data(cursor, limit)
-        # Lists of ``pyodbc.Row`` need to be unpacked further
         return cls.pyodbc_rows_to_tuples(data)
 
     @classmethod

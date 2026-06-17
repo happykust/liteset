@@ -40,9 +40,9 @@ def _provide_user_dao(session: Any) -> Any:
 
 
 def _user_is_active(user: Any) -> bool:
-    """Resolve the upstream ``is_active`` for CachedUser/ORM users.
+    """Resolve ``is_active`` for CachedUser/ORM users.
 
-    Upstream ``User.is_active`` is a property over the ``active`` column;
+    ``User.is_active`` is a property over the ``active`` column;
     neither CachedUser nor the liteset ORM model defines ``is_active``, so
     fall back to ``active`` instead of a hardcoded True.
     """
@@ -59,11 +59,8 @@ def _build_roles_map(
 
     Handles both CachedUser (flat permissions set) and ORM User
     (roles with .permissions PermissionView objects).
-    Mirrors security_manager.get_user_roles_permissions().
     """
 
-    # 1:1 with the upstream security_manager.get_user_roles():
-    # ``return user.roles + [role for group in user.groups for role in group.roles]``
     # Groups contribute additional roles that must be included.
     direct_roles = list(getattr(current_user, "roles", []) or [])
     group_roles = [
@@ -104,13 +101,7 @@ class CurrentUserController(Controller):
 
     @get("/", guards=[require_authentication])
     async def get_me(self, current_user: UserProtocol) -> dict[str, Any]:
-        """GET /api/v1/me/ — get current user info.
-
-        Mirrors original ``UserResponseSchema`` at
-        superset_old/views/users/schemas.py:30-38 — returns
-        ``id``/``username``/``email``/``first_name``/``last_name``/
-        ``is_active``/``is_anonymous``/``login_count``.
-        """
+        """GET /api/v1/me/ — get current user info."""
         return {
             "result": {
                 "id": current_user.id,
@@ -130,16 +121,13 @@ class CurrentUserController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/me/roles/ — get current user roles and permissions.
 
-        Returns bootstrap_user_data-compatible payload. Ported 1:1 from
-        superset_old/views/utils.py::bootstrap_user_data (lines 99-129)
-        and superset_old/views/utils.py::get_permissions (lines 137-152).
+        Returns bootstrap_user_data-compatible payload.
 
         Key behaviors:
         - For regular (non-anonymous, non-guest) users includes
-          ``createdOn`` and ``loginCount`` (bootstrap_user_data:119-122).
+          ``createdOn`` and ``loginCount``.
         - The ``permissions`` dict is filtered to only
-          ``datasource_access`` and ``database_access`` entries
-          (get_permissions:146-148).
+          ``datasource_access`` and ``database_access`` entries.
         - ``roles`` dict contains ALL role permissions (unfiltered).
         """
         from collections import defaultdict
@@ -167,9 +155,8 @@ class CurrentUserController(Controller):
             roles = _build_roles_map(current_user)
         elif is_guest:
             # GuestUser carries lightweight ``_CachedRole`` stubs without
-            # ``.permissions``; the original GuestUser.__init__ receives REAL
-            # ORM Roles (superset_old/security/guest_token.py:81), so
-            # get_user_roles_permissions returns the Guest role's actual DB
+            # ``.permissions``; GuestUser.__init__ receives REAL ORM Roles,
+            # so get_user_roles_permissions returns the Guest role's actual DB
             # permissions. Reload the Role rows with the perm chain.
             from types import SimpleNamespace
 
@@ -188,12 +175,7 @@ class CurrentUserController(Controller):
         else:
             roles = _build_roles_map(current_user)
 
-        # Filter permissions to only datasource_access / database_access
-        # mirrors get_permissions (superset_old/views/utils.py:143-152):
-        #   for _, permissions in roles_permissions.items():
-        #       for permission in permissions:
-        #           if permission[0] in ("datasource_access", "database_access"):
-        #               data_permissions[permission[0]].add(permission[1])
+        # Filter to only datasource_access / database_access entries.
         _data_access = {"datasource_access", "database_access"}
         data_permissions: dict[str, set[str]] = defaultdict(set)
         for _role_perms in roles.values():
@@ -204,7 +186,6 @@ class CurrentUserController(Controller):
             k: list(v) for k, v in data_permissions.items()
         }
 
-        # Build payload — mirrors bootstrap_user_data structure
         if is_anonymous:
             payload: dict[str, Any] = {}
         elif is_guest:
@@ -216,11 +197,10 @@ class CurrentUserController(Controller):
                 "isAnonymous": False,
             }
         else:
-            # Regular authenticated user — includes createdOn + loginCount
-            # (superset_old/views/utils.py:111-122)
+            # Regular authenticated user — includes createdOn + loginCount.
             created_on_raw = getattr(current_user, "created_on", None)
             # CachedUser stores created_on as an already-serialised ISO string
-            # (middleware/auth.py:517-524); ORM Users carry a datetime. Handle both.
+            # (middleware/auth.py); ORM Users carry a datetime. Handle both.
             if isinstance(created_on_raw, str):
                 created_on_str: str | None = created_on_raw or None
             else:
@@ -251,10 +231,8 @@ class CurrentUserController(Controller):
     ) -> dict[str, Any]:
         """PUT /api/v1/me/ — update current user (first_name, last_name, password).
 
-        1:1 with ``superset_old/views/users/api.py::update_me``:
         - empty payload → 400 ``At least one field must be provided.``;
-        - response body is ``{"result": user_response_schema.dump(user)}``
-          (full ``UserResponseSchema``, not a diff of just the patched keys).
+        - response body is the full user record, not a diff of just the patched keys.
         """
         from litestar.exceptions import HTTPException
 
@@ -265,13 +243,11 @@ class CurrentUserController(Controller):
             updates["last_name"] = data.last_name
 
         # KEY presence counts: ``{"password": ""}`` passes the "at least one
-        # field" guard in the original (the Marshmallow-loaded dict is truthy)
-        # — pre_update then skips hashing for the falsy value but still
-        # touches changed_on/changed_by_fk (superset_old/views/users/api.py).
+        # field" guard — password hashing is then skipped for the falsy value
+        # but changed_on/changed_by_fk are still updated.
         password_provided = data.password is not None
 
         if not updates and not password_provided:
-            # Upstream uses ``self.response_400`` here, not 422.
             raise HTTPException(
                 status_code=400,
                 detail="At least one field must be provided.",
@@ -286,8 +262,7 @@ class CurrentUserController(Controller):
 
             settings = SupersetSettings()  # type: ignore[call-arg]
             if settings.fab_password_complexity_enabled:
-                # Mirror upstream PasswordComplexityValidator.__call__:
-                # use custom callable if configured, else default rules.
+                # Use custom callable if configured, else default rules.
                 # Raises HTTPException(422) with per-field detail on failure.
                 validator = settings.fab_password_complexity_validator
                 try:
@@ -301,8 +276,7 @@ class CurrentUserController(Controller):
                         detail={"password": [str(exc)]},  # type: ignore[arg-type]
                     ) from exc
 
-            # Read FAB_PASSWORD_HASH_METHOD / FAB_PASSWORD_HASH_SALT_LENGTH from
-            # config — mirrors pre_update (superset_old/views/users/api.py:52-56).
+            # Read FAB_PASSWORD_HASH_METHOD / FAB_PASSWORD_HASH_SALT_LENGTH from config.
             hash_method = (
                 getattr(settings, "fab_password_hash_method", "scrypt") or "scrypt"
             )
@@ -313,8 +287,7 @@ class CurrentUserController(Controller):
                 salt_length=salt_length,
             )
 
-        # Pass changed_by_fk — mirrors pre_update
-        # (superset_old/views/users/api.py:49-50)
+        # Pass changed_by_fk to stamp the audit column.
         updated = await user_dao.update_profile(
             user_id=current_user.id,
             attributes=updates,
@@ -322,13 +295,11 @@ class CurrentUserController(Controller):
             changed_by_fk=current_user.id,
         )
 
-        # Re-read so we serialise the persisted state (mirrors upstream's
-        # ``user_response_schema.dump(g.user)`` after ``db.session.commit()``).
+        # Re-read to serialise the persisted state.
         fresh = await user_dao.get_by_id(current_user.id)
         if not updated or fresh is None:
             # The user row vanished while the session token was still valid
-            # (upstream works on the in-memory ``g.user`` so this path can't
-            # happen there) — 401, not an AttributeError 500.
+            # — 401, not an AttributeError 500.
             from litestar.exceptions import NotAuthorizedException
 
             raise NotAuthorizedException(detail="User no longer exists")

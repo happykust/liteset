@@ -14,13 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for the legacy-viz sync data cache adapter.
-
-Locks the wire contract the explore_json round-trip depends on: values are
-serialized so the worker write and the web read agree, keys are namespaced
-with the shared ``superset_cache:`` prefix, and connection-detail resolution
-mirrors the async ``_build_async_redis_from_config`` twin.
-"""
 
 from __future__ import annotations
 
@@ -39,15 +32,12 @@ from superset.cache.sync_viz_cache import (
 
 @pytest.fixture(autouse=True)
 def _clear_instance_cache() -> Any:
-    """Reset the connection-keyed instance cache so each build_* test is isolated."""
     svc._INSTANCE_CACHE.clear()
     yield
     svc._INSTANCE_CACHE.clear()
 
 
 class _FakeRedis:
-    """Minimal dict-backed stand-in for a blocking ``redis.Redis`` client."""
-
     def __init__(self) -> None:
         self.store: dict[str, Any] = {}
         self.last_ttl: int | None = None
@@ -75,8 +65,7 @@ def test_set_get_round_trip_serializes_under_prefix() -> None:
     assert r.last_ttl == 300
     # ...as opaque serialized bytes, not the live object.
     assert isinstance(r.store[f"{CACHE_KEY_PREFIX}ejr-abc"], (bytes, bytearray))
-    # Round-trips back: original fields preserved + a dttm stamp added
-    # (1:1 with the original set_and_log_cache).
+    # Round-trips back: original fields preserved + a dttm stamp added.
     got = cache.get("ejr-abc")
     assert {k: got[k] for k in value} == value
     assert "dttm" in got

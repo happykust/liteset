@@ -160,10 +160,9 @@ async def test_create_database_validates_name_required(mock_dao):
 
 
 async def test_create_database_validates_uniqueness(mock_dao):
-    """Name conflict is the field-keyed 422 upstream emits:
+    """Name conflict emits the field-keyed 422:
     ``DatabaseInvalidError(exceptions=[DatabaseExistsValidationError()])`` →
-    ``{"database_name": ["A database with the same name already exists."]}``
-    (superset_old/commands/database/exceptions.py:35-43)."""
+    ``{"database_name": ["A database with the same name already exists."]}``"""
     from superset.commands.database.exceptions import DatabaseInvalidError
 
     mock_dao.validate_uniqueness = AsyncMock(return_value=False)
@@ -192,9 +191,8 @@ async def test_create_database_validates_success(mock_dao):
 
 
 async def test_create_database_uniqueness_failure_emits_telemetry(mock_dao):
-    """A failed name-uniqueness validation emits the upstream analytics event
-    ``db_connection_failed.<ExcCls>.<leaf-classnames>``
-    (superset_old/commands/database/create.py:143-152)."""
+    """A failed name-uniqueness validation emits the analytics event
+    ``db_connection_failed.<ExcCls>.<leaf-classnames>``."""
     from superset.commands.database.exceptions import DatabaseInvalidError
 
     mock_dao.validate_uniqueness = AsyncMock(return_value=False)
@@ -216,8 +214,7 @@ async def test_create_database_uniqueness_failure_emits_telemetry(mock_dao):
 async def test_create_database_connection_failure_emits_telemetry(mock_dao):
     """A failed pre-creation connection test emits
     ``db_creation_failed.<ExcCls>`` with the URI scheme as ``engine``
-    (superset_old/commands/database/create.py:81-86) before being wrapped in
-    ``DatabaseConnectionFailedError``."""
+    before being wrapped in ``DatabaseConnectionFailedError``."""
     from superset.exceptions import DatabaseConnectionFailedError
 
     mock_dao.validate_uniqueness = AsyncMock(return_value=True)
@@ -344,10 +341,10 @@ async def test_update_database_broken_connection_forces_catalog_update(
     mock_dao, mock_database
 ):
     """When the CURRENT connection is broken, ``get_default_catalog`` on the
-    pre-update model raises — upstream catches it, sets ``force_update=True``
-    and still propagates the (fixed) catalog to dependent assets
-    (superset_old/commands/database/update.py:83-110).  Without the catch the
-    PUT 500s and the user can never repair a broken connection."""
+    pre-update model raises — the command catches it, sets ``force_update=True``
+    and still propagates the (fixed) catalog to dependent assets.
+    Without the catch the PUT 500s and the user can never repair a broken
+    connection."""
     mock_dao.find_by_id = AsyncMock(return_value=mock_database)
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
     mock_database.get_default_catalog = MagicMock(
@@ -553,17 +550,13 @@ async def test_export_databases_no_dao():
 async def test_export_databases_dataset_json_fields_are_raw_strings(
     mock_dao, mock_database
 ):
-    """1:1 parity with original superset_old/commands/database/export.py:122-129.
+    """_export() sets only ``version`` and ``database_uuid`` on the dataset
+    payload — it does NOT decode JSON string fields (params, template_params,
+    extra, or per-metric/column extra).  Only ExportDatasetsCommand._file_content()
+    does that decoding.
 
-    The original _export() sets only ``version`` and ``database_uuid`` on the
-    dataset payload — it does NOT decode JSON string fields (params,
-    template_params, extra, or per-metric/column extra).  Only
-    ExportDatasetsCommand._file_content() does that decoding.
-
-    Regression guard: the liteset _export_single previously called json.loads()
-    on those fields, producing decoded dicts in the YAML where the original
-    produces raw JSON-encoded strings.  This test asserts that after the fix
-    the values remain as-is (raw strings).
+    Regression guard: a previous version called json.loads() on those fields,
+    producing decoded dicts in the YAML where raw JSON-encoded strings are expected.
     """
     raw_params = '{"time_grain_sqla": "P1D"}'
     raw_template_params = '{"foo": "bar"}'
@@ -789,7 +782,6 @@ async def test_sync_permissions_success(mock_dao, mock_database):
 # later re-sync.  ``add_permissions`` (called from the create flow) must
 # enumerate the connection's catalogs/schemas and create the
 # ``catalog_access`` / ``schema_access`` PVMs via the security manager.
-# Mirrors superset_old/commands/database/utils.py::add_permissions.
 # ---------------------------------------------------------------------------
 
 
@@ -865,7 +857,7 @@ async def test_add_permissions_creates_catalog_and_schema_pvms():
 
 async def test_add_permissions_swallows_introspection_errors():
     """A failure enumerating one catalog's schemas must NOT abort: it logs and
-    continues (mirrors the original's per-catalog GenericDBException swallow)."""
+    continues without propagating the error."""
     from superset.commands.database.utils import add_permissions
 
     db = _non_catalog_database()
@@ -916,9 +908,9 @@ async def test_delete_ssh_tunnel_success(mock_dao):
 
 async def test_delete_does_not_check_ownership(mock_dao, mock_database):
     """Database delete is gated by RBAC (can_write) + the reports/datasets
-    guards only — 1:1 with upstream DeleteDatabaseCommand. Databases have no
-    ``owners`` relationship, so the command must NOT invoke raise_for_ownership
-    (which would wrongly block a non-creator can_write holder)."""
+    guards only. Databases have no ``owners`` relationship, so the command must
+    NOT invoke raise_for_ownership (which would wrongly block a non-creator
+    can_write holder)."""
     mock_dao.find_by_id = AsyncMock(return_value=mock_database)
     mock_dao.has_dependent_datasets = AsyncMock(return_value=False)
     sm = AsyncMock()
@@ -950,8 +942,8 @@ async def test_delete_with_dependent_datasets_raises(mock_dao, mock_database):
 
 # NOTE: ``file://`` is intentionally NOT rejected — the analytics-DB safety
 # BLOCKLIST (``security/analytics_db_safety.py``) covers sqlite/shillelagh/
-# meta-DB only, 1:1 with upstream. ``file://`` isn't a real SQL dialect and
-# fails later at connection time, so there's no validate()-stage guard to test.
+# meta-DB only. ``file://`` isn't a real SQL dialect and fails later at
+# connection time, so there's no validate()-stage guard to test.
 
 
 async def test_create_database_blocks_sqlite_uri(mock_dao):
@@ -1038,12 +1030,10 @@ async def test_create_database_dynamic_form_passes_masked_encrypted_extra(mock_d
     """Credentials must reach ``build_sqlalchemy_uri`` via
     ``masked_encrypted_extra``.
 
-    1:1 with the original pre_load flow: validation reads
-    ``data.get("masked_encrypted_extra")`` (superset_old/databases/
-    schemas.py:352) — the rename to ``encrypted_extra`` only happens at
-    persistence time inside ``_create_database`` (superset_old/commands/
-    database/create.py:157-160). An early controller-side rename starved
-    BigQuery-style specs of credentials ("Missing service credentials").
+    Validation reads ``data.get("masked_encrypted_extra")`` — the rename to
+    ``encrypted_extra`` only happens at persistence time inside
+    ``_create_database``. An early controller-side rename starved BigQuery-style
+    specs of credentials ("Missing service credentials").
     """
     import json as _json
 

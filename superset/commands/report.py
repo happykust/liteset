@@ -71,11 +71,9 @@ async def _validate_chart_dashboard(
 ) -> None:
     """Validate chart or dashboard relation.
 
-    1:1 port of
-    ``superset_old/commands/report/base.py::validate_chart_dashboard``.
     Resolves the referenced chart / dashboard, collecting per-field errors,
     and stores the resolved objects back into ``data`` under ``chart`` /
-    ``dashboard`` (matching the original which mutates ``self._properties``).
+    ``dashboard``.
     """
     from superset.db.daos.chart import AsyncChartDAO
     from superset.db.daos.dashboard import AsyncDashboardDAO
@@ -118,8 +116,6 @@ def _validate_report_frequency(
 ) -> None:
     """Validate the scheduled frequency against the configured minimum.
 
-    1:1 port of
-    ``superset_old/commands/report/base.py::validate_report_frequency``.
     The minimum interval is read from ``ALERT_MINIMUM_INTERVAL`` (alerts) or
     ``REPORT_MINIMUM_INTERVAL`` (reports) in the Superset settings.
     """
@@ -172,8 +168,6 @@ async def _validate_report_extra(
 ) -> None:
     """Validate that the tab ids referenced in ``extra.dashboard`` exist.
 
-    1:1 port of
-    ``superset_old/commands/report/create.py::_validate_report_extra``.
     Runs only when both ``extra`` and a resolved ``dashboard`` are present.
     """
     extra = data.get("extra")
@@ -212,8 +206,7 @@ def _resolve_fk(value: Any) -> int | None:
     """Return the FK id for a value that may be an int id or an ORM object.
 
     ``validate`` replaces the incoming chart/dashboard/database id with the
-    resolved ORM object (1:1 with the original which mutates
-    ``self._properties``); ``run`` needs the integer id to write the FK column.
+    resolved ORM object; ``run`` needs the integer id to write the FK column.
     """
     if value is None:
         return None
@@ -249,15 +242,15 @@ async def _raise_not_found_or_forbidden(
     pk: Any,
     ex: Exception,
 ) -> None:
-    """Map an ownership denial to 404-vs-403, mirroring upstream's base_filter.
+    """Map an ownership denial to 404-vs-403.
 
-    Upstream ``ReportScheduleDAO.find_by_id(s)`` applies
-    ``ReportScheduleFilter`` (owners-scope unless the user has
-    ``can_access_all_datasources``), so a report the user can't even see is a
-    ``ReportScheduleNotFoundError`` (404) *before* the ownership check; the
-    403 from ``raise_for_ownership`` is reachable only for users who can see
-    every report (R13-04). The port's DAO has no base filter, so reproduce
-    the same outcome here: visible-but-not-owner → 403, invisible → 404.
+    ``ReportScheduleDAO.find_by_id(s)`` applies ``ReportScheduleFilter``
+    (owners-scope unless the user has ``can_access_all_datasources``), so a
+    report the user can't even see is a ``ReportScheduleNotFoundError`` (404)
+    *before* the ownership check; the 403 from ``raise_for_ownership`` is
+    reachable only for users who can see every report.  The DAO has no base
+    filter, so reproduce the same outcome here: visible-but-not-owner → 403,
+    invisible → 404.
     """
     user = None
     if user_id is not None:
@@ -285,13 +278,6 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         self._owners: list[Any] | None = None
 
     async def validate(self) -> None:  # noqa: C901
-        """Validate report schedule properties.
-
-        1:1 port of ``superset_old/commands/report/create.py::validate``:
-        uniqueness, alert-database existence, chart/dashboard relations,
-        frequency, extra tab-ids, and per-resource creation-method uniqueness.
-        Per-field errors are collected into :class:`ReportScheduleInvalidError`.
-        """
         from superset.db.daos.database import AsyncDatabaseDAO
         from superset.models.reports import ReportCreationMethod, ReportScheduleType
 
@@ -305,9 +291,8 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
 
         crontab = self._data.get("crontab", "")
 
-        # Reject syntactically invalid crontab expressions up front. Upstream
-        # validates this in the Marshmallow schema (``validate_crontab`` →
-        # ``croniter.is_valid``); the msgspec schema doesn't, so guard here.
+        # Upstream validates crontab in Marshmallow schema; msgspec schema
+        # doesn't, so guard here.
         if crontab and croniter is not None and not croniter.is_valid(crontab):
             raise CommandInvalidError(f"Invalid crontab: {crontab}")
 
@@ -317,7 +302,6 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
 
         exceptions: list[ReportScheduleValidationError] = []
 
-        # Validate name + type uniqueness
         if not await self._dao.validate_update_uniqueness(
             name=name, report_type=report_type
         ):
@@ -327,13 +311,9 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
                 )
             )
 
-        # A REPORT (as opposed to an ALERT) must not carry a database
-        # reference. 1:1 with the original ``@validates_schema
-        # validate_report_references`` (superset_old/reports/schemas.py:265-275)
-        # which raises ``{"database": ["Database reference is not allowed on a
-        # report"]}`` for ``type == REPORT`` payloads containing a ``database``.
-        # KEY presence (``"database" in data``), not value truthiness — the
-        # original rejects an explicit ``"database": null`` on a REPORT too.
+        # A REPORT (as opposed to an ALERT) must not carry a database reference.
+        # Checks KEY presence (``"database" in data``), not value truthiness —
+        # an explicit ``"database": null`` on a REPORT is also rejected.
         if report_type == ReportScheduleType.REPORT.value and "database" in self._data:
             exceptions.append(
                 ReportScheduleValidationError(
@@ -342,7 +322,6 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
                 )
             )
 
-        # Validate if DB exists (for alerts)
         if report_type == ReportScheduleType.ALERT.value:
             database_id = self._data.get("database")
             if database_id is None:
@@ -354,15 +333,12 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
             else:
                 exceptions.append(DatabaseNotFoundValidationError())
 
-        # Validate report frequency
         if crontab:
             _validate_report_frequency(crontab, report_type, exceptions)
 
-        # Validate chart or dashboard relations + extra tab ids
         await _validate_chart_dashboard(self._dao, self._data, exceptions)
         await _validate_report_extra(self._dao, self._data, exceptions)
 
-        # Each chart/dashboard may only have one report per creation method.
         if (
             creation_method != ReportCreationMethod.ALERTS_REPORTS.value
             and not await self._dao.validate_unique_creation_method(
@@ -374,17 +350,12 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
             raise ReportScheduleCreationMethodUniquenessValidationError()
 
         # ``validator_config_json`` arrives as a dict from the POST schema; the
-        # model column stores a JSON string. Serialize before persistence
-        # (1:1 with create.py:120-123).
+        # model column stores a JSON string. Serialize before persistence.
         if self._data.get("validator_config_json") is not None:
             self._data["validator_config_json"] = json.dumps(
                 self._data["validator_config_json"]
             )
 
-        # ``custom_width`` must lie within [ALERT_REPORTS_MIN_CUSTOM_SCREENSHOT_WIDTH,
-        # ALERT_REPORTS_MAX_CUSTOM_SCREENSHOT_WIDTH].  1:1 port of
-        # ``@validates("custom_width")`` in
-        # ``superset_old/reports/schemas.py:246-263``.
         custom_width = self._data.get("custom_width")
         if custom_width is not None:
             settings = _get_settings()
@@ -403,9 +374,6 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
                     )
                 )
 
-        # Validate/populate owners -- 1:1 with create.py:125-131: catch the
-        # OwnersNotFoundValidationError and fold it into the exceptions list so
-        # the response message is the field-keyed dict rather than a flat string.
         sm = self._security_manager
         if sm is None:
             from superset.security.manager import build_async_security_manager
@@ -429,8 +397,6 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
             raise ReportScheduleInvalidError(exceptions=exceptions)
 
     async def run(self) -> "ReportSchedule":
-        # Map schema fields to model fields. ``validate`` may have replaced the
-        # chart/dashboard/database ids with resolved ORM objects; normalise both.
         create_data = {**self._data}
 
         # ``report_format`` must not be written as ``None`` — the DB column has
@@ -454,7 +420,7 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         # DAO's ``setattr(item, "owners", [...])`` runs on a TRANSIENT instance
         # (no session attached → no lazy-load attempt).  This prevents the
         # MissingGreenlet crash described in [[sa-lazy-load-on-transient-asyncpg]].
-        create_data.pop("owners", None)  # strip raw ids from payload copy
+        create_data.pop("owners", None)
 
         if self._user_id is not None:
             create_data["created_by_fk"] = self._user_id
@@ -491,13 +457,6 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         self._owners: list[Any] | None = None
 
     async def validate(self) -> None:  # noqa: C901
-        """Validate report schedule update.
-
-        1:1 port of ``superset_old/commands/report/update.py::validate``:
-        WORKING→NOOP on deactivate, name/type uniqueness, alert-database
-        existence, frequency, chart/dashboard relations, validator_config_json
-        serialization, and the ownership guard.
-        """
         from superset.db.daos.database import AsyncDatabaseDAO
         from superset.models.reports import ReportScheduleType, ReportState
 
@@ -510,8 +469,7 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         report_type = self._data.get("type", self._report.type)
         database_id = self._data.get("database")
 
-        # Reject syntactically invalid crontab expressions up front (the
-        # msgspec schema doesn't, unlike upstream's Marshmallow schema).
+        # msgspec schema doesn't validate crontab unlike upstream's Marshmallow schema.
         if (
             self._data.get("crontab") is not None
             and croniter is not None
@@ -523,8 +481,7 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
 
         # Change the state to not triggered when the user deactivates a report
         # that is currently in a working state. This prevents an alert/report
-        # from being kept in a working state if activated back. 1:1 with
-        # ``superset_old/commands/report/update.py:83-88``.
+        # from being kept in a working state if activated back.
         if (
             self._report.last_state == ReportState.WORKING
             and "active" in self._data
@@ -532,7 +489,6 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         ):
             self._data["last_state"] = ReportState.NOOP
 
-        # Validate name/type uniqueness if either is changing
         if name != self._report.name or report_type != self._report.type:
             if not await self._dao.validate_update_uniqueness(
                 name=name, report_type=report_type, report_id=self._pk
@@ -543,30 +499,22 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
                     )
                 )
 
-        # Validate if DB exists (for alerts). 1:1 with update.py:102-105 which
-        # assigns the resolved (possibly ``None``) database back to properties.
         if report_type == ReportScheduleType.ALERT.value and database_id:
             database = await AsyncDatabaseDAO(self._dao.session).find_by_id(database_id)
             if not database:
                 exceptions.append(DatabaseNotFoundValidationError())
             self._data["database"] = database
 
-        # Validate report frequency
         if crontab:
             _validate_report_frequency(crontab, report_type, exceptions)
 
-        # Validate chart or dashboard relations
         await _validate_chart_dashboard(self._dao, self._data, exceptions, update=True)
 
-        # ``validator_config_json`` arrives as a dict from the PUT schema; the
-        # model column stores a JSON string (1:1 with update.py:119-122).
         if self._data.get("validator_config_json") is not None:
             self._data["validator_config_json"] = json.dumps(
                 self._data["validator_config_json"]
             )
 
-        # ``custom_width`` bounds check — 1:1 port of ``@validates("custom_width")``
-        # in ``superset_old/reports/schemas.py:384-401`` (PUT schema variant).
         custom_width = self._data.get("custom_width")
         if custom_width is not None:
             settings = _get_settings()
@@ -585,8 +533,6 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
                     )
                 )
 
-        # Check ownership — non-owners (and non-admins) get a 403, 1:1 with
-        # ``superset_old/commands/report/update.py:124-128``.
         sm = self._security_manager
         if sm is None:
             from superset.security.manager import build_async_security_manager
@@ -598,9 +544,6 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         except SupersetSecurityException as ex:
             await _raise_not_found_or_forbidden(sm, self._user_id, self._pk, ex)
 
-        # Validate/compute owners -- 1:1 with update.py:130-139: catch the
-        # OwnersNotFoundValidationError and fold it into the exceptions list so
-        # the response message is the field-keyed dict rather than a flat string.
         owner_ids_raw: list[int] | None = self._data.get("owners")
         # Eagerly load current owners (asyncpg cannot lazy-load relationships).
         await self._dao.session.refresh(self._report, ["owners"])
@@ -630,10 +573,6 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         if "database" in update_data:
             update_data["database_id"] = _resolve_fk(update_data.pop("database"))
 
-        # Owners were resolved (and validated) in validate(); strip the raw ids
-        # from the update payload so the DAO does not attempt to set them, then
-        # assign the already-resolved list to the model after the DAO update.
-        # Mirrors ``superset_old/commands/report/update.py`` compute_owners flow.
         update_data.pop("owners", None)
 
         if self._user_id is not None:
@@ -672,8 +611,6 @@ class DeleteReportScheduleCommand(AsyncBaseCommand[None]):
         if not self._report:
             raise ObjectNotFoundError("ReportSchedule", self._pk)
 
-        # Check ownership — 1:1 with
-        # ``superset_old/commands/report/delete.py:53-58``.
         if self._security_manager is not None:
             try:
                 await self._security_manager.raise_for_ownership(
@@ -718,8 +655,6 @@ class BulkDeleteReportScheduleCommand(AsyncBaseCommand[None]):
         if missing:
             raise ObjectNotFoundError("ReportSchedule", str(sorted(missing)))
 
-        # Check ownership for every report — 1:1 with
-        # ``superset_old/commands/report/delete.py:53-58``.
         if self._security_manager is not None:
             for model in self._reports:
                 try:
@@ -732,11 +667,6 @@ class BulkDeleteReportScheduleCommand(AsyncBaseCommand[None]):
                     )
 
     async def run(self) -> None:
-        # Mirror ``DeleteReportScheduleCommand.run()``'s
-        # ``@transaction(on_error=…, reraise=ReportScheduleDeleteFailedError)``
-        # behaviour — wrap DB errors as ReportScheduleDeleteFailedError so the
-        # controller can map them to HTTP 422 (1:1 with
-        # superset_old/reports/api.py:505-521).
         from sqlalchemy.exc import SQLAlchemyError
 
         try:

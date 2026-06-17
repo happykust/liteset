@@ -14,12 +14,8 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Apache Pinot engine spec -- synchronous.
 # mypy: ignore-errors
-
-Ported 1:1 from ``superset_old/db_engine_specs/pinot.py``.
-Only overridden methods and attributes are included.
-"""
+"""Apache Pinot database engine spec."""
 
 from __future__ import annotations
 

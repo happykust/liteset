@@ -154,17 +154,9 @@ def test_cors_enabled_app_attaches_config() -> None:
     assert app.cors_config.allow_origins == ["https://tile.osm.ch"]
 
 
-# ---------------------------------------------------------------------------
-# _seed_one_theme — per-theme independent transaction semantics
-# ---------------------------------------------------------------------------
-# Original: superset_old/commands/theme/seed.py::_upsert_system_theme decorated
-# with @transaction(), one call per theme, each commits independently.
 # Regression guard: a failure in one theme must NOT prevent another theme from
 # being committed (the old single-session loop lost ALL themes on any error).
-
-
 def _make_session(existing_theme: MagicMock | None = None) -> AsyncMock:
-    """Return a mock AsyncSession. ``existing_theme`` is what SELECT returns."""
     session = AsyncMock()
     session.add = MagicMock()
     session.commit = AsyncMock()
@@ -177,8 +169,6 @@ def _make_session(existing_theme: MagicMock | None = None) -> AsyncMock:
 
 
 def _factory_for(session: AsyncMock):
-    """Return a session_factory whose context-manager yields ``session``."""
-
     @asynccontextmanager
     async def factory():
         yield session
@@ -187,7 +177,6 @@ def _factory_for(session: AsyncMock):
 
 
 async def test_seed_one_theme_inserts_new_theme() -> None:
-    """When no existing theme row is found a new Theme is add()ed and committed."""
     session = _make_session(existing_theme=None)
 
     await _seed_one_theme(_factory_for(session), "THEME_DEFAULT", {"color": "blue"})
@@ -201,7 +190,6 @@ async def test_seed_one_theme_inserts_new_theme() -> None:
 
 
 async def test_seed_one_theme_updates_existing_theme() -> None:
-    """When an existing system theme row is found its json_data is updated."""
     existing = MagicMock()
     existing.json_data = json.dumps({"color": "old"})
     session = _make_session(existing_theme=existing)
@@ -216,9 +204,7 @@ async def test_seed_one_theme_updates_existing_theme() -> None:
 async def test_seed_one_theme_independent_sessions_per_call() -> None:
     """Every _seed_one_theme call opens and commits its own session.
 
-    1:1 with superset_old/commands/theme/seed.py::run() calling
-    _upsert_system_theme once per theme where each call has @transaction()
-    wrapping it.  Two consecutive calls must produce two independent sessions
+    Two consecutive calls must produce two independent sessions
     and two independent commits.
     """
     session1 = _make_session()
@@ -262,21 +248,17 @@ async def test_seed_one_theme_second_failure_does_not_revert_first() -> None:
         idx += 1
         yield sess
 
-    # theme1 succeeds
     await _seed_one_theme(factory, "THEME_DEFAULT", {"a": 1})
     session1.commit.assert_awaited_once()
 
-    # theme2 fails — exception propagates (on_startup catches it per-theme)
     with pytest.raises(SQLAlchemyError):
         await _seed_one_theme(factory, "THEME_DARK", {"b": 2})
 
-    # theme1's commit was already done and remains unaffected
     session1.commit.assert_awaited_once()
 
 
 async def test_seed_one_theme_uuid_ref_not_found_skips_upsert() -> None:
-    """UUID-only config whose referenced theme does not exist returns early."""
-    session = _make_session(existing_theme=None)  # execute returns None
+    session = _make_session(existing_theme=None)
 
     await _seed_one_theme(_factory_for(session), "THEME_DEFAULT", {"uuid": "missing"})
 
@@ -285,7 +267,6 @@ async def test_seed_one_theme_uuid_ref_not_found_skips_upsert() -> None:
 
 
 async def test_seed_one_theme_uuid_ref_bad_json_skips_upsert() -> None:
-    """UUID-only config whose referenced theme has unparseable JSON returns early."""
     referenced = MagicMock()
     referenced.json_data = "{{invalid-json"
 

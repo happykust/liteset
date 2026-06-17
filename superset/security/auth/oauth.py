@@ -34,9 +34,9 @@ The control flow is identical:
    document (or decode the ID token for OIDC providers).
 4. Map the returned ``role_keys`` / group claims to local roles via
    ``AUTH_ROLES_MAPPING``.
-5. Look up the user in ``ab_user`` (case-insensitive, mirrors upstream)
-   and either return them, sync their roles, or self-register a new row
-   when ``AUTH_USER_REGISTRATION`` is enabled.
+5. Look up the user in ``ab_user`` (case-insensitive) and either return them,
+   sync their roles, or self-register a new row when
+   ``AUTH_USER_REGISTRATION`` is enabled.
 
 Differences from upstream:
 
@@ -313,7 +313,6 @@ class OAuthAuthBackend:
             expected_nonce=expected_nonce,
         )
 
-        # Apply email whitelist (mirrors upstream views.py:736-747).
         whitelist = remote.get("whitelist") or provider.get("whitelist")
         if whitelist:
             email = (userinfo or {}).get("email", "")
@@ -406,11 +405,9 @@ class OAuthAuthBackend:
                 "email": data.get("email", ""),
             }
 
-        # Azure AD — decode the id_token (mirrors the upstream azure branch
-        # ``_decode_and_validate_azure_jwt``). When the provider config sets
-        # ``client_kwargs.verify_signature`` (default False, as upstream) the
-        # token signature is validated against Microsoft's static JWKS;
-        # otherwise it is decoded unverified.
+        # Azure AD — decode the id_token. When the provider config sets
+        # ``client_kwargs.verify_signature`` (default False) the token signature
+        # is validated against Microsoft's static JWKS; otherwise decoded unverified.
         if provider_name == "azure":
             remote = _provider_remote_app(provider)
             verify_signature = bool(
@@ -470,9 +467,8 @@ class OAuthAuthBackend:
                 "role_keys": data.get("groups", []) or [],
             }
 
-        # OpenShift — no OIDC discovery; identity comes from the cluster's
-        # custom user API (mirrors the upstream ``get_oauth_user_info``
-        # openshift branch: ``GET apis/user.openshift.io/v1/users/~``).
+        # OpenShift — no OIDC discovery; identity from the cluster's user API:
+        # ``GET apis/user.openshift.io/v1/users/~``.
         if provider_name == "openshift":
             remote = _provider_remote_app(provider)
             api_base = str(remote.get("api_base_url", "")).rstrip("/")
@@ -483,13 +479,10 @@ class OAuthAuthBackend:
             metadata = data.get("metadata") or {}
             return {"username": "openshift_" + str(metadata.get("name", ""))}
 
-        # Authentik — identity from the id_token claims with Authentik's
-        # idiosyncratic mapping (mirrors the upstream ``get_oauth_user_info``
-        # authentik branch: ``email = preferred_username``, ``username =
-        # nickname``). This base backend decodes WITHOUT signature
-        # verification (it's the no-discovery path); deployments that
-        # configure a ``server_metadata_url`` / ``jwks_uri`` are routed to
-        # :class:`OIDCAuthBackend`, which validates the id_token first.
+        # Authentik — identity from the id_token: ``email = preferred_username``,
+        # ``username = nickname``.  Decoded WITHOUT signature verification (the
+        # no-discovery path); deployments with ``server_metadata_url`` / ``jwks_uri``
+        # are routed to :class:`OIDCAuthBackend`, which validates the id_token first.
         if provider_name == "authentik":
             claims = self._decode_id_token_unsafe(id_token)
             return {
@@ -621,11 +614,6 @@ class OAuthAuthBackend:
     def _decode_id_token_unsafe(id_token: str) -> dict[str, Any]:
         """Decode an OIDC ``id_token`` without verifying the signature.
 
-        Mirrors the upstream
-        ``jwt.decode(id_token, options={"verify_signature": False})``
-        used in ``BaseSecurityManager._decode_and_validate_azure_jwt``
-        when ``verify_signature`` is not configured.
-
         Use :meth:`OIDCAuthBackend.validate_id_token` instead for proper
         signature validation against the provider's JWKS.
         """
@@ -638,17 +626,14 @@ class OAuthAuthBackend:
             return {}
 
     # Static JWKS endpoint for Azure AD / Microsoft identity platform.
-    # Mirrors the upstream ``const.MICROSOFT_KEY_SET_URL``.
     MICROSOFT_KEY_SET_URL = "https://login.microsoftonline.com/common/discovery/keys"
 
     async def _validate_azure_jwt(self, id_token: str) -> dict[str, Any]:
         """Validate an Azure AD ``id_token`` against Microsoft's JWKS.
 
-        Mirrors the upstream ``_decode_and_validate_azure_jwt`` when
-        ``verify_signature`` is set: the token must carry a valid signature
-        from Microsoft's published key set. A validation failure rejects the
-        login (raises) rather than silently degrading to an unverified
-        decode.
+        The token must carry a valid signature from Microsoft's published key set.
+        A validation failure rejects the login (raises) rather than silently
+        degrading to an unverified decode.
         """
         if not id_token:
             return {}

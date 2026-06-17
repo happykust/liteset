@@ -16,15 +16,10 @@
 # under the License.
 """Dashboard filter state controller -- 4 endpoints for filter state CRUD.
 
-Ported 1:1 from ``superset_old/dashboards/filter_state/api.py`` +
-``superset_old/temporary_cache/api.py``.
-
-Key parity notes:
-- ``tab_id`` is read from the **query string** (not the request body),
-  matching ``request.args.get("tab_id")`` in the original.
-- ``TemporaryCacheResourceNotFoundError`` is caught and surfaced as
-  HTTP 404 (not the class's inherited 403) -- the original API handler
-  explicitly catches it and returns ``self.response(404, ...)``.
+Key implementation notes:
+- ``tab_id`` is read from the **query string** (not the request body).
+- ``TemporaryCacheResourceNotFoundError`` is surfaced as HTTP 404 (not the
+  class's inherited 403) — the handler explicitly returns ``self.response(404, …)``.
 """
 
 from __future__ import annotations
@@ -152,11 +147,8 @@ class DashboardFilterStateController(Controller):
             value = await cmd.execute()
         except TemporaryCacheResourceNotFoundError as ex:
             raise SupersetNotFoundError(message=str(ex)) from ex
-        # 1:1 with original (superset_old/temporary_cache/api.py:114):
-        # ``if not value: return self.response_404()``
-        # This fires when the KV entry exists but has no ``"value"`` key
-        # (corrupt legacy data), because GetFilterStateCommand returns None
-        # in that case (matching ``entry.get("value")`` → None in original).
+        # Fires when the KV entry exists but has no ``"value"`` key (corrupt
+        # legacy data): GetFilterStateCommand returns None in that case.
         if not value:
             raise SupersetNotFoundError()
         await event_logger.alog_with_context(

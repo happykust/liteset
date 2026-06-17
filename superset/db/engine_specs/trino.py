@@ -41,21 +41,13 @@ logger = logging.getLogger(__name__)
 
 
 class _GenericDataType(IntEnum):
-    """Subset of GenericDataType used by column type mappings."""
-
     NUMERIC = 0
     STRING = 1
     TEMPORAL = 2
     BOOLEAN = 3
 
 
-# ---------------------------------------------------------------------------
-# Presto/Trino complex-type helpers (ported from legacy PrestoBaseEngineSpec)
-# ---------------------------------------------------------------------------
-
-
 def _split_complex(s: str, delimiter: str = ",") -> list[str]:
-    """Split a string respecting nested parentheses."""
     parts: list[str] = []
     current: list[str] = []
     depth = 0
@@ -132,7 +124,6 @@ def get_children(
 
 
 def _destringify(value: str) -> Any:
-    """Simple destringify for array/row values encoded as strings."""
     import json as _json
 
     try:
@@ -148,11 +139,9 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
     engine_name = "Trino"
     default_driver = "aiotrino"
 
-    # --- Feature flags ---------------------------------------------------
     supports_dynamic_schema: bool = True
     supports_catalog: bool = True
 
-    # --- Column type mappings (ported from PrestoBaseEngineSpec) ----------
     column_type_mappings: tuple[ColumnTypeMapping, ...] = (
         (
             re.compile(r"^boolean.*", re.IGNORECASE),
@@ -239,34 +228,26 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
         (re.compile(r"^row.*", re.IGNORECASE), types.String(), GenericDataType.STRING),
     )
 
-    # --- Time grain expressions (fixed: CAST({col} AS TIMESTAMP)) --------
     _time_grain_expressions: dict[str | None, str] = {
         None: "{col}",
-        # 1-second
         "PT1S": "DATE_TRUNC('second', CAST({col} AS TIMESTAMP))",
-        # 5-second
         "PT5S": (
             "DATE_TRUNC('second', CAST({col} AS TIMESTAMP))"
             " - interval '1' second * (second(CAST({col} AS TIMESTAMP)) % 5)"
         ),
-        # 30-second
         "PT30S": (
             "DATE_TRUNC('second', CAST({col} AS TIMESTAMP))"
             " - interval '1' second * (second(CAST({col} AS TIMESTAMP)) % 30)"
         ),
-        # 1-minute
         "PT1M": "DATE_TRUNC('minute', CAST({col} AS TIMESTAMP))",
-        # 5-minute
         "PT5M": (
             "DATE_TRUNC('minute', CAST({col} AS TIMESTAMP))"
             " - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 5)"
         ),
-        # 10-minute
         "PT10M": (
             "DATE_TRUNC('minute', CAST({col} AS TIMESTAMP))"
             " - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 10)"
         ),
-        # 15-minute
         "PT15M": (
             "DATE_TRUNC('minute', CAST({col} AS TIMESTAMP))"
             " - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 15)"
@@ -280,36 +261,25 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
             "DATE_TRUNC('minute', CAST({col} AS TIMESTAMP))"
             " - interval '1' minute * (minute(CAST({col} AS TIMESTAMP)) % 30)"
         ),
-        # 1-hour
         "PT1H": "DATE_TRUNC('hour', CAST({col} AS TIMESTAMP))",
-        # 6-hour
         "PT6H": (
             "DATE_TRUNC('hour', CAST({col} AS TIMESTAMP))"
             " - interval '1' hour * (hour(CAST({col} AS TIMESTAMP)) % 6)"
         ),
-        # 1-day
         "P1D": "DATE_TRUNC('day', CAST({col} AS TIMESTAMP))",
-        # 1-week (ISO)
         "P1W": "DATE_TRUNC('week', CAST({col} AS TIMESTAMP))",
-        # 1-month
         "P1M": "DATE_TRUNC('month', CAST({col} AS TIMESTAMP))",
-        # 1-quarter
         "P3M": "DATE_TRUNC('quarter', CAST({col} AS TIMESTAMP))",
-        # 1-year
         "P1Y": "DATE_TRUNC('year', CAST({col} AS TIMESTAMP))",
-        # Week starting Sunday
         "1969-12-28T00:00:00Z/P1W": (
             "DATE_TRUNC('week', CAST({col} AS TIMESTAMP) + interval '1' day)"
             " - interval '1' day"
         ),
-        # Week starting Monday
         "1969-12-29T00:00:00Z/P1W": "DATE_TRUNC('week', CAST({col} AS TIMESTAMP))",
-        # Week ending Saturday
         "P1W/1970-01-03T00:00:00Z": (
             "DATE_TRUNC('week', CAST({col} AS TIMESTAMP) + interval '1' day)"
             " + interval '5' day"
         ),
-        # Week ending Sunday
         "P1W/1970-01-04T00:00:00Z": (
             "DATE_TRUNC('week', CAST({col} AS TIMESTAMP)) + interval '6' day"
         ),
@@ -341,13 +311,9 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
         ),
     ]
 
-    # --- epoch_to_dttm (ported from PrestoBaseEngineSpec) -----------------
-
     @classmethod
     def epoch_to_dttm(cls) -> str:
         return "from_unixtime({col})"
-
-    # --- convert_dttm (ported from PrestoBaseEngineSpec) ------------------
 
     @classmethod
     def convert_dttm(
@@ -356,7 +322,6 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
         dttm: datetime,
         db_extra: dict[str, Any] | None = None,
     ) -> str | None:
-        """Convert a Python ``datetime`` to a Trino SQL literal."""
         tt = target_type.upper().strip()
         if tt == "DATE":
             return f"DATE '{dttm.date().isoformat()}'"
@@ -364,13 +329,9 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
             return f"""TIMESTAMP '{dttm.isoformat(timespec="microseconds", sep=" ")}'"""
         return None
 
-    # --- get_allow_cost_estimate -----------------------------------------
-
     @classmethod
     def get_allow_cost_estimate(cls, extra: dict[str, Any] | None = None) -> bool:
         return True
-
-    # --- estimate_statement_cost / query_cost_formatter -------------------
 
     @classmethod
     async def estimate_statement_cost(
@@ -378,7 +339,6 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
         conn: AsyncConnection,
         statement: str,
     ) -> dict[str, Any]:
-        """Run ``EXPLAIN (TYPE IO, FORMAT JSON)`` and return the parsed result."""
         import json as _json
 
         sql = f"EXPLAIN (TYPE IO, FORMAT JSON) {statement}"
@@ -391,8 +351,6 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
         cls,
         raw_cost: list[dict[str, Any]],
     ) -> list[dict[str, str]]:
-        """Format the cost estimate into human-readable form."""
-
         def humanize(value: Any, suffix: str) -> str:
             try:
                 value = int(value)
@@ -423,15 +381,12 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
             cost.append(statement_cost)
         return cost
 
-    # --- cancel_query (async, ported from original Trino) -----------------
-
     @classmethod
     async def cancel_query(
         cls,
         conn: AsyncConnection,
         cancel_query_id: str,
     ) -> bool:
-        """Cancel a running Trino query via ``system.runtime.kill_query``."""
         try:
             await conn.execute(
                 text(
@@ -446,18 +401,13 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
             logger.exception("Failed to cancel Trino query %s", cancel_query_id)
             return False
 
-    # --- get_function_names (async, ported from PrestoBaseEngineSpec) ------
-
     @classmethod
     async def get_function_names(
         cls,
         conn: AsyncConnection,
     ) -> list[str]:
-        """Return list of available Trino functions via ``SHOW FUNCTIONS``."""
         result = await conn.execute(text("SHOW FUNCTIONS"))
         return [row[0] for row in result.fetchall()]
-
-    # --- get_extra_table_metadata (async, ported from original Trino) -----
 
     @classmethod
     async def get_extra_table_metadata(
@@ -466,10 +416,8 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
         table_name: str,
         schema: str | None = None,
     ) -> dict[str, Any]:
-        """Return partition metadata for a Trino table."""
         metadata: dict[str, Any] = {}
 
-        # Try to get partition info from the $partitions system table
         system_table = f'"{table_name}$partitions"'
         full_table = f"{schema}.{system_table}" if schema else system_table
         try:
@@ -488,7 +436,6 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
                 "No partition info for %s.%s", schema, table_name, exc_info=True
             )
 
-        # Try to get view definition
         try:
             result = await conn.execute(
                 text(
@@ -505,8 +452,6 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
             pass
 
         return metadata
-
-    # --- get_columns override (async, ported from original Trino) ---------
 
     @classmethod
     async def get_columns(
@@ -540,8 +485,6 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
                 }
                 for row in result.fetchall()
             ]
-
-    # --- expand_data (ported from PrestoBaseEngineSpec) --------------------
 
     @classmethod
     def expand_data(  # noqa: C901
@@ -614,8 +557,6 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
         ]
 
         return all_columns, data, expanded_columns
-
-    # --- Core execute / fetch_data ----------------------------------------
 
     @classmethod
     async def execute(

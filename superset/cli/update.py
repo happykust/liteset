@@ -14,10 +14,8 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Update / maintenance CLI commands.
-
-``set-database-uri``, ``sync-tags``, and ``re-encrypt-secrets``.
-"""
+"""Update / maintenance CLI commands: set-database-uri, sync-tags,
+re-encrypt-secrets."""
 
 from __future__ import annotations
 
@@ -25,10 +23,6 @@ import sys
 from typing import Optional
 
 import click
-
-# ------------------------------------------------------------------
-# set-database-uri
-# ------------------------------------------------------------------
 
 
 @click.command("set-database-uri")
@@ -43,8 +37,7 @@ import click
 )
 def set_database_uri(database_name: str, uri: str, skip_create: bool) -> None:
     """Update a database connection URI."""
-    # 1:1 with ``superset_old/cli/update.py:51-53``: delegate to
-    # ``get_or_create_db`` so the URI goes through
+    # Delegate to ``get_or_create_db`` so the URI goes through
     # ``Database.set_sqlalchemy_uri()`` — the inline password is stripped
     # into the *encrypted* ``password`` column and the stored
     # ``sqlalchemy_uri`` keeps only ``PASSWORD_MASK``.  The previous raw
@@ -60,11 +53,6 @@ def set_database_uri(database_name: str, uri: str, skip_create: bool) -> None:
         get_sync_session().commit()
     finally:
         remove_sync_session()
-
-
-# ------------------------------------------------------------------
-# sync-tags
-# ------------------------------------------------------------------
 
 
 @click.command("sync-tags")
@@ -109,9 +97,6 @@ def sync_tags() -> None:
 
             click.echo("Syncing tags...")
 
-            # ----------------------------------------------------------
-            # 1. Ensure type tags exist for every object type
-            # ----------------------------------------------------------
             click.echo("  Adding type tags...")
             for type_name in ("chart", "dashboard", "query", "dataset"):
                 await session.execute(
@@ -125,8 +110,6 @@ def sync_tags() -> None:
                     {"tag_name": f"type:{type_name}"},
                 )
 
-            # Link type tags to objects that don't have them yet
-            # -- charts (slices table)
             await session.execute(
                 text(
                     "INSERT INTO tagged_object (tag_id, object_id, object_type) "
@@ -140,7 +123,6 @@ def sync_tags() -> None:
                     "WHERE tobj.tag_id IS NULL"
                 )
             )
-            # -- dashboards
             await session.execute(
                 text(
                     "INSERT INTO tagged_object (tag_id, object_id, object_type) "
@@ -154,7 +136,6 @@ def sync_tags() -> None:
                     "WHERE tobj.tag_id IS NULL"
                 )
             )
-            # -- saved queries
             await session.execute(
                 text(
                     "INSERT INTO tagged_object (tag_id, object_id, object_type) "
@@ -168,7 +149,6 @@ def sync_tags() -> None:
                     "WHERE tobj.tag_id IS NULL"
                 )
             )
-            # -- datasets (tables table)
             await session.execute(
                 text(
                     "INSERT INTO tagged_object (tag_id, object_id, object_type) "
@@ -183,9 +163,6 @@ def sync_tags() -> None:
                 )
             )
 
-            # ----------------------------------------------------------
-            # 2. Ensure owner tags exist for every user, then link
-            # ----------------------------------------------------------
             click.echo("  Adding owner tags...")
             user_rows = await session.execute(text("SELECT id FROM ab_user"))
             for (user_id,) in user_rows:
@@ -200,8 +177,6 @@ def sync_tags() -> None:
                     {"tag_name": f"owner:{user_id}"},
                 )
 
-            # Link owner tags to objects created by each user
-            # -- charts
             await session.execute(
                 text(
                     "INSERT INTO tagged_object (tag_id, object_id, object_type) "
@@ -216,7 +191,6 @@ def sync_tags() -> None:
                     "  AND s.created_by_fk IS NOT NULL"
                 )
             )
-            # -- dashboards
             await session.execute(
                 text(
                     "INSERT INTO tagged_object (tag_id, object_id, object_type) "
@@ -231,7 +205,6 @@ def sync_tags() -> None:
                     "  AND d.created_by_fk IS NOT NULL"
                 )
             )
-            # -- saved queries
             await session.execute(
                 text(
                     "INSERT INTO tagged_object (tag_id, object_id, object_type) "
@@ -246,7 +219,6 @@ def sync_tags() -> None:
                     "  AND sq.created_by_fk IS NOT NULL"
                 )
             )
-            # -- datasets
             await session.execute(
                 text(
                     "INSERT INTO tagged_object (tag_id, object_id, object_type) "
@@ -263,9 +235,6 @@ def sync_tags() -> None:
                 )
             )
 
-            # ----------------------------------------------------------
-            # 3. Ensure favorited_by tags exist, then link
-            # ----------------------------------------------------------
             click.echo("  Adding favorited_by tags...")
             for (user_id,) in await session.execute(text("SELECT id FROM ab_user")):
                 await session.execute(
@@ -279,7 +248,6 @@ def sync_tags() -> None:
                     {"tag_name": f"favorited_by:{user_id}"},
                 )
 
-            # Link favorited_by tags to favorited objects
             await session.execute(
                 text(
                     "INSERT INTO tagged_object (tag_id, object_id, object_type) "
@@ -301,11 +269,6 @@ def sync_tags() -> None:
         await engine.dispose()
 
     anyio.run(_sync)
-
-
-# ------------------------------------------------------------------
-# re-encrypt-secrets
-# ------------------------------------------------------------------
 
 
 @click.command("re-encrypt-secrets")
@@ -352,9 +315,8 @@ def re_encrypt_secrets(previous_secret_key: Optional[str] = None) -> None:
     try:
         migrator.run()
     except ValueError as exc:
-        # 1:1 with superset_old/cli/update.py:121-129 — a wrong previous
-        # key surfaces as a decryption ValueError; give the operator a
-        # hint instead of a raw traceback.
+        # A wrong previous key surfaces as a decryption ValueError; give
+        # the operator a hint instead of a raw traceback.
         click.secho(
             f"An error occurred, "
             f"probably an invalid previous secret key was provided. Error:[{exc}]",

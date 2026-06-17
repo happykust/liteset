@@ -14,8 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for annotation layer commands."""
-
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -50,11 +48,6 @@ def mock_layer():
     layer.created_on = None
     layer.changed_on = None
     return layer
-
-
-# ---------------------------------------------------------------------------
-# GET single — result.id parity (upstream show_columns = [id, name, descr])
-# ---------------------------------------------------------------------------
 
 
 async def test_get_single_includes_result_id(mock_dao, mock_layer):
@@ -115,9 +108,8 @@ async def test_update_result_excludes_timestamps(mock_dao, mock_layer):
 
 
 async def test_update_result_includes_layer_key(mock_dao, mock_layer):
-    """Upstream PUT adds ``item["layer"] = pk`` to the result dict before returning
-    (superset_old/annotation_layers/api.py:278).  The liteset controller must echo
-    ``layer`` in the result so that the response contract is 1:1 with the original."""
+    """PUT adds ``item["layer"] = pk`` to the result dict before returning; the
+    controller must echo ``layer`` in the result."""
     from superset.controllers.annotation_layer import AnnotationLayerController
     from superset.schemas.annotation import AnnotationLayerPutSchema
 
@@ -135,14 +127,8 @@ async def test_update_result_includes_layer_key(mock_dao, mock_layer):
 
     # result must carry the layer key echoing the path param pk
     assert resp["result"]["layer"] == 5
-    # submitted fields also present
     assert resp["result"]["name"] == "Updated"
     assert resp["result"]["descr"] == "new desc"
-
-
-# ---------------------------------------------------------------------------
-# CreateAnnotationLayerCommand
-# ---------------------------------------------------------------------------
 
 
 async def test_create_layer_validates_name_required(mock_dao):
@@ -158,10 +144,9 @@ async def test_create_layer_validates_empty_name(mock_dao):
 
 
 async def test_create_layer_validates_uniqueness(mock_dao):
-    """Name conflict is the field-keyed 422 upstream emits:
+    """Name conflict produces a field-keyed 422:
     ``AnnotationLayerInvalidError(exceptions=[AnnotationLayerNameUniqueness
-    ValidationError()])`` → ``{"name": ["Name must be unique"]}``
-    (superset_old/commands/annotation_layer/exceptions.py:52-58)."""
+    ValidationError()])`` → ``{"name": ["Name must be unique"]}``."""
     from superset.commands.annotation_layer.exceptions import (
         AnnotationLayerInvalidError,
     )
@@ -190,11 +175,6 @@ async def test_create_layer_run(mock_dao, mock_layer):
     assert result.name == "Test Layer"
     mock_dao.create.assert_awaited_once()
     mock_dao.session.flush.assert_awaited_once()
-
-
-# ---------------------------------------------------------------------------
-# UpdateAnnotationLayerCommand
-# ---------------------------------------------------------------------------
 
 
 async def test_update_layer_not_found(mock_dao):
@@ -228,18 +208,13 @@ async def test_update_layer_success(mock_dao, mock_layer):
 
 
 async def test_update_layer_no_name_skips_uniqueness(mock_dao, mock_layer):
-    """When name is not in data, uniqueness check should be skipped."""
+    """Uniqueness check must be skipped when name is absent from the update payload."""
     mock_dao.find_by_id = AsyncMock(return_value=mock_layer)
     mock_dao.update = AsyncMock(return_value=mock_layer)
     cmd = UpdateAnnotationLayerCommand(dao=mock_dao, pk=1, data={"descr": "new desc"})
     result = await cmd.execute()
     assert result.id == 1
     mock_dao.validate_update_uniqueness.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# DeleteAnnotationLayerCommand
-# ---------------------------------------------------------------------------
 
 
 async def test_delete_layer_not_found(mock_dao):
@@ -265,11 +240,6 @@ async def test_delete_layer_success(mock_dao, mock_layer):
     await cmd.execute()
     mock_dao.delete.assert_awaited_once_with([mock_layer])
     mock_dao.session.flush.assert_awaited()
-
-
-# ---------------------------------------------------------------------------
-# BulkDeleteAnnotationLayerCommand
-# ---------------------------------------------------------------------------
 
 
 async def test_bulk_delete_layers_empty_ids(mock_dao):

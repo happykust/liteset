@@ -14,27 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for the legacy ``/superset/explore_json`` controller.
-
-Covers the four behaviours the port must preserve 1:1 with the original
-Flask ``Superset.explore_json`` / ``Superset.explore_json_data`` views:
-
-* GAQ async branch: GAQ enabled + JSON + valid ``async-token`` cookie →
-  ``202`` with job_metadata whose ``channel_id`` equals the cookie channel,
-  and ``load_explore_json_into_cache.delay`` called with
-  ``(job_metadata, form_data, response_type, force)``.
-* GAQ async branch: missing / invalid cookie → ``401``.
-* ``explore_json_data``: cache hit returns the viz JSON; cache miss → ``404``.
-* Sync JSON path: returns the serialized viz payload.
-* Route registration: the three legacy paths resolve.
-
-Handlers are driven directly (their Litestar ``.fn``) with mocked DI
-dependencies, mirroring ``test_async_chart_data_channel.py``.  The
-``explore_json_data`` cache loader (``load_cached_explore_form``) is
-tested separately in ``test_explore_json_cache_loader.py``, including the
-pickle round-trip that matches the Celery task's on-disk format.
-"""
-
 from __future__ import annotations
 
 import json
@@ -58,13 +37,7 @@ GAQ_SECRET = "test-gaq-secret-at-least-16-chars"
 COOKIE_NAME = "async-token"
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _get_raw_method(controller_cls: type, method_name: str) -> Any:
-    """Return the underlying async function from a Litestar handler."""
     handler = getattr(controller_cls, method_name)
     return handler.fn if hasattr(handler, "fn") else handler
 
@@ -86,7 +59,6 @@ def _make_request(
     query: dict[str, str] | None = None,
     form_data: dict[str, Any] | None = None,
 ) -> MagicMock:
-    """Mock a Litestar request exposing scope headers, query params and form."""
     request = MagicMock()
     request.scope = {"headers": headers}
     request.content_type = ("application/x-www-form-urlencoded",)
@@ -103,11 +75,6 @@ def _make_request(
 _explore_json_post = _get_raw_method(ExploreJsonController, "explore_json_post")
 _explore_json_get = _get_raw_method(ExploreJsonController, "explore_json_get")
 _explore_json_data = _get_raw_method(ExploreJsonController, "explore_json_data")
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -128,8 +95,8 @@ def mock_security_manager() -> MagicMock:
     sm = MagicMock()
     sm.can_access = AsyncMock(return_value=True)
     sm.raise_for_access = AsyncMock(return_value=None)
-    # Regular (non-guest) user: the GAQ submit branch must NOT forward a
-    # guest token. (A bare MagicMock would return a truthy is_guest_user.)
+    # A bare MagicMock would return a truthy is_guest_user; force False so the
+    # GAQ submit branch does NOT forward a guest token for regular users.
     sm.is_guest_user = MagicMock(return_value=False)
     sm.get_rls_cache_key = AsyncMock(return_value=[])
     return sm
@@ -137,14 +104,11 @@ def mock_security_manager() -> MagicMock:
 
 @pytest.fixture
 def gaq_state() -> MagicMock:
-    """State whose settings enable GAQ and carry the GAQ secret/cookie name."""
     state = MagicMock()
     settings = MagicMock()
     settings.global_async_queries = True
     settings.global_async_queries_jwt_secret = GAQ_SECRET
     settings.global_async_queries_jwt_cookie_name = COOKIE_NAME
-    # No data cache configured -> build_sync_viz_cache returns None (the viz
-    # cache wiring is a no-op); control flow is what these tests assert.
     settings.data_cache_config = None
     settings.redis_url = None
     state.settings = settings
@@ -153,7 +117,6 @@ def gaq_state() -> MagicMock:
 
 @pytest.fixture
 def sync_state() -> MagicMock:
-    """State whose settings disable GAQ (forces the sync branch)."""
     state = MagicMock()
     settings = MagicMock()
     settings.global_async_queries = False
@@ -173,7 +136,6 @@ def form_data() -> dict[str, Any]:
 
 
 def _patch_jsctrl_off() -> Any:
-    """Disable ENABLE_JAVASCRIPT_CONTROLS so the rejected-keys filter is inert."""
     return patch(
         "superset.utils.feature_flags.feature_flag_manager.is_feature_enabled",
         return_value=False,
@@ -181,17 +143,11 @@ def _patch_jsctrl_off() -> Any:
 
 
 def _patch_datasource(datasource: Any) -> Any:
-    """Patch the controller's datasource loader to return *datasource*."""
     return patch.object(
         ExploreJsonController,
         "_load_datasource",
         new=AsyncMock(return_value=datasource),
     )
-
-
-# ---------------------------------------------------------------------------
-# Pure-helper unit tests
-# ---------------------------------------------------------------------------
 
 
 def test_get_datasource_info_from_form_data() -> None:
@@ -227,11 +183,6 @@ def test_resolve_response_type_flags(flag: str) -> None:
     req = MagicMock()
     req.query_params = {flag: "true"}
     assert _resolve_response_type(req) == flag
-
-
-# ---------------------------------------------------------------------------
-# GAQ async branch
-# ---------------------------------------------------------------------------
 
 
 async def test_async_branch_submits_with_cookie_channel(
@@ -293,7 +244,6 @@ async def test_async_branch_submits_with_cookie_channel(
     assert sent_form_data == form_data
     assert response_type == "json"
     assert force is False
-    # Non-guest user → no guest token forwarded to the worker.
     assert "guest_token" not in job_metadata
 
 
@@ -304,7 +254,6 @@ async def test_async_branch_cache_hit_returns_payload(
     gaq_state: MagicMock,
     form_data: dict[str, Any],
 ) -> None:
-    """GAQ cache-first hit short-circuits and returns the payload (no delay)."""
     channel = str(uuid.uuid4())
     datasource = MagicMock()
 
@@ -351,7 +300,6 @@ async def test_async_branch_missing_cookie_401(
     gaq_state: MagicMock,
     form_data: dict[str, Any],
 ) -> None:
-    """GAQ + JSON but no async-token cookie → 401 (no delay)."""
     datasource = MagicMock()
     request = _make_request([], query={}, form_data=form_data)
 
@@ -387,7 +335,6 @@ async def test_async_branch_wrong_secret_401(
     gaq_state: MagicMock,
     form_data: dict[str, Any],
 ) -> None:
-    """GAQ + JSON but cookie signed with a bad key → 401 (no delay)."""
     datasource = MagicMock()
     request = _make_request(
         _cookie_header_bytes(str(uuid.uuid4()), secret="a-different-wrong-secret-key"),
@@ -421,7 +368,6 @@ async def test_async_branch_wrong_secret_401(
 
 
 async def test_extract_guest_token_from_header() -> None:
-    """The raw guest JWT is re-read from the configured header."""
     settings = MagicMock()
     settings.guest_token_header_name = "X-GuestToken"
     request = MagicMock()
@@ -430,7 +376,6 @@ async def test_extract_guest_token_from_header() -> None:
 
 
 async def test_maybe_forward_guest_token_guest_merges() -> None:
-    """For a guest user the shared helper merges the raw token into metadata."""
     from superset.async_events.manager import maybe_forward_guest_token
 
     settings = MagicMock()
@@ -450,7 +395,6 @@ async def test_maybe_forward_guest_token_guest_merges() -> None:
 
 
 async def test_maybe_forward_guest_token_non_guest_noop() -> None:
-    """For a non-guest user the metadata is returned unchanged."""
     from superset.async_events.manager import maybe_forward_guest_token
 
     sm = MagicMock()
@@ -509,16 +453,10 @@ async def test_async_branch_forwards_guest_token(
         )
 
     assert result.status_code == 202
-    # The token rides only on the *dispatched* metadata...
     dispatched = mock_task.delay.call_args.args[0]
     assert dispatched.get("guest_token") == "raw-guest-jwt"
-    # ...never echoed back in the 202 response body.
+    # Token rides only in the dispatched metadata, never echoed in the 202 response.
     assert "guest_token" not in result.content
-
-
-# ---------------------------------------------------------------------------
-# Sync JSON path
-# ---------------------------------------------------------------------------
 
 
 async def test_sync_json_path_returns_payload(
@@ -528,7 +466,6 @@ async def test_sync_json_path_returns_payload(
     sync_state: MagicMock,
     form_data: dict[str, Any],
 ) -> None:
-    """GAQ disabled → sync branch builds viz and returns serialized JSON."""
     datasource = MagicMock()
     request = _make_request([], query={}, form_data=form_data)
 
@@ -557,7 +494,6 @@ async def test_sync_json_path_returns_payload(
 
     assert result.status_code == 200
     assert result.content == '{"data": [{"a": 2}]}'
-    # Datasource read access was enforced.
     mock_security_manager.raise_for_access.assert_awaited_once()
 
 
@@ -567,7 +503,6 @@ async def test_sync_csv_no_permission_403(
     sync_state: MagicMock,
     form_data: dict[str, Any],
 ) -> None:
-    """CSV response type without can_csv permission → 403."""
     sm = MagicMock()
     sm.can_access = AsyncMock(return_value=False)
     sm.raise_for_access = AsyncMock(return_value=None)
@@ -594,7 +529,6 @@ async def test_sync_missing_datasource_400(
     mock_security_manager: MagicMock,
     sync_state: MagicMock,
 ) -> None:
-    """No resolvable datasource in form_data → 400 (deleted-dataset message)."""
     request = _make_request([], query={}, form_data={"viz_type": "table"})
 
     with _patch_jsctrl_off():
@@ -612,24 +546,14 @@ async def test_sync_missing_datasource_400(
     assert result.status_code == 400
 
 
-# ---------------------------------------------------------------------------
-# explore_json_data (cached result fetch)
-# ---------------------------------------------------------------------------
-
-
 async def test_explore_json_data_cache_hit(
     controller: ExploreJsonController,
     mock_user: MagicMock,
     mock_security_manager: MagicMock,
     sync_state: MagicMock,
 ) -> None:
-    """Cache hit rebuilds the viz (force_cached) and returns the JSON.
-
-    ``load_cached_explore_form`` accepts the cached value either as a plain
-    dict (returned directly) or as pickle bytes; here we return the dict
-    directly. The pickle-bytes path is covered by
-    ``test_explore_json_cache_loader.py``.
-    """
+    """Cache hit: dict-valued cache entry (pickle-bytes path is covered by
+    test_explore_json_cache_loader.py)."""
     cache_value = {
         "form_data": {"datasource": "1__table", "viz_type": "table"},
         "response_type": "json",
@@ -664,7 +588,6 @@ async def test_explore_json_data_cache_hit(
 
     assert result.status_code == 200
     assert result.content == '{"data": []}'
-    # force_cached=True was passed to get_viz (cache hit, no re-execution).
     assert mock_get_viz.call_args.kwargs.get("force_cached") is True
 
 
@@ -674,7 +597,6 @@ async def test_explore_json_data_cache_miss_404(
     mock_security_manager: MagicMock,
     sync_state: MagicMock,
 ) -> None:
-    """Cache miss → 404."""
     cache_slot = MagicMock()
     cache_slot.get = AsyncMock(return_value=None)
     fake_cache_manager = MagicMock()
@@ -693,13 +615,7 @@ async def test_explore_json_data_cache_miss_404(
     assert result.status_code == 404
 
 
-# ---------------------------------------------------------------------------
-# Route registration
-# ---------------------------------------------------------------------------
-
-
 def test_routes_resolve() -> None:
-    """The three legacy paths resolve on the built Litestar app."""
     import os
 
     os.environ.setdefault("SUPERSET_SECRET_KEY", "not-a-secret-but-long-enough")

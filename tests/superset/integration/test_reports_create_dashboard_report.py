@@ -41,8 +41,8 @@ from superset.security.manager import build_async_security_manager
 from superset.utils import json
 from tests.superset.integration import factories as f
 
-# 1:1 port of the upstream tabbed_dashboard fixture position_json. Contains the
-# tab ids referenced by the valid/invalid create cases (TAB-L1AA, TAB-L2AB).
+# Contains the tab ids referenced by the valid/invalid create cases
+# (TAB-L1AA, TAB-L2AB).
 TABBED_POSITION_JSON = {
     "DASHBOARD_VERSION_KEY": "v2",
     "GRID_ID": {
@@ -146,8 +146,7 @@ TABBED_POSITION_JSON = {
     },
 }
 
-# Carries the upstream EMAIL recipient (1:1 with the upstream DEFAULTS). The
-# async DAO now persists recipients via the FK (``session.add``) instead of
+# The async DAO persists recipients via the FK (``session.add``) instead of
 # appending to the flushed report's lazy="select" collection, so this no longer
 # triggers a MissingGreenlet under a bare AsyncSession.
 DASHBOARD_REPORT_SCHEDULE_DEFAULTS = {

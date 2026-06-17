@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/security/delete.py``."""
+"""Command for deleting Row Level Security filters."""
 
 from __future__ import annotations
 
@@ -32,11 +32,8 @@ logger = logging.getLogger(__name__)
 class DeleteRLSRuleCommand(AsyncBaseCommand[None]):
     """Bulk-delete Row Level Security filters.
 
-    Async port of
-    ``superset_old.commands.security.delete.DeleteRLSRuleCommand`` — the
-    original takes ``list[int]`` of model ids and is the only delete
-    entry-point. There is no "single delete" command in original
-    Superset; the API has only ``DELETE /?q=[ids]``.
+    Takes a ``list[int]`` of model ids; there is no single-row delete
+    entry-point — the API uses only ``DELETE /?q=[ids]``.
     """
 
     def __init__(self, dao: Any, model_ids: list[int]) -> None:
@@ -50,9 +47,6 @@ class DeleteRLSRuleCommand(AsyncBaseCommand[None]):
             raise RLSRuleNotFoundError()
 
     async def run(self) -> None:
-        # Mirrors ``superset_old/commands/security/delete.py`` which wraps
-        # the transaction with
-        # ``@transaction(on_error=partial(on_error, reraise=RuleDeleteFailedError))``.
         try:
             await self._dao.delete(self._models)
             await self._dao.session.flush()

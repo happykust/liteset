@@ -121,7 +121,6 @@ QUERY_OBJECTS: dict[str, dict[str, object]] = {
                 },
                 False,
             ],
-            # reference the ambiguous alias in SIMPLE metric
             [
                 {
                     "expressionType": "SIMPLE",
@@ -131,7 +130,6 @@ QUERY_OBJECTS: dict[str, dict[str, object]] = {
                 },
                 False,
             ],
-            # reference the ambiguous alias in CUSTOM SQL metric
             [
                 {
                     "expressionType": "SQL",
@@ -180,7 +178,6 @@ def _get_query_object(
         raise Exception(f"QueryObject fixture not defined for datasource: {query_name}")
     obj = QUERY_OBJECTS[query_name]
 
-    # apply overrides
     if ":" in query_name:
         parent_query_name = query_name.split(":")[0]
         obj = {**QUERY_OBJECTS[parent_query_name], **obj}
@@ -204,9 +201,8 @@ def get_query_context(
 ) -> dict[str, Any]:
     """Build a chart/data request payload for a seeded example dataset.
 
-    1:1 with ``tests.integration_tests.fixtures.query_context.get_query_context``
-    except the resolved seeded-dataset id is passed in explicitly (the upstream
-    helper resolved it from the table name via ``SupersetTestCase.get_table``).
+    The resolved seeded-dataset id is passed in explicitly; the upstream
+    helper resolved it from the table name via ``SupersetTestCase.get_table``.
     """
     return {
         "datasource": {"id": datasource_id, "type": "table"},
@@ -294,8 +290,7 @@ async def _load_query_context(
     # ``form_data`` and round-trip back through ``_load_query_context``. The
     # ``apply_granularity`` hook only reads the ``x_axis`` key off form_data, so
     # the extra datasource/queries keys are inert. ``force`` is excluded from the
-    # cached form so a rehydrated context defaults to ``force=False`` (1:1 with
-    # upstream, where the cached form never carried ``force``).
+    # cached form so a rehydrated context defaults to ``force=False``.
     cache_form = {k: v for k, v in payload.items() if k != "force"}
     query_context = AsyncQueryContext(
         datasource=datasource,
@@ -334,9 +329,8 @@ def _render_query_result(
 
     Mirrors the chart-data controller's ``_render_chart_data_payload`` (df ->
     ``data`` / ``colnames``). The time-offset subquery SQL is already
-    concatenated into the ``query`` field by ``get_df_payload`` itself (1:1 with
-    upstream ``QueryContextProcessor.get_df_payload``:
-    ``query += ";\\n\\n".join(queries)``), so the ``query`` is passed through
+    concatenated into the ``query`` field by ``get_df_payload`` itself, so the
+    ``query`` is passed through
     untouched here.
     """
     result = dict(df_payload)
@@ -356,12 +350,9 @@ async def _get_payload(
     """Liteset equivalent of upstream ``query_context.get_payload()``.
 
     Runs the processor's result-type dispatch per query, surfacing per-query
-    validation errors into the payload (1:1 with upstream
-    ``query_actions.get_query_results``, which catches
-    ``QueryObjectValidationError`` per query and returns ``{"error": ...}``);
-    the port's processor instead lets that error propagate out of
-    ``get_payload`` for the command to turn into a 400 — see suspected-bug
-    note). Each query's df is then serialized into the upstream
+    validation errors into the payload; the port's processor instead lets that
+    error propagate out of ``get_payload`` for the command to turn into a 400
+    (see suspected-bug note). Each query's df is then serialized into the upstream
     ``{data, colnames, query, status, cache_key, ...}`` shape; the time-offset
     subquery SQL is already concatenated into ``query`` by ``get_df_payload``.
     """
@@ -402,7 +393,7 @@ async def _get_payload(
 
 
 async def get_sql_text(session: AsyncSession, payload: dict[str, Any]) -> str:
-    """1:1 with the upstream module-level ``get_sql_text`` helper."""
+    """Return the SQL text generated for the given query-context payload."""
     payload["result_type"] = "query"
     query_context, processor, _ = await _load_query_context(session, payload)
     responses = await _get_payload(query_context, processor)
@@ -421,7 +412,6 @@ async def get_sql_text(session: AsyncSession, payload: dict[str, Any]) -> str:
 class TestQueryContext:
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     async def test_schema_deserialization(self, db_session: AsyncSession) -> None:
-        """Ensure the deserialized QueryContext contains all required fields."""
         ds = await _load_datasource(db_session, "birth_names")
         payload = get_query_context(
             "birth_names", ds.id, add_postprocessing_operations=True
@@ -432,7 +422,6 @@ class TestQueryContext:
         for query_idx, query in enumerate(query_context.queries):
             payload_query = payload["queries"][query_idx]
 
-            # check basic properties
             assert query.extras == payload_query["extras"]
             assert query.filters == payload_query["filters"]
             assert query.columns == payload_query["columns"]
@@ -450,7 +439,6 @@ class TestQueryContext:
             assert query.orderby == payload_query["orderby"]
             assert query.time_range == payload_query["time_range"]
 
-            # check post processing operation properties
             for post_proc_idx, post_proc in enumerate(query.post_processing):
                 payload_post_proc = payload_query["post_processing"][post_proc_idx]
                 assert post_proc["operation"] == payload_post_proc["operation"]
@@ -474,7 +462,6 @@ class TestQueryContext:
         response = await _get_payload(
             query_context, processor, cache_query_context=True
         )
-        # MUST BE a successful query
         query_dump = response["queries"][0]
         assert query_dump["status"] == QueryStatus.SUCCESS
 
@@ -485,8 +472,6 @@ class TestQueryContext:
         assert cached is not None
         assert "form_data" in cached["data"]
 
-        # Rehydrate the query context from the cached form (1:1 with upstream
-        # ``ChartDataQueryContextSchema().load(cached["data"])``).
         rehydrated_qc, rehydrated_proc, _ = await _load_query_context(
             db_session, cached["data"], cache_manager=cache
         )
@@ -508,7 +493,6 @@ class TestQueryContext:
         ds = await _load_datasource(db_session, "birth_names")
         payload = get_query_context("birth_names", ds.id)
 
-        # construct baseline query_cache_key
         query_context, processor, datasource = await _load_query_context(
             db_session, payload
         )
@@ -525,18 +509,15 @@ class TestQueryContext:
         time.sleep(0.01)
         await db_session.refresh(datasource)
 
-        # new QueryContext with unchanged attributes -> new query_cache_key
         query_context, processor, _ = await _load_query_context(db_session, payload)
         query_object = query_context.queries[0]
         cache_key_new = await processor._get_cache_key(query_object)  # noqa: SLF001
 
-        # the new cache_key should be different due to updated datasource
         assert cache_key_original != cache_key_new
 
     async def test_query_cache_key_changes_when_metric_is_updated(
         self, db_session: AsyncSession
     ) -> None:
-        """Test that the query cache key changes when a metric is updated."""
         ds = await _load_datasource(db_session, "birth_names")
         payload = get_query_context("birth_names", ds.id)
 
@@ -550,7 +531,6 @@ class TestQueryContext:
         await db_session.flush()
         await db_session.refresh(ds)
 
-        # construct baseline query_cache_key
         query_context, processor, datasource = await _load_query_context(
             db_session, payload
         )
@@ -564,12 +544,10 @@ class TestQueryContext:
         await db_session.flush()
         await db_session.refresh(datasource)
 
-        # new QueryContext with unchanged attributes -> new query_cache_key
         query_context, processor, _ = await _load_query_context(db_session, payload)
         query_object = query_context.queries[0]
         cache_key_new = await processor._get_cache_key(query_object)  # noqa: SLF001
 
-        # the new cache_key should be different due to updated datasource
         assert cache_key_original != cache_key_new
 
     async def test_query_cache_key_does_not_change_for_non_existent_or_null(
@@ -613,7 +591,6 @@ class TestQueryContext:
         cache_key = await processor._get_cache_key(query_object)  # noqa: SLF001
         assert cache_key_original == cache_key
 
-        # ensure query without post processing operation is different
         payload["queries"][0].pop("post_processing")
         query_context, processor, _ = await _load_query_context(db_session, payload)
         query_object = query_context.queries[0]
@@ -640,27 +617,23 @@ class TestQueryContext:
     async def test_query_cache_key_consistent_with_different_sql_formatting(
         self, db_session: AsyncSession
     ) -> None:
-        """Cache keys are consistent regardless of SQL clause formatting."""
         ds = await _load_datasource(db_session, "birth_names")
 
-        # Create payload with compact WHERE clause
         payload1 = get_query_context("birth_names", ds.id)
         payload1["queries"][0]["extras"] = {"where": "(name = 'Amy')"}
         qc1, proc1, _ = await _load_query_context(db_session, payload1)
         result1 = await proc1.get_df_payload(qc1.queries[0], force_cached=False)
         cache_key1 = result1.get("cache_key")
 
-        # Same payload but with a pretty-formatted WHERE clause (with newlines)
+        # same WHERE clause but pretty-formatted with newlines
         payload2 = get_query_context("birth_names", ds.id)
         payload2["queries"][0]["extras"] = {"where": "(\n  name = 'Amy'\n)"}
         qc2, proc2, _ = await _load_query_context(db_session, payload2)
         result2 = await proc2.get_df_payload(qc2.queries[0], force_cached=False)
         cache_key2 = result2.get("cache_key")
 
-        # Cache keys should be identical after sanitization
         assert cache_key1 == cache_key2
 
-        # Also verify with HAVING clause
         payload3 = get_query_context("birth_names", ds.id)
         payload3["queries"][0]["extras"] = {"having": "(sum__num > 100)"}
         qc3, proc3, _ = await _load_query_context(db_session, payload3)
@@ -673,11 +646,9 @@ class TestQueryContext:
         result4 = await proc4.get_df_payload(qc4.queries[0], force_cached=False)
         cache_key4 = result4.get("cache_key")
 
-        # Cache keys should be identical after sanitization
         assert cache_key3 == cache_key4
 
     async def test_handle_metrics_field(self, db_session: AsyncSession) -> None:
-        """Should support both predefined and adhoc metrics."""
         ds = await _load_datasource(db_session, "birth_names")
         adhoc_metric = {
             "expressionType": "SIMPLE",
@@ -693,7 +664,6 @@ class TestQueryContext:
         assert query_object.metrics == ["sum__num", "abc", adhoc_metric]
 
     async def test_convert_deprecated_fields(self, db_session: AsyncSession) -> None:
-        """Ensure deprecated fields are converted correctly."""
         ds = await _load_datasource(db_session, "birth_names")
         payload = get_query_context("birth_names", ds.id)
         columns = payload["queries"][0]["columns"]
@@ -713,7 +683,6 @@ class TestQueryContext:
 
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     async def test_csv_response_format(self, db_session: AsyncSession) -> None:
-        """Ensure that CSV result format works."""
         ds = await _load_datasource(db_session, "birth_names")
         payload = get_query_context("birth_names", ds.id)
         payload["result_format"] = "csv"
@@ -726,7 +695,6 @@ class TestQueryContext:
         assert len(data.split("\n")) == 12
 
     async def test_sql_injection_via_groupby(self, db_session: AsyncSession) -> None:
-        """Ensure that calling invalid column names in groupby are caught."""
         ds = await _load_datasource(db_session, "birth_names")
         payload = get_query_context("birth_names", ds.id)
         payload["queries"][0]["groupby"] = ["currentDatabase()"]
@@ -735,7 +703,6 @@ class TestQueryContext:
         assert query_payload["queries"][0].get("error") is not None
 
     async def test_sql_injection_via_columns(self, db_session: AsyncSession) -> None:
-        """Ensure that calling invalid column names in columns are caught."""
         ds = await _load_datasource(db_session, "birth_names")
         payload = get_query_context("birth_names", ds.id)
         payload["queries"][0]["groupby"] = []
@@ -746,7 +713,6 @@ class TestQueryContext:
         assert query_payload["queries"][0].get("error") is not None
 
     async def test_sql_injection_via_metrics(self, db_session: AsyncSession) -> None:
-        """Ensure that calling invalid column names in filters are caught."""
         ds = await _load_datasource(db_session, "birth_names")
         payload = get_query_context("birth_names", ds.id)
         payload["queries"][0]["groupby"] = ["name"]
@@ -764,7 +730,6 @@ class TestQueryContext:
 
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     async def test_samples_response_type(self, db_session: AsyncSession) -> None:
-        """Ensure that samples result type works."""
         ds = await _load_datasource(db_session, "birth_names")
         payload = get_query_context("birth_names", ds.id)
         payload["result_type"] = "samples"
@@ -779,7 +744,6 @@ class TestQueryContext:
 
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     async def test_query_response_type(self, db_session: AsyncSession) -> None:
-        """Ensure that query result type works."""
         ds = await _load_datasource(db_session, "birth_names")
         payload = get_query_context("birth_names", ds.id)
         sql_text = await get_sql_text(db_session, payload)
@@ -794,13 +758,11 @@ class TestQueryContext:
 
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     async def test_handle_sort_by_metrics(self, db_session: AsyncSession) -> None:
-        """Should properly handle sort by metrics in various scenarios."""
         ds = await _load_datasource(db_session, "birth_names")
 
         sql_text = await get_sql_text(
             db_session, get_query_context("birth_names", ds.id)
         )
-        # Postgres backend
         assert re.search(r'ORDER BY[\s\n]* [`"\[]?sum__num[`"\]]? DESC', sql_text)
 
         sql_text = await get_sql_text(
@@ -817,14 +779,13 @@ class TestQueryContext:
             db_session, get_query_context("birth_names:orderby_dup_alias", ds.id)
         )
 
-        # Check SELECT clauses
         assert re.search(
             r'SUM\([`"\[]?num_boys[`"\]]?\) AS [`\"\[]?num_boys[`"\]]?',
             sql_text,
             re.IGNORECASE,
         )
 
-        # Check ORDER BY clauses — should reference the adhoc metric by alias
+        # ORDER BY should reference the adhoc metric by alias
         assert re.search(
             r'ORDER BY[\s\n]* [`"\[]?num_girls[`"\]]? DESC',
             sql_text,
@@ -841,7 +802,6 @@ class TestQueryContext:
 
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     async def test_fetch_values_predicate(self, db_session: AsyncSession) -> None:
-        """Ensure that fetch values predicate is added to query if needed."""
         ds = await _load_datasource(db_session, "birth_names")
         # Upstream's birth_names example dataset ships with
         # ``fetch_values_predicate = "123 = 123"``; the Liteset seed loader does
@@ -858,7 +818,6 @@ class TestQueryContext:
         assert "123 = 123" in sql_text
 
     async def test_query_object_unknown_fields(self, db_session: AsyncSession) -> None:
-        """Query objects with unknown fields don't raise and keep the cache key."""
         ds = await _load_datasource(db_session, "birth_names")
         payload = get_query_context("birth_names", ds.id)
         query_context, processor, _ = await _load_query_context(db_session, payload)
@@ -872,7 +831,6 @@ class TestQueryContext:
 
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     async def test_time_offsets_in_query_object(self, db_session: AsyncSession) -> None:
-        """Ensure that time_offsets can generate the correct query."""
         ds = await _load_datasource(db_session, "birth_names")
         payload = get_query_context("birth_names", ds.id)
         payload["queries"][0]["metrics"] = ["sum__num"]
@@ -895,16 +853,14 @@ class TestQueryContext:
             sql for sql in responses["queries"][0]["query"].split(";") if sql.strip()
         ]
         assert len(sqls) == 3
-        # 1 year ago - should only contain the shifted range
+        # each offset query should only contain its shifted range
         assert re.search(r"1989-01-01.+1990-01-01", sqls[1], re.S)
-        # 1 year later - should only contain the shifted range
         assert re.search(r"1991-01-01.+1992-01-01", sqls[2], re.S)
 
     @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     async def test_processing_time_offsets_cache(
         self, db_session: AsyncSession
     ) -> None:
-        """Ensure that time_offsets can generate the correct query."""
         ds = await _load_datasource(db_session, "birth_names")
         payload = get_query_context("birth_names", ds.id)
         payload["queries"][0]["metrics"] = ["sum__num"]
@@ -923,7 +879,6 @@ class TestQueryContext:
         )
         query_object = query_context.queries[0]
         query_result = await processor._get_query_result(query_object)  # noqa: SLF001
-        # get main query dataframe
         df = query_result["df"]
 
         payload["queries"][0]["time_offsets"] = ["1 year ago", "1 year later"]
@@ -931,9 +886,8 @@ class TestQueryContext:
             db_session, payload, cache_manager=cache
         )
         query_object = query_context.queries[0]
-        # query without cache
+        # first call populates cache, second call reads it back
         await processor.processing_time_offsets(df.copy(), query_object)
-        # query with cache
         rv = await processor.processing_time_offsets(df.copy(), query_object)
         cache_keys = rv["cache_keys"]
         cache_keys__1_year_ago = cache_keys[0]
@@ -942,7 +896,7 @@ class TestQueryContext:
         assert cache_keys__1_year_later is not None
         assert cache_keys__1_year_ago != cache_keys__1_year_later
 
-        # swap offsets
+        # swapping offset order swaps the cache keys but keeps their values
         payload["queries"][0]["time_offsets"] = ["1 year later", "1 year ago"]
         query_context, processor, _ = await _load_query_context(
             db_session, payload, cache_manager=cache
@@ -953,7 +907,6 @@ class TestQueryContext:
         assert cache_keys__1_year_ago == cache_keys[1]
         assert cache_keys__1_year_later == cache_keys[0]
 
-        # remove all offsets
         payload["queries"][0]["time_offsets"] = []
         query_context, processor, _ = await _load_query_context(
             db_session, payload, cache_manager=cache
@@ -982,7 +935,6 @@ class TestQueryContext:
         query_result = await processor._get_query_result(query_object)  # noqa: SLF001
         df = query_result["df"]
 
-        # set time_offsets to query_object
         payload["queries"][0]["time_offsets"] = ["3 years ago", "3 years later"]
         query_context, processor, _ = await _load_query_context(db_session, payload)
         query_object = query_context.queries[0]
@@ -990,7 +942,6 @@ class TestQueryContext:
         query_from_1977_to_1988 = time_offsets_obj["queries"][0]
         query_from_1983_to_1994 = time_offsets_obj["queries"][1]
 
-        # should generate expected date range in sql
         assert "1977-01-01" in query_from_1977_to_1988
         assert "1988-01-01" in query_from_1977_to_1988
         assert "1983-01-01" in query_from_1983_to_1994
@@ -1013,7 +964,6 @@ class TestQueryContext:
         query_result = await processor._get_query_result(query_object)  # noqa: SLF001
         df = query_result["df"]
 
-        # set time_offsets to query_object
         payload["queries"][0]["time_offsets"] = ["3 years ago", "3 years later"]
         query_context, processor, _ = await _load_query_context(db_session, payload)
         query_object = query_context.queries[0]
@@ -1021,7 +971,8 @@ class TestQueryContext:
         df_with_offsets = time_offsets_obj["df"]
         df_with_offsets = df_with_offsets.set_index(["__timestamp", "state"])
 
-        # should get correct data when applying "3 years ago"
+        # cross-check the "3 years ago" offset column against an independent
+        # query whose own range is shifted forward by 3 years
         payload["queries"][0]["time_offsets"] = []
         payload["queries"][0]["time_range"] = "1977 : 1988"
         query_context, processor, _ = await _load_query_context(db_session, payload)
@@ -1039,7 +990,7 @@ class TestQueryContext:
                     == df_3_years_ago.loc[index]["sum__num"]
                 )
 
-        # should get correct data when applying "3 years later"
+        # same cross-check for the "3 years later" offset column
         payload["queries"][0]["time_offsets"] = []
         payload["queries"][0]["time_range"] = "1983 : 1994"
         query_context, processor, _ = await _load_query_context(db_session, payload)
@@ -1094,7 +1045,6 @@ class TestQueryContext:
         query_result = await processor._get_query_result(query_object)  # noqa: SLF001
         df = query_result["df"]
 
-        # Setup the payload for time offsets
         payload["queries"][0]["time_offsets"] = ["1 year ago", "1 year later"]
         query_context, processor, _ = await _load_query_context(db_session, payload)
         query_object = query_context.queries[0]
@@ -1105,12 +1055,11 @@ class TestQueryContext:
             str(row_limit_value)
         )
         assert len(sqls) == 2
-        # 1 year ago
+        # offset queries use the config row_limit, not the query's LIMIT 100 / OFFSET 10
         assert re.search(r"1989-01-01.+1990-01-01", sqls[0], re.S)
         assert not re.search(r"LIMIT 100", sqls[0], re.S)
         assert not re.search(r"OFFSET 10", sqls[0], re.S)
         assert re.search(row_limit_pattern_with_config_value, sqls[0], re.S)
-        # 1 year later
         assert re.search(r"1991-01-01.+1992-01-01", sqls[1], re.S)
         assert not re.search(r"LIMIT 100", sqls[1], re.S)
         assert not re.search(r"OFFSET 10", sqls[1], re.S)
@@ -1184,9 +1133,8 @@ async def _make_virtual_dataset(
 async def _make_physical_dataset(session: AsyncSession) -> SqlaTable:
     """Create the ``physical_dataset`` table + dataset on the example database.
 
-    1:1 with the upstream ``physical_dataset`` fixture (10 rows, 7 columns,
-    3 temporal). The physical table is created in the seeded warehouse via the
-    dataset's database engine.
+    Creates a 10-row, 7-column (3 temporal) physical table in the seeded
+    warehouse via the dataset's database engine.
     """
     database_id = await _example_database_id(session)
     from superset.models.connectors import SqlMetric as _SqlMetric, TableColumn
@@ -1365,7 +1313,6 @@ async def test_time_column_with_time_grain(db_session: AsyncSession) -> None:
         )
         query_object = _qc.queries[0]
         df = (await processor.get_df_payload(query_object))["df"]
-        # Postgres returns datetime values
         assert df["I_AM_AN_ORIGINAL_COLUMN"][0].strftime("%Y-%m-%d") == "2000-01-01"
         assert df["I_AM_AN_ORIGINAL_COLUMN"][1].strftime("%Y-%m-%d") == "2000-01-02"
         assert df["I_AM_A_TRUNC_COLUMN"][0].strftime("%Y-%m-%d") == "2002-01-01"
@@ -1426,7 +1373,6 @@ async def test_special_chars_in_column_name(db_session: AsyncSession) -> None:
         )
         query_object = _qc.queries[0]
         df = (await processor.get_df_payload(query_object))["df"]
-        # Postgres returns datetime values
         assert df["time column with spaces"][0].strftime("%Y-%m-%d") == "2002-01-03"
     finally:
         feature_flag_manager._feature_flags = saved  # noqa: SLF001
@@ -1580,7 +1526,6 @@ async def test_time_offset_with_temporal_range_filter(
 
 
 async def test_date_range_timeshift_enabled(db_session: AsyncSession) -> None:
-    """Date range timeshift functionality when the feature flag is enabled."""
     datasource = await _make_physical_dataset(db_session)
     saved = dict(feature_flag_manager._feature_flags)  # noqa: SLF001
     feature_flag_manager._feature_flags["DATE_RANGE_TIMESHIFTS_ENABLED"] = True  # noqa: SLF001
@@ -1619,19 +1564,17 @@ async def test_date_range_timeshift_enabled(db_session: AsyncSession) -> None:
         query_payload = await processor.get_df_payload(_qc.queries[0])
         df = query_payload["df"]
 
-        # Should have both main metrics and offset metrics columns
         assert "SUM(col1)" in df.columns
         assert "SUM(col1)__2001-01-01 : 2001-12-31" in df.columns
 
         sqls = query_payload["query"].split(";")
-        assert len(sqls) >= 2  # Main query + offset query
+        assert len(sqls) >= 2  # main query + offset query
 
-        # Main query should filter for 2002 data
+        # main query filters for 2002 data, offset query for 2001
         main_sql = sqls[0]
         assert "2002-01-01" in main_sql
         assert "2002-12-31" in main_sql or "2003-01-01" in main_sql
 
-        # Offset query should filter for 2001 data
         offset_sql = sqls[1]
         assert "2001-01-01" in offset_sql
         assert "2001-12-31" in offset_sql or "2002-01-01" in offset_sql
@@ -1641,7 +1584,6 @@ async def test_date_range_timeshift_enabled(db_session: AsyncSession) -> None:
 
 
 async def test_date_range_timeshift_disabled(db_session: AsyncSession) -> None:
-    """Date range timeshift raises an error when the feature flag is disabled."""
     datasource = await _make_physical_dataset(db_session)
     saved = dict(feature_flag_manager._feature_flags)  # noqa: SLF001
     feature_flag_manager._feature_flags["DATE_RANGE_TIMESHIFTS_ENABLED"] = False  # noqa: SLF001
@@ -1691,7 +1633,6 @@ async def test_date_range_timeshift_disabled(db_session: AsyncSession) -> None:
 async def test_date_range_timeshift_multiple_periods(
     db_session: AsyncSession,
 ) -> None:
-    """Date range timeshift with multiple comparison periods."""
     datasource = await _make_physical_dataset(db_session)
     saved = dict(feature_flag_manager._feature_flags)  # noqa: SLF001
     feature_flag_manager._feature_flags["DATE_RANGE_TIMESHIFTS_ENABLED"] = True  # noqa: SLF001
@@ -1737,9 +1678,8 @@ async def test_date_range_timeshift_multiple_periods(
         assert "SUM(col1)__2001-01-01 : 2001-12-31" in df.columns
         assert "SUM(col1)__2000-01-01 : 2000-12-31" in df.columns
 
-        # Check that all queries were generated
         sqls = query_payload["query"].split(";")
-        assert len(sqls) >= 3  # Main query + 2 offset queries
+        assert len(sqls) >= 3  # main query + 2 offset queries
     finally:
         feature_flag_manager._feature_flags = saved  # noqa: SLF001
         await _drop_physical_dataset(db_session)
@@ -1748,7 +1688,6 @@ async def test_date_range_timeshift_multiple_periods(
 async def test_date_range_timeshift_invalid_format(
     db_session: AsyncSession,
 ) -> None:
-    """Invalid date range format raises an appropriate error."""
     datasource = await _make_physical_dataset(db_session)
     saved = dict(feature_flag_manager._feature_flags)  # noqa: SLF001
     feature_flag_manager._feature_flags["DATE_RANGE_TIMESHIFTS_ENABLED"] = True  # noqa: SLF001
@@ -1799,7 +1738,6 @@ async def test_date_range_timeshift_invalid_format(
 async def test_date_range_timeshift_mixed_with_relative_offsets(
     db_session: AsyncSession,
 ) -> None:
-    """Mixing date range timeshifts with traditional relative offsets."""
     datasource = await _make_physical_dataset(db_session)
     saved = dict(feature_flag_manager._feature_flags)  # noqa: SLF001
     feature_flag_manager._feature_flags["DATE_RANGE_TIMESHIFTS_ENABLED"] = True  # noqa: SLF001
@@ -1845,9 +1783,8 @@ async def test_date_range_timeshift_mixed_with_relative_offsets(
         assert "SUM(col1)__2001-01-01 : 2001-12-31" in df.columns
         assert "SUM(col1)__1 year ago" in df.columns
 
-        # Check that all queries were generated
         sqls = query_payload["query"].split(";")
-        assert len(sqls) >= 3  # Main query + 2 offset queries
+        assert len(sqls) >= 3  # main query + 2 offset queries
     finally:
         feature_flag_manager._feature_flags = saved  # noqa: SLF001
         await _drop_physical_dataset(db_session)

@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/annotation_layer/update.py``."""
+"""Command for updating an existing annotation layer."""
 
 from __future__ import annotations
 
@@ -46,9 +46,6 @@ class UpdateAnnotationLayerCommand(AsyncBaseCommand["AnnotationLayer"]):
                 name, layer_id=self._pk
             )
             if not is_unique:
-                # Field-keyed 422 — 1:1 with upstream
-                # ``AnnotationLayerInvalidError(exceptions=[AnnotationLayer
-                # NameUniquenessValidationError()])``.
                 from superset.commands.annotation_layer.exceptions import (
                     AnnotationLayerInvalidError,
                     AnnotationLayerNameUniquenessValidationError,

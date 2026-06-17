@@ -76,9 +76,9 @@ def test_get_key_is_deterministic() -> None:
     assert k1 == k2
     # Different namespace -> different key.
     assert k1 != get_key("other_namespace", user_id=1, database_id=2)
-    # NOTE: ``serialize`` is ``json.dumps(params)`` (the upstream ``sort``
-    # helper is dead code), so the key is insertion-order dependent — a
-    # faithful quirk of the 1:1 port, asserted here so it can't regress silently.
+    # NOTE: ``serialize`` is ``json.dumps(params)`` (the ``sort``
+    # helper is dead code), so the key is insertion-order dependent —
+    # asserted here so it can't regress silently.
     assert get_key("ns", user_id=1, database_id=2) != get_key(
         "ns", database_id=2, user_id=1
     )
@@ -132,8 +132,8 @@ async def test_lock_create_contention_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
-# sync_key_value_distributed_lock — 1:1 with the upstream sync original.
-# The original has NO try/finally around the yield: if the body raises, the
+# sync_key_value_distributed_lock
+# There is NO try/finally around the yield: if the body raises, the
 # lock row stays in place until LOCK_EXPIRATION (30 s).  These tests assert
 # that contract.
 # ---------------------------------------------------------------------------
@@ -180,9 +180,9 @@ def test_sync_lock_acquired_and_released_on_happy_path() -> None:
 
 def test_sync_lock_not_released_on_exception() -> None:
     """When the body raises, the lock row must NOT be deleted (stays until
-    expiry).  This mirrors the original, which has no try/finally.  Releasing
-    early on exception would remove the natural back-pressure against a
-    failing IDP and allow concurrent callers to re-enter immediately."""
+    expiry) — there is no try/finally.  Releasing early on exception would
+    remove the natural back-pressure against a failing IDP and allow concurrent
+    callers to re-enter immediately."""
     row_mock = MagicMock()
     ctx_factory, session = _make_sync_session(existing_lock=None, release_row=row_mock)
 

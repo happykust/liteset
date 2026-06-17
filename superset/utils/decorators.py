@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async-friendly decorators — port of ``superset_old/utils/decorators.py``.
+"""Async-friendly decorators.
 
 Public API kept stable so existing call sites keep working:
 
@@ -60,16 +60,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# statsd_gauge -- works for both sync and async callables.
-# ---------------------------------------------------------------------------
-
-
 def statsd_gauge(metric_prefix: str | None = None) -> Callable[..., Any]:
     """Emit ``<prefix>.ok`` / ``.warning`` / ``.error`` gauges around a call.
-
-    Mirrors the original :func:`superset_old.utils.decorators.statsd_gauge`
-    behaviour exactly:
 
     * On success the ``.ok`` gauge is set to ``1``.
     * On failure with ``ex.status < 500`` (e.g. ``HTTPException(404)``)
@@ -126,11 +118,6 @@ def statsd_gauge(metric_prefix: str | None = None) -> Callable[..., Any]:
         return sync_wrapped
 
     return decorate
-
-
-# ---------------------------------------------------------------------------
-# arghash / debounce — pure helpers (1:1 ports).
-# ---------------------------------------------------------------------------
 
 
 def arghash(args: Any, kwargs: Any) -> int:
@@ -191,11 +178,6 @@ def debounce(duration: float | int = 0.1) -> Callable[..., Any]:
     return decorate
 
 
-# ---------------------------------------------------------------------------
-# suppress_logging — context manager (1:1 port).
-# ---------------------------------------------------------------------------
-
-
 @contextmanager
 def suppress_logging(
     logger_name: str | None = None,
@@ -212,11 +194,6 @@ def suppress_logging(
         yield
     finally:
         target_logger.setLevel(original_level)
-
-
-# ---------------------------------------------------------------------------
-# on_error — exception classifier shared by ``@transaction`` and Commands.
-# ---------------------------------------------------------------------------
 
 
 def on_error(
@@ -241,10 +218,6 @@ def on_error(
         raise ex
 
 
-# ---------------------------------------------------------------------------
-# transaction — async-aware transactional decorator.
-# ---------------------------------------------------------------------------
-#
 # Re-entrancy is tracked on a ``ContextVar`` so concurrent async
 # requests cannot leak the "I'm already inside a transaction" flag
 # across each other.  The original version used
@@ -371,18 +344,12 @@ def transaction(  # pylint: disable=redefined-outer-name  # noqa: C901  # comple
     return decorate
 
 
-# ---------------------------------------------------------------------------
-# on_security_exception — maps a security exception to a JSON dict.
-# ---------------------------------------------------------------------------
-
-
 def on_security_exception(self: Any, ex: Exception) -> dict[str, Any]:
     """Helper that returns a Litestar-compatible 403 response payload.
 
-    Mirrors the original helper which called ``self.response(403, …)``
-    on a ``BaseSupersetView``.  The async controllers use Litestar's
-    ``Response`` directly, so this function now just returns the body
-    dict and the caller is responsible for wrapping it in a Response.
+    The async controllers use Litestar's ``Response`` directly, so this
+    function returns the body dict and the caller is responsible for
+    wrapping it in a Response.
     """
     del self  # only kept for API parity with the original signature
     return {"status_code": 403, "message": error_msg_from_exception(ex)}

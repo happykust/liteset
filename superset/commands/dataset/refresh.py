@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dataset/refresh.py``."""
+"""Command to refresh a dataset's column and metric metadata."""
 
 from __future__ import annotations
 
@@ -59,12 +59,9 @@ class RefreshDatasetCommand(AsyncBaseCommand["SqlaTable"]):
 
     async def run(self) -> "SqlaTable":
         assert self._dataset is not None
-        # Translate a SQLAlchemy introspection failure to
-        # ``DatasetRefreshFailedError`` → 422, matching the original's
-        # ``@transaction(on_error=reraise=DatasetRefreshFailedError)`` whose
-        # default ``catches=(SQLAlchemyError,)``. Non-SQLAlchemy errors (e.g.
-        # ``SupersetGenericDBErrorException`` from a virtual dataset) propagate
-        # unchanged with their own status code.
+        # SQLAlchemy introspection failures → DatasetRefreshFailedError (422).
+        # Non-SQLAlchemy errors (e.g. SupersetGenericDBErrorException from virtual
+        # datasets) propagate unchanged with their own status code.
         try:
             await self._dao.fetch_metadata(self._dataset)
         except SQLAlchemyError as ex:

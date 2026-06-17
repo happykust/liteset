@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dashboard/fave.py``."""
+"""Add-favorite command for dashboards."""
 
 from __future__ import annotations
 
@@ -32,11 +32,7 @@ if TYPE_CHECKING:
 class AddFavoriteDashboardCommand(AsyncBaseCommand[None]):
     """Add a dashboard to a user's favorites.
 
-    Ported 1:1 from superset_old/commands/dashboard/fave.py: the original
-    loads via the access-aware ``DashboardDAO.get_by_id_or_slug`` which raises
-    ``DashboardNotFoundError`` / ``DashboardAccessDeniedError``. The async port
-    reproduces that access check explicitly via ``can_access_dashboard`` (the
-    new ``get_by_id_or_slug`` is a plain lookup with no access enforcement).
+    Access is enforced explicitly; the DAO lookup does not enforce access on its own.
     """
 
     def __init__(
@@ -54,8 +50,8 @@ class AddFavoriteDashboardCommand(AsyncBaseCommand[None]):
         self._user = user
 
     async def validate(self) -> None:
-        # Eager-load owners/roles/slices so ``can_access_dashboard`` reads them
-        # without a sync lazy-load on the async session.
+        # Eager-load owners/roles/slices so can_access_dashboard doesn't trigger
+        # a sync lazy-load on the async session (MissingGreenlet).
         dashboard = await self._dao.get_full_by_id_or_slug(self._dashboard_id)
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", self._dashboard_id)

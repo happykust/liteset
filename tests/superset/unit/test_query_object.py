@@ -393,8 +393,7 @@ def test_cache_key_excludes_when_falsy():
 def test_validate_sanitizes_where_clause():
     """validate() sanitizes extras.where via sanitize_clause(clause, engine).
 
-    1:1 with ``superset_old/common/query_object.py::_sanitize_filters``:
-    sanitization runs only when both the clause and the datasource are present,
+    Sanitization runs only when both the clause and the datasource are present,
     ``sanitize_clause`` is called with the engine dialect, and a
     ``QueryClauseValidationException`` is converted into a
     ``QueryObjectValidationError``.
@@ -430,7 +429,7 @@ def test_validate_sanitizes_where_clause():
 def test_validate_sanitizes_having_clause():
     """validate() sanitizes extras.having via sanitize_clause(clause, engine).
 
-    Same 1:1 contract as the WHERE case but for the HAVING clause.
+    Same contract as the WHERE case but for the HAVING clause.
     """
     qo = AsyncQueryObject(
         datasource={"type": "table", "id": 1},
@@ -501,12 +500,11 @@ def test_validate_rejects_duplicate_metric_labels():
 
 
 def test_validate_time_offsets_non_string_raises_attribute_error():
-    """A non-string offset crashes with AttributeError — 1:1 original.
+    """A non-string offset crashes with AttributeError.
 
-    superset_old ``_validate_time_offsets`` (query_object.py:306-321) has no
-    isinstance guard: the offset goes straight into ``date_range.split(":")``
-    and a non-string raises AttributeError → HTTP 500, NOT a 400 validation
-    error.
+    ``_validate_time_offsets`` has no isinstance guard: the offset goes
+    straight into ``date_range.split(":")`` and a non-string raises
+    AttributeError → HTTP 500, NOT a 400 validation error.
     """
     qo = AsyncQueryObject(
         datasource={"type": "table", "id": 1},
@@ -523,7 +521,7 @@ def test_validate_missing_series_columns():
         columns=["col1", "col2"],
         series_columns=["col3"],
     )
-    # Original message (superset_old/common/query_object.py:362-371):
+    # Expected error message:
     # "The following entries in `series_columns` are missing in `columns`: "col3". "
     with pytest.raises(
         QueryObjectValidationError,
@@ -570,10 +568,8 @@ def test_apply_filters_syncs_temporal_range_to_time_range():
 def test_apply_filters_noop_without_time_range():
     """When time_range=None, _apply_filters must be a no-op — filter vals unchanged.
 
-    1:1 with original: superset_old/common/query_context_factory.py:199-203
-    checks ``if query_object.time_range:``; the original QueryObject stores
-    time_range=None (from query_object_factory.py:86 ``time_range=time_range``),
-    so the guard is False and no filter val is modified.
+    The guard ``if query_object.time_range:`` is False when time_range=None,
+    so no filter val is modified.
     """
     qo = AsyncQueryObject(
         datasource={"type": "table", "id": 1},
@@ -591,9 +587,8 @@ def test_apply_filters_noop_preserves_multiple_temporal_filters():
     then _apply_filters() overwrote ALL TEMPORAL_RANGE filter vals with that single
     val — silently corrupting comparison charts that use two time periods.
 
-    Original: superset_old/common/query_object_factory.py:86 always passes
-    ``time_range=time_range`` (the caller's None) to QueryObject, so each filter
-    retains its own val.
+    ``QueryObjectFactory`` always passes ``time_range=time_range`` (the caller's
+    None) to QueryObject, so each filter retains its own val.
     """
     qo = AsyncQueryObject(
         datasource={"type": "table", "id": 1},

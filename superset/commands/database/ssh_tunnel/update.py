@@ -14,12 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/database/ssh_tunnel/update.py``.
+"""Command for updating an SSH tunnel for a database connection.
 
-Mirrors the original :class:`UpdateSSHTunnelCommand` 1:1 — same
-validation rules (private-key/password mutual exclusion + database-port
-presence) and same field-clearing behaviour when the caller flips
-between credential modes.
+Validates private-key/password mutual exclusion and database-port presence,
+and clears conflicting credential fields when the caller flips between
+credential modes.
 """
 
 from __future__ import annotations
@@ -45,11 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 class UpdateSSHTunnelCommand(AsyncBaseCommand[Any]):
-    """Update an existing SSH tunnel.
-
-    Async port of
-    ``superset_old.commands.database.ssh_tunnel.update.UpdateSSHTunnelCommand``.
-    """
+    """Update an existing SSH tunnel."""
 
     def __init__(self, dao: AsyncSSHTunnelDAO, model_id: int, data: dict[str, Any]):
         self._dao = dao
@@ -58,9 +53,7 @@ class UpdateSSHTunnelCommand(AsyncBaseCommand[Any]):
         self._model: Any = None
 
     async def validate(self) -> None:
-        # Validate / populate model exists.  The original looks the SSH tunnel
-        # up by its primary key; ``AsyncSSHTunnelDAO`` exposes a database-keyed
-        # lookup, so we fall back to a direct primary-key fetch here.
+        # AsyncSSHTunnelDAO only exposes database-keyed lookups; use session.get.
         from superset.models.ssh_tunnel import SSHTunnel
 
         self._model = await self._dao.session.get(SSHTunnel, self._model_id)
@@ -86,21 +79,16 @@ class UpdateSSHTunnelCommand(AsyncBaseCommand[Any]):
             return None
 
         try:
-            # unset password if private key is provided
             if self._properties.get("private_key"):
                 self._properties["password"] = None
 
-            # unset private key and password if password is provided
             if self._properties.get("password"):
                 self._properties["private_key"] = None
                 self._properties["private_key_password"] = None
 
-            # Delegate to the DAO so that ``unmask_password_info`` runs before
-            # the attributes are written — 1:1 with the original which calls
-            # ``SSHTunnelDAO.update`` whose overridden ``update()`` calls
-            # ``unmask_password_info(attributes, item)`` before persisting.
-            # The previous inline ``setattr`` loop bypassed the DAO and therefore
-            # skipped unmasking, letting ``PASSWORD_MASK`` clobber stored secrets.
+            # Delegate to the DAO so ``unmask_password_info`` runs before
+            # attributes are written, preventing PASSWORD_MASK from clobbering
+            # stored secrets.
             return await self._dao.update(self._model, self._properties)
         except (SSHTunnelDatabasePortError, SSHTunnelInvalidError):
             raise

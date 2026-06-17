@@ -25,7 +25,6 @@ from sqlalchemy.orm import DeclarativeBase, selectinload
 from superset.models.connectors import SqlaTable
 from superset.models.sql_lab import Query, SavedQuery
 
-# Mapping of datasource type strings to model classes
 _DATASOURCE_TYPE_MAP: dict[str, type[DeclarativeBase]] = {
     "table": SqlaTable,
     "query": Query,
@@ -63,10 +62,9 @@ class AsyncDatasourceDAO:
         """
         model_cls = _DATASOURCE_TYPE_MAP.get(datasource_type)
         if model_cls is None:
-            # 1:1 with upstream ``DatasourceDAO.get_datasource`` raising
-            # ``DatasourceTypeNotSupportedError`` (status 422) — the enum
+            # Raises ``DatasourceTypeNotSupportedError`` (status 422) — the enum
             # also contains "view"/"dataset" which have no backing model;
-            # a bare ValueError surfaced as HTTP 500.
+            # a bare ValueError would surface as HTTP 500.
             from superset.exceptions import DatasourceTypeNotSupportedError
 
             raise DatasourceTypeNotSupportedError()

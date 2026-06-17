@@ -16,8 +16,6 @@
 # under the License.
 """Prune old rows from the FAB ``logs`` activity table.
 
-Direct port of ``superset_old/commands/logs/prune.py``.
-
 The command deletes records from the :class:`~superset.models.core.Log`
 table that are older than ``retention_period_days`` days.  Used by the
 ``prune_logs`` Celery beat task to keep the activity log table from
@@ -86,11 +84,10 @@ class LogPruneCommand:
                 session.close()
 
     def _run_with_session(self, session: Any) -> None:
-        batch_size = 999  # SQLite has an IN clause limit of 999
+        batch_size = 999  # SQLite caps IN clauses at 999 items
         total_deleted = 0
         start_time = time.time()
 
-        # Select all IDs that need to be deleted
         ids_to_delete = (
             session.execute(
                 sa.select(Log.id).where(
@@ -108,21 +105,12 @@ class LogPruneCommand:
 
         next_logging_threshold = 1
 
-        # Iterate over the IDs in batches
         for i in range(0, total_rows, batch_size):
             batch_ids = ids_to_delete[i : i + batch_size]
-
-            # Delete the selected batch using IN clause
             result = session.execute(sa.delete(Log).where(Log.id.in_(batch_ids)))
-
-            # Update the total number of deleted records
             total_deleted += result.rowcount
-
-            # Explicitly commit so progress is persisted even if a later
-            # batch fails — the original behaviour is preserved 1:1.
+            # Commit each batch so progress survives a later batch failure.
             session.commit()
-
-            # Log the number of deleted records every 1% increase in progress
             percentage_complete = (
                 (total_deleted / total_rows) * 100 if total_rows else 100
             )
@@ -146,7 +134,7 @@ class LogPruneCommand:
         )
 
     def validate(self) -> None:
-        """No-op validation — kept for API compatibility with the original."""
+        """No-op validation."""
 
 
 __all__ = ["LogPruneCommand"]

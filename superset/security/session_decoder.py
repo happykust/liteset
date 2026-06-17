@@ -52,9 +52,8 @@ class FlaskSessionDecoder:
         salt: str = "cookie-session",
         max_age: int | None = DEFAULT_MAX_AGE,
     ) -> None:
-        # 1:1 with the legacy ``SecureCookieSessionInterface
-        # .get_signing_serializer`` (upstream sessions.py):
-        # ``key_derivation="hmac"`` + SHA-1 digest.
+        # ``key_derivation="hmac"`` + SHA-1 digest matches the legacy
+        # ``SecureCookieSessionInterface.get_signing_serializer``.
         # itsdangerous' defaults (``django-concat`` key derivation) produce
         # signatures incompatible with the legacy cookies, so without
         # ``signer_kwargs`` every real legacy session cookie fails with
@@ -75,8 +74,8 @@ class FlaskSessionDecoder:
     def _untag(cls, value: Any) -> Any:
         """Resolve legacy ``TaggedJSONSerializer`` tags to plain values.
 
-        Mirrors the upstream ``json.tag`` for the tag forms that can appear in a
-        session payload: ``{" t": [...]}`` (tuple), ``{" u": hex}`` (UUID),
+        Tag forms that can appear in a session payload:
+        ``{" t": [...]}`` (tuple), ``{" u": hex}`` (UUID),
         ``{" b": base64}`` (bytes), ``{" m": str}`` (Markup → str),
         ``{" d": RFC-822 date}`` (kept as the string — callers only read
         scalar session keys), ``{" di": {...}}`` (dict whose keys collide

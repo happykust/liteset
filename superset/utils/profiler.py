@@ -16,22 +16,18 @@
 # under the License.
 """ASGI middleware that wraps inbound requests with ``pyinstrument``.
 
-Direct port of ``superset_old/utils/profiler.py``.  The original was a
-WSGI middleware; the Liteset port is an ASGI middleware that:
-
 * mounts at the application level (``superset.app.on_startup``)
 * triggers when the ``?_instrument=1`` query parameter is present
 * runs the wrapped app under ``pyinstrument.Profiler`` and replaces the
   response body with the HTML profile output
 
-Public API preserved:
+Public API:
 
 * class name ``SupersetProfiler``
 * constructor signature ``SupersetProfiler(app, interval=0.0001)``
 
 If ``pyinstrument`` is not installed, the middleware is a no-op when the
-flag is absent and raises a clear error when a profiling request comes
-in (matches old behaviour of "pyinstrument is not installed").
+flag is absent and raises a clear error when a profiling request comes in.
 """
 
 from __future__ import annotations
@@ -55,10 +51,6 @@ class SupersetProfiler:  # pylint: disable=too-few-public-methods
 
     Set ``PROFILING=True`` in the config and append ``?_instrument=1`` to
     any page to render an HTML pyinstrument profile of the request.
-
-    Originally a WSGI middleware — Liteset uses ASGI throughout, so we
-    reimplement ``__call__`` against the ASGI protocol while keeping the
-    constructor signature byte-for-byte compatible with the old class.
     """
 
     def __init__(
@@ -70,14 +62,11 @@ class SupersetProfiler:  # pylint: disable=too-few-public-methods
         self.interval = interval
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        # Only HTTP requests are instrumentable; let websocket / lifespan
-        # scopes pass straight through to the wrapped app.
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
 
-        # Inspect the query string for ``_instrument=1``.  ``scope["query_string"]``
-        # is bytes in ASGI; decode and parse.
+        # ``scope["query_string"]`` is bytes in ASGI; decode and parse.
         raw_qs: bytes = scope.get("query_string", b"") or b""
         qs = parse_qs(raw_qs.decode("latin-1"), keep_blank_values=True)
         if qs.get("_instrument", [""])[0] != "1":
@@ -91,8 +80,6 @@ class SupersetProfiler:  # pylint: disable=too-few-public-methods
 
         profiler = Profiler(interval=self.interval)
         profiler.start()
-        # Buffer the wrapped app's messages so we can drop its body in
-        # favour of the profiler HTML.
         try:
             captured: list[dict[str, Any]] = []
 
@@ -105,10 +92,8 @@ class SupersetProfiler:  # pylint: disable=too-few-public-methods
 
         html = profiler.output_html()
         body = html.encode("utf-8")
-        # Send a fresh 200 OK with the profiler HTML.  Any captured
-        # messages from the wrapped app are intentionally discarded —
-        # this matches the original middleware which discarded the
-        # response entirely.
+        # Captured messages from the wrapped app are intentionally discarded —
+        # the original middleware discarded the response entirely.
         await send(
             {
                 "type": "http.response.start",

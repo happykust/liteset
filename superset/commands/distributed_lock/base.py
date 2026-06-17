@@ -16,9 +16,8 @@
 # under the License.
 """Base async command for KV-backed distributed-lock operations.
 
-Async port of ``superset_old/commands/distributed_lock/base.py``.
-The legacy ``db.session`` global is replaced with an explicit
-:class:`~sqlalchemy.ext.asyncio.AsyncSession` passed to ``__init__``.
+Uses an explicit :class:`~sqlalchemy.ext.asyncio.AsyncSession` injected via
+``__init__`` rather than a global database session.
 """
 
 from __future__ import annotations
@@ -38,11 +37,11 @@ logger = logging.getLogger(__name__)
 
 
 class BaseDistributedLockCommand(AsyncBaseCommand[Any]):
-    """Shared state for the three lock commands.
+    """Shared state for the create/delete/get lock commands.
 
-    The original computed the key from ``(namespace, params)`` in ``__init__``;
-    we preserve that contract.  ``codec`` and ``resource`` mirror the original
-    class attributes.
+    Computes the lock key from ``(namespace, params)`` in ``__init__``.
+    ``codec`` and ``resource`` are class-level attributes shared by all
+    subcommands.
     """
 
     key: uuid.UUID
@@ -59,5 +58,4 @@ class BaseDistributedLockCommand(AsyncBaseCommand[Any]):
         self.key = get_key(namespace, **(params or {}))
 
     async def validate(self) -> None:
-        # Mirrors the no-op validate() on the sync original.
         return None

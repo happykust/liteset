@@ -26,32 +26,23 @@ import msgspec
 from superset.databases.utils import make_url_safe
 from superset.schemas.base import ApiListResponse, ApiResponse, ModelStruct
 
-# ---------------------------------------------------------------------------
 # Backward-compat key normalization
-# ---------------------------------------------------------------------------
 
 
 def rename_encrypted_extra(data: dict[str, Any]) -> dict[str, Any]:
     """Rename legacy ``encrypted_extra`` -> ``masked_encrypted_extra``.
 
-    1:1 port of ``superset_old/databases/schemas.py::rename_encrypted_extra``
-    (a Marshmallow ``@pre_load`` hook wired onto the POST / PUT /
-    TestConnection / ValidateParameters schemas).  PR #21248 renamed the
-    field for security reasons; this keeps older API clients working.
-
-    The rename only fires when the canonical ``masked_encrypted_extra`` key
+    PR #21248 renamed the field for security reasons; this keeps older API clients
+    working. The rename only fires when the canonical ``masked_encrypted_extra`` key
     is absent so an explicit new-style value is never clobbered.  Mutates and
-    returns ``data`` in place (matching the original).  The value itself is a
-    credential and is never logged here.
+    returns ``data`` in place.  The value itself is a credential and is never logged.
     """
     if "encrypted_extra" in data and "masked_encrypted_extra" not in data:
         data["masked_encrypted_extra"] = data.pop("encrypted_extra")
     return data
 
 
-# ---------------------------------------------------------------------------
 # Request bodies
-# ---------------------------------------------------------------------------
 
 
 class DatabaseSSHTunnel(msgspec.Struct):
@@ -178,9 +169,7 @@ class DatabaseValidateParamsSchema(msgspec.Struct):
     server_cert: str | None = None
 
 
-# ---------------------------------------------------------------------------
 # Response bodies
-# ---------------------------------------------------------------------------
 
 
 class DatabaseConnectionResponse(msgspec.Struct):
@@ -233,9 +222,7 @@ class CatalogsResponse(msgspec.Struct):
     result: list[str] = []
 
 
-# ---------------------------------------------------------------------------
 # Import / Export
-# ---------------------------------------------------------------------------
 
 
 class ImportV1DatabaseExtra(msgspec.Struct):
@@ -275,9 +262,7 @@ class ImportV1Database(msgspec.Struct):
     ssh_tunnel: dict[str, Any] | None = None
 
 
-# ---------------------------------------------------------------------------
 # Upload
-# ---------------------------------------------------------------------------
 
 
 class UploadSchema(msgspec.Struct):
@@ -316,9 +301,7 @@ class FileMetadataResponse(msgspec.Struct, rename="camel"):
     items: list[FileMetadataItem] = []
 
 
-# ---------------------------------------------------------------------------
 # Misc responses
-# ---------------------------------------------------------------------------
 
 
 class OAuth2ProviderResponse(msgspec.Struct):
@@ -343,9 +326,7 @@ class QualifiedTable(msgspec.Struct):
     table_name: str = ""
 
 
-# ---------------------------------------------------------------------------
 # Detail result Struct for GET /{pk}
-# ---------------------------------------------------------------------------
 
 
 class EngineInformationRef(msgspec.Struct, omit_defaults=True):
@@ -363,11 +344,9 @@ class DatabaseShowResult(ModelStruct):
     The original deliberately excludes ``sqlalchemy_uri`` / ``extra`` /
     ``server_cert`` / ``masked_encrypted_extra`` / ``parameters`` from the
     can_read GET — those live behind the can_write ``/{pk}/connection``
-    endpoint (METHOD_PERMISSION_MAP: get_connection → write).  Exposing
-    them here leaked structural connection details (host, port, username,
-    engine params) to any Gamma user with can_read Database.
-    ``ssh_tunnel`` is merged separately by the handler — 1:1 with upstream
-    ``get`` (databases/api.py:397-403).
+    endpoint. Exposing them here leaked structural connection details (host, port,
+    username, engine params) to any Gamma user with can_read Database.
+    ``ssh_tunnel`` is merged separately by the handler.
     """
 
     id: int | None = None
@@ -405,9 +384,8 @@ class DatabaseShowResult(ModelStruct):
 class DatabaseDetailResult(ModelStruct):
     """Extended database detail echoed by POST / PUT.
 
-    Mirrors the original create/update responses (which echo the loaded
-    request schema, incl. the masked ``sqlalchemy_uri``).  NOT used for the
-    can_read GET /{pk} — see :class:`DatabaseShowResult`.
+    Echoes the loaded request schema, including the masked ``sqlalchemy_uri``.
+    NOT used for the can_read GET /{pk} — see :class:`DatabaseShowResult`.
     """
 
     id: int | None = None

@@ -16,8 +16,7 @@
 # under the License.
 """Unit tests for the guest-user RLS path in _sync_get_rls_rules.
 
-Original behaviour (superset_old/jinja_context.py lines 212-228 +
-superset_old/security/manager.py lines 2561-2577):
+Expected behaviour:
   - When EMBEDDED_SUPERSET is enabled and the current user is a guest user,
     ``current_user_rls_rules`` must return sorted clauses taken from the guest
     token's ``rls`` list, filtered to rules whose ``dataset`` field matches the
@@ -42,17 +41,12 @@ import pytest
 
 from superset.jinja_context import _sync_get_rls_rules, ExtraCache
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_table(table_id: int = 42) -> SimpleNamespace:
     return SimpleNamespace(id=table_id)
 
 
 def _make_guest_user(rls_rules: list[dict] | None = None) -> SimpleNamespace:
-    """Simulate a liteset GuestUser (is_guest=True, no DB-backed roles)."""
     return SimpleNamespace(is_guest=True, roles=[], rls_rules=rls_rules or [])
 
 
@@ -69,11 +63,6 @@ def _ff_disabled(feature: str) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# _sync_get_rls_rules — guest path
-# ---------------------------------------------------------------------------
-
-
 def test_guest_rls_returns_dataset_scoped_clauses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -81,7 +70,7 @@ def test_guest_rls_returns_dataset_scoped_clauses(
 
     Rules whose ``dataset`` field matches table.id are included; rules for a
     different dataset are excluded; rules with no ``dataset`` key are included
-    globally — mirroring original ``get_guest_rls_filters`` lines 2574-2576.
+    globally.
     """
     monkeypatch.setattr(
         "superset.jinja_context.feature_flag_manager",
@@ -102,7 +91,6 @@ def test_guest_rls_returns_dataset_scoped_clauses(
 def test_guest_rls_returns_empty_when_no_matching_rules(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Guest user with zero matching rules must return an empty list."""
     monkeypatch.setattr(
         "superset.jinja_context.feature_flag_manager",
         MagicMock(is_feature_enabled=_ff_enabled),
@@ -150,7 +138,6 @@ def test_guest_rls_not_taken_when_embedded_superset_disabled(
 
 
 def test_guest_rls_result_is_sorted(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Returned clauses are lexicographically sorted (mirrors original sorted())."""
     monkeypatch.setattr(
         "superset.jinja_context.feature_flag_manager",
         MagicMock(is_feature_enabled=_ff_enabled),
@@ -188,19 +175,13 @@ def test_guest_rls_rules_excludes_empty_clauses(
     assert result == ["real_filter"]
 
 
-# ---------------------------------------------------------------------------
-# ExtraCache.current_user_rls_rules — end-to-end for guest user
-# ---------------------------------------------------------------------------
-
-
 def test_extra_cache_current_user_rls_rules_guest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """current_user_rls_rules returns sorted guest-token clauses end-to-end.
 
-    Mirrors the original ExtraCache.current_user_rls_rules (lines 212-228)
-    which branched on ``security_manager.is_guest_user()`` and called
-    ``security_manager.get_guest_rls_filters(self.table)``.
+    ``ExtraCache.current_user_rls_rules`` branches on the guest-user flag and
+    applies dataset-scoped RLS rules from the token.
     """
     monkeypatch.setattr(
         "superset.jinja_context.feature_flag_manager",

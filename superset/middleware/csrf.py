@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Session-based CSRF protection compatible with the upstream CSRF flow.
+"""Session-based CSRF protection for the Superset CSRF token flow.
 
 Token is generated via HMAC(secret, random_bytes) and stored
 in the user's session cookie JWT claims.  The frontend fetches
@@ -41,20 +41,13 @@ logger = logging.getLogger(__name__)
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 
-# Module-level token store keyed by a session identifier.
-# In production Redis should be used; this dict suffices
-# for single-process dev servers.
+# WARNING: single-process dev store only; use Redis in production.
 _csrf_tokens: dict[str, str] = {}
 
 
 def _hash_session_id(session_id: str) -> str:
-    """Return a truncated SHA-256 hex digest of *session_id*.
-
-    The hash is included in the token so that a token generated
-    for one session cannot be reused by a different session.
-    An empty string yields a deterministic hash for the
-    unauthenticated case (e.g. login page).
-    """
+    """Return a truncated SHA-256 hex digest of *session_id* to bind
+    tokens to sessions."""
     return hashlib.sha256(session_id.encode()).hexdigest()[:16]
 
 
@@ -62,15 +55,10 @@ def generate_csrf_token(
     secret: str,
     session_id: str = "",
 ) -> str:
-    """Generate an HMAC-signed CSRF token bound to a session.
+    """Generate an HMAC-signed CSRF token (``salt.timestamp.session_hash.sig``).
 
-    The token format is ``salt.timestamp.session_hash.signature``
-    where *session_hash* is a truncated SHA-256 of the session
-    cookie value.  Including the session hash in the HMAC payload
-    means tokens cannot be replayed across sessions.
-
-    When *session_id* is empty (e.g. the login page), the token
-    is still valid but bound to the empty-session hash.
+    The session hash binds the token to a specific session cookie so it
+    cannot be replayed across sessions.
     """
     salt = os.urandom(8).hex()
     ts = str(int(time.time()))
@@ -90,19 +78,14 @@ def validate_csrf_token(
     max_age: int = 604800,
     session_id: str = "",
 ) -> bool:
-    """Validate an HMAC-signed, session-bound CSRF token.
-
-    The token must have been generated with the same *session_id*
-    (or the same empty string for unauthenticated pages).
-    """
+    """Validate an HMAC-signed CSRF token, rejecting cross-session
+    replays and expired tokens."""
     if not token or "." not in token:
         return False
     try:
         parts = token.split(".")
-        # New 4-part format: salt.ts.session_hash.sig
         if len(parts) == 4:
             salt, ts_str, token_sess_hash, sig = parts
-            # Verify the session hash matches the current session
             expected_sess_hash = _hash_session_id(session_id)
             if not hmac.compare_digest(token_sess_hash, expected_sess_hash):
                 return False
@@ -114,8 +97,7 @@ def validate_csrf_token(
             ).hexdigest()
             if not hmac.compare_digest(sig, expected_sig):
                 return False
-        # Legacy 3-part format: salt.ts.sig (transition period)
-        elif len(parts) == 3:
+        elif len(parts) == 3:  # Legacy format: salt.ts.sig (no session binding)
             salt, ts_str, sig = parts
             data = f"{salt}{ts_str}"
             expected_sig = hmac.new(
@@ -131,7 +113,6 @@ def validate_csrf_token(
             )
         else:
             return False
-        # Check expiry
         if max_age:
             ts = int(ts_str)
             if time.time() - ts > max_age:
@@ -145,10 +126,7 @@ def _extract_cookie(
     headers: dict[bytes, bytes],
     cookie_name: str,
 ) -> str:
-    """Extract a named cookie value from raw ASGI headers.
-
-    Returns an empty string when the cookie is not present.
-    """
+    """Extract a named cookie value from raw ASGI headers, or empty string."""
     raw_cookie = headers.get(b"cookie", b"")
     if not raw_cookie:
         return ""
@@ -209,13 +187,11 @@ class CSRFMiddleware(MiddlewareProtocol):
             await self.app(scope, receive, send)
             return
 
-        # Check excluded paths
         for exc in self.exclude_paths:
             if path.startswith(exc):
                 await self.app(scope, receive, send)
                 return
 
-        # Check opt exclude_from_csrf on route
         route = scope.get("route_handler")
         if route is not None:
             opt = getattr(route, "opt", {}) or {}
@@ -223,7 +199,6 @@ class CSRFMiddleware(MiddlewareProtocol):
                 await self.app(scope, receive, send)
                 return
 
-        # Extract token from header
         headers = dict(scope.get("headers", []))
         token_bytes = headers.get(
             self.header_name.encode(),
@@ -234,7 +209,6 @@ class CSRFMiddleware(MiddlewareProtocol):
             errors="ignore",
         )
 
-        # Extract session cookie for session-bound validation
         session_id = _extract_cookie(headers, self.session_cookie_name)
 
         if not token or not validate_csrf_token(
@@ -247,9 +221,6 @@ class CSRFMiddleware(MiddlewareProtocol):
 
             logger.warning("Refresh CSRF token error")
 
-            # Mirror the original handler:
-            # - JSON requests → 400 JSON error (CSRFError inherits BadRequest)
-            # - non-JSON requests → 302 redirect to login
             content_type_header = headers.get(b"content-type", b"").decode(
                 "utf-8", errors="ignore"
             )
@@ -259,8 +230,6 @@ class CSRFMiddleware(MiddlewareProtocol):
             )
 
             if not is_json:
-                # Non-JSON (browser form) → redirect to login
-                # Mirrors original redirect_to_login()
                 qs = scope.get("query_string", b"")
                 path = scope.get("path", "/")
                 next_url = path + (
@@ -283,8 +252,6 @@ class CSRFMiddleware(MiddlewareProtocol):
                 await send(cast("Message", {"type": "http.response.body", "body": b""}))
                 return
 
-            # JSON request → 400 with GENERIC_BACKEND_ERROR (mirrors show_http_exception
-            # which uses ex.code=400 since CSRFError inherits the upstream BadRequest)
             body = _json.dumps(
                 {
                     "errors": [
@@ -341,7 +308,6 @@ def create_csrf_middleware(
     exclude_paths: list[str] | None = None,
     session_cookie_name: str = "session",
 ) -> DefineMiddleware:
-    """Create CSRF middleware definition."""
     return DefineMiddleware(
         CSRFMiddleware,
         secret=secret,

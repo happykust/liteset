@@ -14,8 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for the Cache controller."""
-
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
@@ -24,10 +22,6 @@ import msgspec
 import pytest
 
 from superset.controllers.cache import CacheController, CacheInvalidateSchema
-
-# ---------------------------------------------------------------------------
-# Schema tests
-# ---------------------------------------------------------------------------
 
 
 def test_cache_invalidate_body_accepts_uids():
@@ -46,17 +40,16 @@ def test_cache_invalidate_body_empty_list():
 
 
 def test_cache_invalidate_body_missing_field():
-    """Both fields are optional (1:1 with upstream ``CacheInvalidationRequestSchema``,
-    where neither ``datasource_uids`` nor ``datasources`` is ``required``); an
-    empty body is valid and the handler falls through to a 201 no-op."""
+    """Both fields are optional (neither ``datasource_uids`` nor ``datasources``
+    is ``required``); an empty body is valid and the handler falls through to a
+    201 no-op."""
     body = msgspec.convert({}, CacheInvalidateSchema)
     assert body.datasource_uids == []
     assert body.datasources == []
 
 
 def test_cache_invalidate_body_snake_case_wire_contract():
-    """Regression: the wire fields are snake_case (upstream + OpenAPI). A
-    previous ``rename="camel"`` silently dropped a correctly-formed
+    """Regression: a previous ``rename="camel"`` silently dropped a correctly-formed
     ``datasource_uids`` body → 201 invalidating nothing."""
     body = msgspec.convert(
         {
@@ -82,31 +75,18 @@ def test_cache_invalidate_body_wrong_type():
         msgspec.convert({"datasource_uids": "not-a-list"}, CacheInvalidateSchema)
 
 
-# ---------------------------------------------------------------------------
-# Controller metadata
-# ---------------------------------------------------------------------------
-
-
 def test_cache_controller_path():
-    """CacheController is mounted at the correct path."""
     assert CacheController.path == "/api/v1/cachekey"
 
 
 def test_cache_controller_tags():
-    """CacheController has expected tags."""
     assert CacheController.tags == ["Cache"]
-
-
-# ---------------------------------------------------------------------------
-# Event logger object_ref parity
-# ---------------------------------------------------------------------------
 
 
 async def test_do_invalidate_logs_object_ref():
     """_do_invalidate must pass object_ref="CacheRestApi.invalidate" to
-    alog_with_context, mirroring the original
-    ``@event_logger.log_this_with_context(log_to_statsd=False)`` decorator
-    whose _wrapper computes
+    alog_with_context. The ``@event_logger.log_this_with_context(log_to_statsd=False)``
+    decorator computes
     ``object_ref_str = None or f.__qualname__ = "CacheRestApi.invalidate"``
     and passes it through to log_with_context.
 
@@ -116,8 +96,6 @@ async def test_do_invalidate_logs_object_ref():
     controller = object.__new__(CacheController)
 
     mock_dao = AsyncMock()
-    # _invalidate_body returns a 201 response with empty body when datasource_uids
-    # is empty; mock it out so _do_invalidate reaches the alog call.
     from litestar.response import Response as LitestarResponse
 
     empty_resp = LitestarResponse(
@@ -137,6 +115,5 @@ async def test_do_invalidate_logs_object_ref():
 
     mock_event_logger.alog_with_context.assert_called_once()
     call_kwargs = mock_event_logger.alog_with_context.call_args
-    # object_ref must match f.__qualname__ from the original _wrapper computation
     assert call_kwargs.kwargs.get("object_ref") == "CacheRestApi.invalidate"
     assert call_kwargs.kwargs.get("log_to_statsd") is False

@@ -61,8 +61,7 @@ class GuestUser:
     rls_rules: list[dict[str, Any]] = field(default_factory=list)
     permissions: set[tuple[str, str]] = field(default_factory=set)
     # The raw decoded JWT payload this user was built from.  Mirrors the
-    # original ``GuestUser.guest_token`` attribute (set in
-    # ``superset_old/security/guest_token.py``) — the dashboard screenshot
+    # original ``GuestUser.guest_token`` attribute — the dashboard screenshot
     # controller forwards it to the ``cache_dashboard_screenshot`` Celery
     # task so the worker can rebuild the same guest user (and its RLS rules).
     token_payload: dict[str, Any] = field(default_factory=dict)
@@ -128,7 +127,7 @@ def create_guest_access_token(
         "type": _GUEST_TOKEN_TYPE,
         "iat": now,
         "exp": now + exp_seconds,
-        # always encode aud; matches superset_old/security/manager.py:2717
+        # always encode aud
         "aud": audience,
     }
     return jwt.encode(payload, secret_key, algorithm=algorithm)
@@ -147,8 +146,8 @@ def parse_guest_token(
         secret_key: Application secret key for validation.
         algorithm: JWT algorithm (default: HS256).
         audience: Expected JWT audience claim. When non-empty, PyJWT
-            validates the ``aud`` claim matches. Mirrors the original
-            ``GUEST_TOKEN_JWT_AUDIENCE`` behaviour.
+            validates the ``aud`` claim matches
+            (``GUEST_TOKEN_JWT_AUDIENCE`` behaviour).
 
     Returns:
         Decoded payload dict if valid, None otherwise.
@@ -198,7 +197,7 @@ def validate_guest_token_resources_schema(
         List of validation error messages. Empty list means all valid.
     """
     errors: list[str] = []
-    # 1:1 with superset_old: GuestTokenResourceType has only DASHBOARD.
+    # GuestTokenResourceType has only DASHBOARD.
     supported_types = {"dashboard"}
     for i, resource in enumerate(resources):
         if not isinstance(resource, dict):

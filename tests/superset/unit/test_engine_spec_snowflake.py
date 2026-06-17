@@ -14,9 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Ported from tests/unit_tests/db_engine_specs/test_snowflake.py.
-
-Exercises the synchronous ``SnowflakeEngineSpec`` (pure helpers: dttm
+"""Exercises the synchronous ``SnowflakeEngineSpec`` (pure helpers: dttm
 conversion, connection mutator, error extraction, query cancellation,
 extra/schema/catalog params, encrypted-extra masking, boolean filters).
 All cases are Flask-free.

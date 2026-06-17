@@ -90,14 +90,9 @@ def get_engine_spec_for_database(database: Any) -> type[BaseAsyncEngineSpec]:
 def _impersonation_username(effective: str | None) -> str | None:
     """Apply ``IMPERSONATE_WITH_EMAIL_PREFIX`` to an effective username.
 
-    1:1 with upstream ``Database.get_sqla_engine`` (``superset_old/models/core.py``):
-    when the feature flag is on, the effective username is rewritten to the
-    local-part of the user's email. Upstream looks the user up by username;
-    the port resolves the *current request* user's email directly via the
-    user context-var (``get_user_email``) — which is exactly where
-    ``Database.get_effective_user`` sourced the username from
-    (``get_username()``), so the two agree whenever impersonation targets the
-    logged-in user.
+    When the feature flag is on, the effective username is rewritten to the
+    local-part of the user's email, resolved from the current request via
+    ``get_user_email()``.
     """
     if not effective:
         return effective
@@ -119,11 +114,11 @@ def _impersonation_username(effective: str | None) -> str | None:
 def _sync_oauth2_access_token(database: Any, spec: Any) -> str | None:
     """Resolve the current user's OAuth2 access token for ``database`` (sync).
 
-    1:1 with upstream ``Database.get_sqla_engine``: when the database carries an
-    OAuth2 client config and a current user is bound, fetch the stored per-user
-    token so it can be threaded into impersonation (e.g. the Trino Bearer
-    ``http_session``). Returns ``None`` when the database isn't OAuth2, no user
-    is bound, or no valid token exists — impersonation then proceeds tokenless.
+    When the database carries an OAuth2 client config and a current user is
+    bound, fetch the stored per-user token so it can be threaded into
+    impersonation (e.g. the Trino Bearer ``http_session``). Returns ``None``
+    when the database isn't OAuth2, no user is bound, or no valid token exists
+    — impersonation then proceeds tokenless.
     """
     try:
         get_config = getattr(database, "get_oauth2_config", None)
@@ -146,13 +141,9 @@ def _sync_oauth2_access_token(database: Any, spec: Any) -> str | None:
 def _get_query_source_from_request() -> Any:
     """Resolve the :class:`QuerySource` from the in-flight request, or ``None``.
 
-    1:1 with ``superset_old/utils/core.py::get_query_source_from_request``,
-    which inspected the legacy thread-local ``request.referrer``.  In the async
-    port the active request is bound to a ContextVar
-    (``superset.utils.core.get_current_request``); Litestar exposes the
-    ``Referer`` header as ``request.headers.get("referer")``.  Returns ``None``
-    when there is no request / no referrer (Celery, CLI), matching upstream's
-    ``if not request or not request.referrer`` guard.
+    The active request is looked up via ``superset.utils.core.get_current_request``;
+    the Referer header is accessed as ``request.headers.get("referer")``.
+    Returns ``None`` when there is no request or no referrer (Celery, CLI).
     """
     try:
         from superset.utils.core import get_current_request, QuerySource
@@ -186,8 +177,7 @@ def _apply_connection_hooks(
 ) -> tuple[Any, dict[str, Any]]:
     """Apply the encrypted-extra merge and ``DB_CONNECTION_MUTATOR`` hooks.
 
-    1:1 with the tail of ``superset_old/models/core.py::_get_sqla_engine``
-    (lines 536-547), applied right before ``create_engine``:
+    Applied right before ``create_engine``:
 
     1. ``database.update_params_from_encrypted_extra(engine_kwargs)`` — the
        generic wrapper delegates to the engine spec, merging encrypted-extra
@@ -195,14 +185,13 @@ def _apply_connection_hooks(
     2. ``DB_CONNECTION_MUTATOR(url, params, effective_username,
        security_manager, source)`` — when configured, lets operators rewrite
        the URL / engine kwargs.  ``source`` falls back to the request-derived
-       value exactly as upstream (``source or get_query_source_from_request()``).
+       value (``source or _get_query_source_from_request()``).
 
     ``effective_username`` must be the value captured BEFORE ``impersonate_user``
-    rewrites the URL — 1:1 with superset_old/models/core.py:507 which computes
-    it once from the post-adjust, pre-impersonation URL and reuses it for
-    both ``impersonate_user`` and ``DB_CONNECTION_MUTATOR``.  Callers should
-    pass the pre-impersonation value; when ``_UNSET`` is passed (backward-
-    compat default), the value is computed on-demand from the supplied URL.
+    rewrites the URL — computed once from the post-adjust, pre-impersonation URL
+    and reused for both ``impersonate_user`` and ``DB_CONNECTION_MUTATOR``.
+    Callers should pass the pre-impersonation value; when ``_UNSET`` is passed
+    (backward-compat default), the value is computed on-demand from the supplied URL.
 
     Returns the (possibly mutated) ``(sqlalchemy_url, engine_kwargs)`` tuple.
     No-op (identity) when encrypted_extra is empty and the mutator is unset.
@@ -270,12 +259,11 @@ def _to_sync_uri(uri: str) -> str:
 def _sync_check_for_oauth2(database: Any) -> Iterator[None]:
     """Sync context manager that triggers the OAuth2 dance on auth failure.
 
-    1:1 with ``superset_old/utils/oauth2.py::check_for_oauth2`` — wraps a
-    block and, when the raised exception indicates OAuth2 re-auth is needed,
-    triggers :meth:`start_oauth2_dance` before re-raising.
+    Wraps a block and, when the raised exception indicates OAuth2 re-auth is
+    needed, triggers :meth:`start_oauth2_dance` before re-raising.
 
-    The liteset ``start_oauth2_dance`` is declared ``async`` but performs no
-    actual ``await`` — it only builds the authorization URL and raises
+    ``start_oauth2_dance`` is declared ``async`` but performs no actual
+    ``await`` — it only builds the authorization URL and raises
     :class:`OAuth2RedirectError`.  We drive the coroutine synchronously
     (same technique as ``superset.tasks.sql_lab._check_for_oauth2``).
     """
@@ -312,9 +300,6 @@ def _setup_ssh_tunnel(
     """Return ``(ssh_manager, tunnel_cm)`` for the SSH tunnel.
 
     Returns ``(None, nullcontext())`` when no tunnel is configured.
-
-    1:1 with the ssh_context_manager block in
-    ``superset_old/models/core.py::Database.get_sqla_engine``.
     Only an explicit ``override_ssh_tunnel`` is honoured here.
     """
     if override_ssh_tunnel is not None:
@@ -341,7 +326,7 @@ def _build_engine_kwargs_sync(
 
     Returns ``(sync_uri, engine_kwargs, effective_username_for_mutator)``.
 
-    Applies (in order, 1:1 with ``superset_old/models/core.py:491-534``):
+    Applies (in order):
     - URI validation via ``db_engine_spec.validate_database_uri``
     - ``engine_params`` from ``database.get_extra``
     - ``adjust_engine_params`` (catalog/schema scoping)
@@ -349,26 +334,24 @@ def _build_engine_kwargs_sync(
     - NullPool when ``nullpool=True``
 
     The third return value is the effective username captured BEFORE
-    impersonation rewrites the URL — 1:1 with superset_old/models/core.py:507
-    which computes ``effective_username`` once from the post-adjust,
-    pre-impersonation URL and passes the same value to both ``impersonate_user``
-    and ``DB_CONNECTION_MUTATOR``.
+    impersonation rewrites the URL — computed once from the post-adjust,
+    pre-impersonation URL and passed to both ``impersonate_user`` and
+    ``DB_CONNECTION_MUTATOR``.
     """
     from sqlalchemy.engine import make_url as _make_url
 
-    # Validate the URI — superset_old/models/core.py:491.
+    # Validate the URI.
     db_spec = getattr(database, "db_engine_spec", None)
     if db_spec is not None and hasattr(db_spec, "validate_database_uri"):
         db_spec.validate_database_uri(_make_url(sync_uri))
 
-    # engine_params from extra — superset_old/models/core.py:493-497.
+    # engine_params from extra.
     extra = database.get_extra(source) if hasattr(database, "get_extra") else {}
     engine_kwargs = dict((extra or {}).get("engine_params") or {})
     connect_args: dict[str, Any] = engine_kwargs.setdefault("connect_args", {})
 
-    # adjust_engine_params — superset_old/models/core.py:500-505.
-    # No try-except: the original calls this bare; any exception propagates to
-    # the caller as a clear connection error (1:1 with upstream).
+    # adjust_engine_params.
+    # No try-except: any exception propagates to the caller as a clear connection error.
     from superset.db_engine_specs import get_engine_spec
 
     sync_spec = getattr(database, "db_engine_spec", None)
@@ -384,19 +367,19 @@ def _build_engine_kwargs_sync(
     engine_kwargs["connect_args"] = connect_args
     sync_uri = adjusted_url.render_as_string(hide_password=False)
 
-    # Capture effective_username from the post-adjust, pre-impersonation URL —
-    # 1:1 with superset_old/models/core.py:507.  The same value is passed to
-    # both impersonate_user and DB_CONNECTION_MUTATOR (via the 3rd return value
-    # which _apply_connection_hooks receives as effective_username).
+    # Capture effective_username from the post-adjust, pre-impersonation URL.
+    # The same value is passed to both impersonate_user and DB_CONNECTION_MUTATOR
+    # (via the 3rd return value which _apply_connection_hooks receives
+    # as effective_username).
     effective_for_mutator: str | None = (
         _impersonation_username(database.get_effective_user(adjusted_url))
         if hasattr(database, "get_effective_user")
         else None
     )
 
-    # Impersonation — superset_old/models/core.py:527-534.
+    # Impersonation.
     # No try-except: if impersonate_user raises the exception must propagate
-    # so the connection is aborted cleanly (same as the original bare call).
+    # so the connection is aborted cleanly.
     if getattr(database, "impersonate_user", False):
         spec = getattr(database, "db_engine_spec", None)
         if spec is not None and hasattr(spec, "impersonate_user"):
@@ -411,7 +394,7 @@ def _build_engine_kwargs_sync(
             )
             sync_uri = url_obj.render_as_string(hide_password=False)
 
-    # NullPool — superset_old/models/core.py:495-496.
+    # NullPool.
     if nullpool:
         from sqlalchemy.pool import NullPool
 
@@ -427,8 +410,7 @@ def _resolve_engine_context_manager(
 ) -> Any:
     """Resolve the ``ENGINE_CONTEXT_MANAGER`` operator hook and return the CM.
 
-    1:1 with ``superset_old/models/core.py:469-478``:
-    when the operator configures ``ENGINE_CONTEXT_MANAGER`` (or the
+    When the operator configures ``ENGINE_CONTEXT_MANAGER`` (or the
     Pydantic-Settings equivalent ``engine_context_manager``), return the
     result of calling it; otherwise return ``nullcontext()``.
     """
@@ -457,10 +439,7 @@ def _resolve_engine_context_manager(
 def _create_sync_engine(
     database: Any, sync_uri: str, engine_kwargs: dict[str, Any]
 ) -> Engine:
-    """Call ``create_engine`` and map DBAPI exceptions to Superset types.
-
-    1:1 with ``superset_old/models/core.py:548-551``.
-    """
+    """Call ``create_engine`` and map DBAPI exceptions to Superset types."""
     try:
         return create_engine(sync_uri, **engine_kwargs)
     except Exception as ex:
@@ -481,11 +460,9 @@ def get_sync_engine(
 ) -> Iterator[Engine]:
     """Yield a synchronous SQLAlchemy ``Engine`` for the given database.
 
-    1:1 with ``Database.get_sqla_engine`` in
-    ``superset_old/models/core.py``
-    (line 568). Used by helpers.ExploreMixin code paths that compile
-    a SELECT statement and read ``engine.dialect`` for identifier
-    quoting and ``%%`` double-percent fixup detection.
+    Used by helpers.ExploreMixin code paths that compile a SELECT statement
+    and read ``engine.dialect`` for identifier quoting and ``%%``
+    double-percent fixup detection.
 
     The engine is disposed when the context exits so we don't hold
     onto pooled connections after the helper finishes.
@@ -495,7 +472,7 @@ def get_sync_engine(
     )
     sqlalchemy_uri = str(uri)
 
-    # SSH tunnel setup — see _setup_ssh_tunnel for the 1:1 mapping.
+    # SSH tunnel setup — see _setup_ssh_tunnel.
     ssh_manager, tunnel_cm = _setup_ssh_tunnel(
         database, sqlalchemy_uri, override_ssh_tunnel
     )
@@ -509,11 +486,9 @@ def get_sync_engine(
 
         sync_uri = _to_sync_uri(sqlalchemy_uri)
 
-        # ENGINE_CONTEXT_MANAGER wraps ALL parameter preparation + create_engine,
-        # 1:1 with superset_old/models/core.py:469-478 where engine_context_manager
-        # surrounds the entire _get_sqla_engine body (adjust_engine_params,
-        # impersonation, update_params_from_encrypted_extra, DB_CONNECTION_MUTATOR,
-        # and create_engine are all inside the CM).
+        # ENGINE_CONTEXT_MANAGER wraps ALL parameter preparation + create_engine
+        # (adjust_engine_params, impersonation, update_params_from_encrypted_extra,
+        # DB_CONNECTION_MUTATOR, and create_engine are all inside the CM).
         _outer_cm = _resolve_engine_context_manager(database, catalog, schema)
 
         engine: Engine | None = None
@@ -522,22 +497,19 @@ def get_sync_engine(
                 # Build engine_kwargs (validate URI, extra params,
                 # adjust_engine_params, impersonation, nullpool) — see
                 # _build_engine_kwargs_sync.  The 3rd element is the
-                # effective_username captured BEFORE impersonation (1:1 with
-                # superset_old/models/core.py:507) so DB_CONNECTION_MUTATOR
-                # receives the same value as the original.
+                # effective_username captured BEFORE impersonation so
+                # DB_CONNECTION_MUTATOR receives the correct pre-impersonation value.
                 sync_uri, engine_kwargs, eff_user = _build_engine_kwargs_sync(
                     database, sync_uri, catalog, schema, source, nullpool
                 )
 
                 # Apply the encrypted-extra merge + DB_CONNECTION_MUTATOR hooks
-                # right before ``create_engine`` — 1:1 with upstream
-                # ``Database._get_sqla_engine``
-                # (superset_old/models/core.py:536-547).
-                # The mutator receives a ``URL`` object (as upstream does); render
-                # the possibly-mutated URL back to a password-revealing string for
-                # ``create_engine`` (``str(URL)`` masks the password under SA 2.0).
+                # right before ``create_engine``.
+                # The mutator receives a ``URL`` object; render the possibly-mutated
+                # URL back to a password-revealing string for ``create_engine``
+                # (``str(URL)`` masks the password under SA 2.0).
                 # Pass the pre-impersonation effective_username so the mutator
-                # gets the same value as in the original (superset_old line 544).
+                # receives the correct pre-impersonation value.
                 from sqlalchemy.engine import make_url
                 from sqlalchemy.engine.url import URL
 
@@ -602,8 +574,8 @@ async def get_async_connection(
     adjusted_uri, connect_args = engine_spec.adjust_engine_params(async_uri)
 
     # Capture effective_username from the post-adjust, pre-impersonation URL
-    # so DB_CONNECTION_MUTATOR receives the same value as the original
-    # (superset_old/models/core.py:507 — computed before impersonate_user runs).
+    # (computed before impersonate_user runs) so DB_CONNECTION_MUTATOR
+    # receives the correct value.
     from sqlalchemy.engine import make_url as _make_url_pre_imp
 
     effective_for_mutator: str | None = (
@@ -614,8 +586,8 @@ async def get_async_connection(
         else None
     )
 
-    # Impersonation (1:1 upstream ``Database.get_sqla_engine``): rewrite the
-    # URL / connect_args to run as the effective user. The impersonation hook
+    # Impersonation: rewrite the URL / connect_args to run as the effective user.
+    # The impersonation hook
     # lives on the *sync* engine spec (it's a pure URL/connect_args transform,
     # driver-agnostic), so use ``database.db_engine_spec``. The OAuth2
     # access_token is intentionally NOT resolved here: every OAuth2-impersonation
@@ -642,15 +614,13 @@ async def get_async_connection(
             logger.debug("impersonation skipped for async connection: %s", exc)
 
     # Apply the encrypted-extra merge + DB_CONNECTION_MUTATOR hooks right
-    # before ``create_async_engine`` — 1:1 with upstream
-    # ``Database._get_sqla_engine`` (superset_old/models/core.py:536-547). A
-    # mutator that rewrites the URL / connect args must be respected on the
-    # async runtime path too, otherwise it would be silently ignored for
-    # postgres/mysql. ``pool_pre_ping``/``pool_size``/``max_overflow`` are
-    # async-engine-only kwargs and are intentionally kept out of the
-    # mutator-visible ``engine_kwargs`` (upstream's mutator never saw them).
-    # Pass the pre-impersonation effective_for_mutator so DB_CONNECTION_MUTATOR
-    # gets the same value as the original (superset_old/models/core.py:544).
+    # before ``create_async_engine``. A mutator that rewrites the URL /
+    # connect args must be respected on the async runtime path too, otherwise
+    # it would be silently ignored for postgres/mysql.
+    # ``pool_pre_ping``/``pool_size``/``max_overflow`` are async-engine-only
+    # kwargs and are intentionally kept out of the mutator-visible
+    # ``engine_kwargs``. Pass the pre-impersonation effective_for_mutator so
+    # DB_CONNECTION_MUTATOR receives the correct pre-impersonation value.
     from sqlalchemy.engine import make_url
     from sqlalchemy.engine.url import URL
 
@@ -680,11 +650,6 @@ async def get_async_connection(
             yield conn, engine_spec
     finally:
         await engine.dispose()
-
-
-# ---------------------------------------------------------------------------
-# Test / Legacy utilities
-# ---------------------------------------------------------------------------
 
 
 def get_or_create_db(

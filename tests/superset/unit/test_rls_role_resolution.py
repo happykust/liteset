@@ -16,9 +16,8 @@
 # under the License.
 """Tests for ``_sync_resolve_user_role_ids`` (RLS role selection).
 
-1:1 with upstream ``SupersetSecurityManager.get_rls_filters`` +
-``get_user_roles``: only ``g.user is None`` skips RLS; an *anonymous*
-user proceeds with an empty role list so BASE filters still apply.
+Only ``g.user is None`` skips RLS; an *anonymous* user proceeds with an
+empty role list so BASE filters still apply.
 """
 
 from __future__ import annotations
@@ -112,10 +111,12 @@ def test_authenticated_user_returns_role_ids():
 
 
 def test_authenticated_user_includes_group_roles():
-    """RLS role resolution must include group-inherited roles — 1:1 with FAB
-    get_user_roles (direct + group.roles). A role assigned only via a group was
-    previously omitted, so a REGULAR RLS filter scoped to it never matched and
-    the row restriction was silently skipped (data exposure)."""
+    """RLS role resolution must include group-inherited roles (direct + group.roles).
+
+    A role assigned only via a group was previously omitted, so a REGULAR RLS
+    filter scoped to it never matched and the row restriction was silently
+    skipped (data exposure).
+    """
     user = SimpleNamespace(
         is_anonymous=False,
         is_authenticated=True,

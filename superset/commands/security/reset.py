@@ -14,16 +14,12 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/security/reset.py``.
+"""Admin-only factory-reset command.
 
-The original ``ResetSupersetCommand`` is an Admin-only "factory reset"
-that wipes datasets, databases, dashboards, slices, the key-value store,
-logs, fav-stars, plus all non-Admin / non-system users and roles, and
-finally writes a ``Factory Reset`` audit row to the ``Log`` table.
-
-This async port reproduces the same destructive flow against the
-AsyncSession + AsyncSecurityManager DI surface.  The class name is kept
-verbatim (``ResetSupersetCommand``) to match the original.
+``ResetSupersetCommand`` wipes datasets, databases, dashboards, slices,
+the key-value store, logs, fav-stars, plus all non-Admin / non-system
+users and roles, then writes a ``Factory Reset`` audit row to the ``Log``
+table.
 """
 
 from __future__ import annotations
@@ -41,11 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 class ResetSupersetCommand(AsyncBaseCommand[None]):
-    """Wipe non-system data and reset the Superset install.
-
-    Async port of
-    ``superset_old.commands.security.reset.ResetSupersetCommand``.
-    """
+    """Wipe non-system data and reset the Superset install."""
 
     def __init__(
         self,
@@ -82,8 +74,7 @@ class ResetSupersetCommand(AsyncBaseCommand[None]):
     async def run(self) -> None:
         logger.debug("Resetting Superset Started")
 
-        # Lazy imports — these models require the full Superset model graph,
-        # which may not be loaded in minimal test environments.
+        # Full Superset model graph may not be loaded in minimal test environments.
         from superset.models.connectors import SqlaTable
         from superset.models.core import Database, FavStar, Log
         from superset.models.dashboard import Dashboard
@@ -110,8 +101,8 @@ class ResetSupersetCommand(AsyncBaseCommand[None]):
 
         logger.debug("Ignoring Users: %s", self._users_to_exclude)
         user_model = self._security_manager.user_model
-        # Eager-load roles: the loop below reads ``user.roles`` synchronously,
-        # which would MissingGreenlet on a freshly-queried user under asyncpg.
+        # Eager-load roles: reading ``user.roles`` synchronously in the loop would
+        # MissingGreenlet on a freshly-queried user under asyncpg.
         users_stmt = (
             select(user_model)
             .where(user_model.username.not_in(self._users_to_exclude))
@@ -132,7 +123,6 @@ class ResetSupersetCommand(AsyncBaseCommand[None]):
         for role in roles:
             await self._session.delete(role)
 
-        # Insert new record into Log table — matches the original audit row.
         log = Log(
             action="Factory Reset",
             json="{}",
@@ -146,9 +136,5 @@ class ResetSupersetCommand(AsyncBaseCommand[None]):
         logger.debug("Resetting Superset Completed")
 
 
-# Backwards-compat alias — some Liteset call sites used the descriptive
-# name ``ResetRLSRulesCommand`` from an early review.  The canonical
-# class name in Apache Superset is ``ResetSupersetCommand`` and the
-# behaviour is broader than RLS (it wipes most non-system data).  Keep
-# this alias so any stray imports don't break.
+# Early review used ``ResetRLSRulesCommand``; keep alias so stray imports don't break.
 ResetRLSRulesCommand = ResetSupersetCommand

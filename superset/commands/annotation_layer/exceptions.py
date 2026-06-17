@@ -25,12 +25,7 @@ from superset.exceptions import (
 
 
 class AnnotationLayerNameUniquenessValidationError(CommandInvalidError):
-    """Layer-name uniqueness violation — field-keyed leaf error.
-
-    1:1 with ``superset_old.commands.annotation_layer.exceptions
-    .AnnotationLayerNameUniquenessValidationError`` (marshmallow
-    ``ValidationError`` with ``field_name="name"``).
-    """
+    """Layer-name uniqueness violation — field-keyed leaf error."""
 
     status_code = 422
     message = "Name must be unique"
@@ -42,9 +37,8 @@ class AnnotationLayerNameUniquenessValidationError(CommandInvalidError):
 class AnnotationLayerInvalidError(CommandInvalidError):
     """Accumulating annotation-layer validation error.
 
-    1:1 with ``superset_old.commands.annotation_layer.exceptions
-    .AnnotationLayerInvalidError`` — the registered handler emits
-    ``{"message": normalized_messages()}`` (per-field 422).
+    The registered handler emits ``{"message": normalized_messages()}``
+    (per-field 422).
     """
 
     status_code = 422

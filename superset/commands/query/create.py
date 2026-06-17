@@ -14,18 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Create command for saved queries.
-
-LITESET ADDITION (no 1:1 counterpart in
-``superset_old/commands/query/``).  In Apache Superset 6.0 saved-query
-creation is handled by FAB's ``ModelRestApi.post`` against the
-``SavedQuery`` ORM model directly — there is no ``CreateSavedQueryCommand``
-in the original.  The async port routes everything through Litestar
-controllers + AsyncBaseCommand, so this Command was added for parity
-with other resources.  File name kept at ``create.py`` to match the
-single-file convention in ``superset_old/commands/query/`` (which
-contains ``delete.py``, ``export.py``, etc.).
-"""
+"""Create command for saved queries."""
 
 from __future__ import annotations
 
@@ -64,17 +53,13 @@ class CreateSavedQueryCommand(AsyncBaseCommand["SavedQuery"]):
         if self._user_id is not None:
             query.created_by_fk = self._user_id
             query.changed_by_fk = self._user_id
-            # 1:1 with original pre_add at
-            # superset_old/queries/saved_queries/api.py:193-194 which sets
-            # ``item.user = g.user``.  SavedQuery has a dedicated ``user_id``
-            # FK column (separate from AuditMixinNullable's created_by_fk)
-            # that backs the ``user`` relationship, ``user_email`` property,
-            # and implicit owner tags.
+            # SavedQuery.user_id is a separate FK from AuditMixinNullable.created_by_fk;
+            # it backs the ``user`` relationship, ``user_email`` property,
+            # and owner tags.
             query.user_id = self._user_id  # type: ignore[assignment]
         self._dao.session.add(query)
         await self._dao.session.flush()
 
-        # Add implicit type: and owner: tags (async port of QueryUpdater.after_insert)
         owner_ids = [self._user_id] if self._user_id is not None else []
         await add_implicit_tags_after_insert(
             self._dao.session,

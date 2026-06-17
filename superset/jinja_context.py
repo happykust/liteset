@@ -16,9 +16,8 @@
 # under the License.
 """Defines the templating context for SQL Lab.
 
-Migrated from superset_old/jinja_context.py — legacy WSGI dependencies
-gone, user context resolved via context-vars (set_current_user /
-get_current_user).
+User context is resolved via context-vars (set_current_user /
+get_current_user) rather than the Flask request context.
 """
 
 from __future__ import annotations
@@ -217,20 +216,14 @@ class ExtraCache:
         """
         try:
             user = get_current_user()
-            # Anonymous detection mirrors the upstream get_user_roles'
-            # ``is_anonymous`` branch: the middleware stores a truthy
-            # ``UnauthenticatedUser``
-            # (is_authenticated=False) in the ContextVar, so a plain
-            # truthiness check would skip the public-role branch. ORM users
-            # have no ``is_authenticated`` attribute -> default True.
+            # The middleware stores an UnauthenticatedUser (is_authenticated=False)
+            # in the ContextVar. ORM users have no ``is_authenticated`` attribute,
+            # so it defaults to True.
             if not user or getattr(user, "is_authenticated", True) is False:
-                # Mirror original: anonymous users get the public role
-                # if AUTH_ROLE_PUBLIC is configured. The upstream
-                # get_public_role()
-                # queries the DB (sqla/manager.py:717-722) — a configured but
-                # DELETED role yields None, then ``None.name`` raises inside
-                # the original's try/except → None. Reproduce the existence
-                # check instead of trusting the raw config string.
+                # Anonymous users get the public role if AUTH_ROLE_PUBLIC is
+                # configured. A configured but deleted role yields None from the
+                # DB lookup, so we check existence instead of trusting the config
+                # string directly.
                 public_role = _get_config("AUTH_ROLE_PUBLIC")
                 if not public_role or not _sync_role_exists(str(public_role)):
                     return None
@@ -242,10 +235,8 @@ class ExtraCache:
             role_names: set[str] = {
                 role.name for role in roles if hasattr(role, "name")
             }
-            # Mirror the upstream base get_user_roles:
-            #   user.roles + [role for group in user.groups for role in group.roles]
-            # The group term is resolved via a sync query (same pattern as
-            # _sync_get_rls_rules) since Jinja rendering is synchronous.
+            # Include group-inherited roles, resolved via a sync query since
+            # Jinja rendering is synchronous.
             user_id = getattr(user, "id", None)
             if user_id is not None:
                 try:
@@ -265,12 +256,8 @@ class ExtraCache:
         """
         Return row level security rules for the current user and dataset.
 
-        Ported 1:1 from
-        superset_old/jinja_context.py::ExtraCache.current_user_rls_rules.
-        The original called security_manager.get_rls_filters(self.table) (sync,
-        because the original SM was sync). In Liteset we reproduce the
-        same query synchronously via _sync_get_rls_rules which uses a cached
-        sync SQLAlchemy engine — acceptable since Jinja rendering is sync.
+        The query runs synchronously via _sync_get_rls_rules which uses a
+        cached sync SQLAlchemy engine — acceptable since Jinja rendering is sync.
         """
         if not self.table:
             return None
@@ -299,11 +286,9 @@ class ExtraCache:
         """
         Read a url or post parameter and use it in your SQL Lab query.
 
-        1:1 with upstream: first checks request.query_params (Litestar equivalent
-        of the upstream request.args), then falls back to
+        First checks request.query_params, then falls back to
         form_data["url_params"].
         """
-        # Mirror upstream: ``if has_request_context() and request.args.get(param)``
         _request = get_current_request()
         if _request is not None:
             _query_params = getattr(_request, "query_params", None)
@@ -863,7 +848,6 @@ def _get_sync_engine() -> Any:
 def _sync_find_dataset(dataset_id: int) -> Any:
     """Synchronously find a dataset by ID using the shared sync engine.
 
-    Mirrors ``BaseDAO.find_by_id`` (superset_old/daos/base.py lines 68-72):
     ``StatementError`` (e.g. from a non-numeric *dataset_id* string reaching the
     DB) is caught and ``None`` is returned, so callers raise a 404-level error
     (``DatasetNotFoundError``) instead of propagating a 500.
@@ -951,23 +935,17 @@ def _sync_user_can_access_dataset(
 ) -> bool:
     """Sync replica of ``DatasourceFilter`` access for the Jinja macros.
 
-    1:1 with upstream ``DatasetDAO.find_by_id(dataset_id[, skip_base_filter])``
-    → ``get_dataset_access_filters(SqlaTable)``: admins and holders of
-    ``all_database_access``/``all_datasource_access`` see all; everyone else
-    needs the dataset's database OR its ``perm``/``catalog_perm``/``schema_perm``
-    to be granted. Roles include upstream *group* membership — upstream
-    ``user_view_menu_names`` (superset_old/security/manager.py:841-880) joins
-    ``assoc_user_group``/``assoc_group_role`` so group-granted permissions
-    count in every check.
+    Admins and holders of ``all_database_access``/``all_datasource_access`` see
+    all; everyone else needs the dataset's database OR its
+    ``perm``/``catalog_perm``/``schema_perm`` to be granted. Roles include
+    group membership — group-granted permissions count in every check.
 
-    ``skip_base_filter`` mirrors the upstream argument: ``metric_macro`` passes
-    ``skip_base_filter=is_guest`` (embedded/guest access is validated at the
-    dashboard level), whereas ``dataset_macro`` never skips the base filter, so
-    guests are subject to it like any other user.
+    ``skip_base_filter=True``: ``metric_macro`` passes this for guests
+    (embedded/guest access is validated at the dashboard level). ``dataset_macro``
+    never skips the filter, so guests are subject to it like any other user.
 
     Without this gate ``{{ metric('m', <id>) }}`` / ``{{ dataset(<id>) }}``
-    (template processing) would leak metric/column expressions from datasets the
-    user cannot access.
+    would leak metric/column expressions from datasets the user cannot access.
     """
     if skip_base_filter:
         return True
@@ -979,9 +957,7 @@ def _sync_user_can_access_dataset(
         return True
     role_ids = [r.id for r in roles if getattr(r, "id", None) is not None]
 
-    # Group-inherited roles — 1:1 with the assoc_user_group/assoc_group_role
-    # EXISTS terms of upstream ``user_view_menu_names`` and with the upstream
-    # base ``get_user_roles`` (user.roles + roles of the user's groups).
+    # Group-inherited roles: include roles granted via group membership.
     user_id = getattr(user, "id", None)
     if user_id is not None:
         try:
@@ -1013,12 +989,7 @@ def _sync_user_can_access_dataset(
 
 
 def _sync_role_exists(role_name: str) -> bool:
-    """Check that a role row exists — sync analogue of the upstream
-    get_public_role().
-
-    Uses the same module-level sync engine as ``_sync_get_rls_rules`` since
-    Jinja rendering is synchronous.
-    """
+    """Check that a role row exists (sync; Jinja rendering is synchronous)."""
     from sqlalchemy import text
     from sqlalchemy.orm import Session
 
@@ -1032,14 +1003,9 @@ def _sync_role_exists(role_name: str) -> bool:
 
 
 def _sync_get_user_group_roles(user_id: int) -> list[tuple[int, str]]:
-    """Return ``(id, name)`` of roles inherited via upstream group membership.
+    """Return ``(id, name)`` of roles inherited via group membership.
 
-    Mirrors the group-role term of the upstream base
-    ``SecurityManager.get_user_roles``:
-    ``[role for group in user.groups for role in group.roles]``.
-
-    Uses the same module-level sync SQLAlchemy engine as ``_sync_get_rls_rules``
-    so that it is safe to call from synchronous Jinja template rendering.
+    Safe to call from synchronous Jinja template rendering.
     """
     from sqlalchemy import text
     from sqlalchemy.orm import Session
@@ -1064,14 +1030,11 @@ def _sync_get_user_group_role_names(user_id: int) -> list[str]:
 def _sync_get_rls_rules(table: Any, user: Any) -> list[str]:
     """Synchronously retrieve RLS filter clauses for ``user`` on ``table``.
 
-    Ported 1:1 from the logic in
-    ``superset_old/security/manager.py::SupersetSecurityManager.get_rls_filters``
-    and ``get_guest_rls_filters``.  Since Jinja template rendering is
-    synchronous, we cannot ``await`` the async security manager; instead
-    we reproduce the same SQL query directly via a sync session.
+    Since Jinja template rendering is synchronous we cannot ``await`` the
+    async security manager; instead we reproduce the same SQL query directly
+    via a sync session.
 
-    Returns a sorted list of SQL clause strings (same contract as the
-    original ``ExtraCache.current_user_rls_rules``).
+    Returns a sorted list of SQL clause strings.
     """
     from sqlalchemy.orm import Session
 
@@ -1100,9 +1063,7 @@ def _sync_get_rls_rules(table: Any, user: Any) -> list[str]:
         return sorted(clauses)
 
     # Authenticated user path: query the RowLevelSecurityFilter table.
-    # Role set mirrors the upstream get_user_roles: direct roles + roles
-    # inherited via group membership (superset_old/security/manager.py:2598 →
-    # the upstream app-builder security manager).
+    # Role set includes direct roles + roles inherited via group membership.
     try:
         user_role_ids = [r.id for r in getattr(user, "roles", []) or []]
     except Exception:  # noqa: BLE001
@@ -1189,12 +1150,9 @@ def dataset_macro(
 
     The generated SQL includes all columns (including computed) by default.
     """
-    # 1:1 with upstream ``DatasetDAO.find_by_id(dataset_id)`` (no
-    # ``skip_base_filter``): the ``DatasourceFilter`` RBAC base filter applies
-    # to every user, including guests. A denial manifests as
-    # ``DatasetNotFoundError`` exactly like the original's filtered lookup
-    # returning ``None`` — without it, ``{{ dataset(<id>) }}`` would leak the
-    # dataset's column/metric SQL expressions to a user with no access.
+    # The ``DatasourceFilter`` RBAC base filter applies to every user,
+    # including guests. Without it, ``{{ dataset(<id>) }}`` would leak
+    # column/metric SQL expressions from inaccessible datasets.
     dataset = _sync_find_dataset(dataset_id)
     if not dataset or not _sync_user_can_access_dataset(dataset, get_current_user()):
         raise DatasetNotFoundError(f"Dataset {dataset_id} not found!")
@@ -1215,10 +1173,7 @@ def dataset_macro(
 
 
 def _loads_request_json(data: str | None) -> dict[str, Any]:
-    """JSON-decode a string, returning ``{}`` on failure.
-
-    1:1 with ``superset_old/views/utils.py::loads_request_json``.
-    """
+    """JSON-decode a string, returning ``{}`` on failure."""
     if not data:
         return {}
     try:
@@ -1234,7 +1189,7 @@ def _merge_payload_into_form_data(
     """Process the request payload and merge into *form_data* in-place.
 
     Returns the dataset ID if an early-return path (``datasource.id``) is
-    found, otherwise ``None``.  Mirrors original lines 1042-1046.
+    found, otherwise ``None``.
     """
     # Early return: top-level ``datasource.id`` in JSON body
     # (chart-data API path — original line 1042-1043).
@@ -1257,10 +1212,7 @@ def _merge_payload_into_form_data(
 
 
 def _merge_query_string_into_form_data(form_data: dict[str, Any]) -> None:
-    """Merge ``form_data`` from query-string into *form_data* in-place.
-
-    Mirrors original lines 1047-1048 (``request.args.get("form_data")``).
-    """
+    """Merge ``form_data`` from query-string into *form_data* in-place."""
     _request = get_current_request()
     if _request is None:
         return
@@ -1275,11 +1227,9 @@ def _merge_query_string_into_form_data(form_data: dict[str, Any]) -> None:
 def _dataset_id_from_chart(chart_id: Any, exc_message: str) -> int:
     """Look up a chart by ID and return its datasource_id synchronously.
 
-    Mirrors ``ChartDAO.find_by_id`` (superset_old/daos/base.py lines 68-72):
     ``ValueError`` from ``int(chart_id)`` for a non-numeric *chart_id*, or
-    ``StatementError`` from the DB for an invalid parameter type, are both caught
-    so that the caller raises ``SupersetTemplateException`` (400-level) instead
-    of propagating a 500.
+    ``StatementError`` from the DB, are caught so that the caller raises
+    ``SupersetTemplateException`` (400-level) instead of propagating a 500.
     """
     from sqlalchemy.orm import Session
 
@@ -1308,15 +1258,11 @@ def get_dataset_id_from_context(metric_key: str) -> int:
     """
     Retrieves the Dataset ID from the template context.
 
-    1:1 with ``superset_old/jinja_context.py::get_dataset_id_from_context``.
-    The original reads the request JSON body, ``request.form``,
-    ``request.args`` and ``g.form_data``.  In Liteset the request-scoped
-    ``_form_data_ctx`` ContextVar (set by the ``request_context``
-    middleware to the full JSON body) is the primary source.  We also
-    check ``request.query_params["form_data"]`` (Litestar equivalent of
-    ``request.args.get("form_data")``) and merge a nested ``form_data``
-    dict from the payload, exactly like the original does.  The Celery
-    task path (``get_task_form_data``) mirrors ``g.form_data``.
+    Reads the request-scoped ``_form_data_ctx`` ContextVar (set by the
+    ``request_context`` middleware to the full JSON body), also checks
+    ``request.query_params["form_data"]`` and merges a nested ``form_data``
+    dict from the payload. The Celery task path falls back to
+    ``get_task_form_data`` (equivalent to Flask ``g.form_data``).
     """
     from superset.utils.core import get_form_data as get_task_form_data
 
@@ -1325,16 +1271,6 @@ def get_dataset_id_from_context(metric_key: str) -> int:
         f"metric in the Jinja macro."
     )
 
-    # --- Build merged form_data, mirroring the original ----------------
-    # Original lines 1034-1048:
-    #   form_data = {}
-    #   if has_request_context():
-    #       payload = request.get_json(...)
-    #       if payload.datasource.id -> early return
-    #       form_data.update(payload.get("form_data", {}))
-    #       form_data.update(loads_request_json(request.form.get("form_data")))
-    #       form_data.update(loads_request_json(request.args.get("form_data")))
-    #   form_data = form_data or g.form_data
     form_data: dict[str, Any] = {}
 
     # The middleware sets _form_data_ctx to the full JSON body (or the
@@ -1348,17 +1284,11 @@ def get_dataset_id_from_context(metric_key: str) -> int:
 
     _merge_query_string_into_form_data(form_data)
 
-    # Original line 1050: ``form_data = form_data or g.form_data``
-    # In the original, ``g.form_data`` is the chart's flat form_data dict
-    # set by warm_up_cache (e.g. ``{'datasource': '5__table', ...}``).
-    # In liteset, ``_form_data_ctx`` serves BOTH as the HTTP request body
-    # envelope AND as the flat form_data from warm_up_cache.
-    # ``_merge_payload_into_form_data`` handles the HTTP envelope case but
-    # leaves ``form_data`` empty when ``payload`` IS already the flat dict
-    # (because it looks for nested ``payload["form_data"]`` or a dict-typed
-    # ``payload["datasource"]`` -- neither present in the flat case).
-    # So if ``form_data`` is still empty after the merge, fall back to using
-    # ``payload`` directly (mirrors ``g.form_data`` from the original).
+    # ``_form_data_ctx`` serves both as the HTTP request body envelope and as
+    # the flat form_data from warm_up_cache. When the payload IS already the
+    # flat dict (no nested ``form_data`` key), the merge above leaves
+    # ``form_data`` empty — fall back to using payload directly (equivalent
+    # to Flask ``g.form_data`` from the Celery task path).
     if not form_data:
         form_data = payload or get_task_form_data()
 
@@ -1391,13 +1321,9 @@ def metric_macro(
     if not dataset_id:
         dataset_id = get_dataset_id_from_context(metric_key)
 
-    # 1:1 with upstream
-    # ``DatasetDAO.find_by_id(dataset_id, skip_base_filter=is_guest)``: load
-    # the dataset, then enforce the ``DatasourceFilter`` RBAC for non-guest
-    # users. A denial manifests as ``DatasetNotFoundError`` exactly like the
-    # original's filtered lookup returning ``None`` — without it,
-    # ``{{ metric('m', <id>) }}`` would leak metric expressions from datasets
-    # the caller cannot access.
+    # Enforce DatasourceFilter RBAC for non-guest users. Without it,
+    # ``{{ metric('m', <id>) }}`` would leak metric expressions from
+    # datasets the caller cannot access.
     user = get_current_user()
     # Inline the same check as AsyncSecurityManager.is_guest_user() to avoid
     # needing a manager instance (Jinja rendering is synchronous).

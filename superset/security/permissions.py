@@ -107,7 +107,7 @@ ADMIN_ONLY_VIEW_MENUS: frozenset[str] = frozenset(
         "PermissionViewMenu",
         "ViewMenu",
         "User",
-        # USER_MODEL_VIEWS (verbatim from superset_old/security/manager.py:255-263)
+        # USER_MODEL_VIEWS
         "RegisterUserModelView",
         "UserDBModelView",
         "UserLDAPModelView",
@@ -174,7 +174,6 @@ DATA_ACCESS_PERMISSIONS: frozenset[str] = frozenset(
 )
 
 # SQL-Lab-only permissions: (permission_name, view_menu_name) tuples
-# Verbatim from superset_old/security/manager.py:351-381 (29 entries)
 SQLLAB_ONLY_PERMISSIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("can_read", "SavedQuery"),
@@ -210,7 +209,6 @@ SQLLAB_ONLY_PERMISSIONS: frozenset[tuple[str, str]] = frozenset(
 )
 
 # SQL-Lab extra permission views (assigned to sql_lab role, not only-SQL-Lab)
-# Verbatim from superset_old/security/manager.py:383-387
 SQLLAB_EXTRA_PERMISSION_VIEWS: frozenset[tuple[str, str]] = frozenset(
     {
         ("can_csv", "Superset"),  # Deprecated permission remove on 3.0.0
@@ -220,7 +218,6 @@ SQLLAB_EXTRA_PERMISSION_VIEWS: frozenset[tuple[str, str]] = frozenset(
 )
 
 # Read-only permission names
-# Verbatim from superset_old/security/manager.py:326-334
 READ_ONLY_PERMISSION: frozenset[str] = frozenset(
     {
         "can_show",
@@ -253,14 +250,12 @@ GAMMA_READ_ONLY_MODEL_VIEWS: frozenset[str] = frozenset(
 )
 
 # Custom permission views that should always be created in the DB.
-# Mirrors ``create_custom_permissions`` in
-# ``superset_old/security/manager.py:1109-1124`` (the 12 custom PVMs), plus
-# the ``Superset``-view permissions FAB auto-creates for the explore/guest
-# endpoints (``can_explore_json``/``can_explore``) and the FAB-standard
+# Includes the 12 custom PVMs from ``create_custom_permissions``, the
+# ``Superset``-view permissions FAB auto-creates for the explore/guest
+# endpoints (``can_explore_json``/``can_explore``), and the FAB-standard
 # ``UserInfoView`` perms.
 CUSTOM_PERMISSION_VIEWS: frozenset[tuple[str, str]] = frozenset(
     {
-        # create_custom_permissions() — superset_old/security/manager.py
         ("can_csv", "Superset"),
         ("can_share_dashboard", "Superset"),
         ("can_share_chart", "Superset"),

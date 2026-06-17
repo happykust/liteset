@@ -20,7 +20,6 @@ Two controllers live here:
 
 * ``EmbeddedDashboardController`` — JSON API at ``/api/v1/embedded_dashboard``
 * ``EmbeddedSSRController`` — HTML SSR route at ``/embedded/{uuid}``
-  (ported from ``superset_old/embedded/view.py:EmbeddedView``)
 """
 
 from __future__ import annotations
@@ -43,19 +42,15 @@ from superset.utils import json as json_utils
 def _same_origin(url1: str | None, url2: str | None) -> bool:
     """Return True when *url1* and *url2* share the same scheme + netloc.
 
-    Mirrors the logic of the upstream ``same_origin`` CSRF helper which is
-    not available in the Litestar / ASGI context.  If either argument is
-    empty/None the function returns False.
+    If either argument is empty/None the function returns False.
     """
     if not url1 or not url2:
         return False
     try:
         p1 = urlparse(url1)
         p2 = urlparse(url2)
-        # Mirror the upstream same_origin helper exactly: use .hostname
-        # (auto-lowercased) and .port (int or None) separately so that
-        # uppercase hostnames in headers are treated case-insensitively,
-        # matching the original contract.
+        # Use .hostname (auto-lowercased) and .port (int or None) separately
+        # so that uppercase hostnames in headers are treated case-insensitively.
         return (
             p1.scheme == p2.scheme and p1.hostname == p2.hostname and p1.port == p2.port
         )
@@ -88,16 +83,13 @@ class EmbeddedDashboardController(Controller):
             raise SupersetNotFoundError("Embedded dashboard not found")
 
         # allow_domain_list is stored as comma-separated string in the DB.
-        # 1:1 with ``EmbeddedDashboard.allowed_domains`` (superset_old/models/
-        # embedded_dashboard.py:54-60): plain ``split(",")`` with NO
-        # empty-token filtering — ``'a,,b'`` yields ``['a', '', 'b']``.
+        # Plain ``split(",")`` with NO empty-token filtering —
+        # ``'a,,b'`` yields ``['a', '', 'b']``.
         raw_domains = getattr(embedded, "allow_domain_list", None)
         allowed_domains: list[str] = []
         if raw_domains:
             allowed_domains = raw_domains.split(",")
 
-        # Build changed_by nested dict matching the original UserSchema
-        # (id, username, first_name, last_name).
         changed_by_data: dict[str, Any] | None = None
         changed_by = getattr(embedded, "changed_by", None)
         if changed_by is not None:
@@ -108,7 +100,6 @@ class EmbeddedDashboardController(Controller):
                 "last_name": getattr(changed_by, "last_name", None),
             }
 
-        # changed_on as ISO datetime string (matches Marshmallow DateTime field)
         changed_on = getattr(embedded, "changed_on", None)
         changed_on_str: str | None = None
         if changed_on is not None:
@@ -128,8 +119,7 @@ class EmbeddedDashboardController(Controller):
 class EmbeddedSSRController(Controller):
     """Server-side-rendered HTML route for the embedded Superset iframe.
 
-    Mounted at ``/embedded`` (no ``/api/v1`` prefix) — mirrors
-    ``superset_old/embedded/view.py:EmbeddedView`` 1:1.
+    Mounted at ``/embedded`` (no ``/api/v1`` prefix).
 
     Steps performed on each request:
     1. Gate on ``EMBEDDED_SUPERSET`` feature flag → 404 if off.
@@ -161,10 +151,7 @@ class EmbeddedSSRController(Controller):
         state: State,
         embedded_dao: Any,
     ) -> Template | Response[Any]:
-        """GET /embedded/{uuid} — serve the embedded dashboard SPA shell.
-
-        1:1 port of ``superset_old/embedded/view.py:EmbeddedView.embedded``.
-        """
+        """GET /embedded/{uuid} — serve the embedded dashboard SPA shell."""
         settings = getattr(state, "settings", None)
 
         embedded = await embedded_dao.find_by_uuid(uuid)
@@ -176,8 +163,7 @@ class EmbeddedSSRController(Controller):
             )
 
         # Validate request referrer against allowed_domains.
-        # An empty allowed_domains list means any origin is permitted —
-        # 1:1 with the original ``not embedded.allowed_domains`` short-circuit.
+        # An empty allowed_domains list means any origin is permitted.
         allowed_domains: list[str] = getattr(embedded, "allowed_domains", []) or []
         if allowed_domains:
             referrer = request.headers.get("Referer") or request.headers.get("Referrer")
@@ -191,16 +177,13 @@ class EmbeddedSSRController(Controller):
                     media_type="text/plain",
                 )
 
-        # Build the bootstrap_data matching the original EmbeddedView payload.
-        # The frontend's embedded entry (superset-frontend/src/embedded/index.tsx)
+        # The frontend embedded entry (superset-frontend/src/embedded/index.tsx)
         # reads ``bootstrapData.config.GUEST_TOKEN_HEADER_NAME``,
         # ``bootstrapData.common``, and ``bootstrapData.embedded.dashboard_id``.
         guest_token_header = getattr(
             settings, "guest_token_header_name", "X-GuestToken"
         )
 
-        # Build common bootstrap payload (feature flags, conf, menu, etc.)
-        # Re-use the SPA controller helper to avoid duplicating the logic.
         from superset.controllers.spa import _build_bootstrap_data
 
         # For the embedded route the user is always treated as anonymous;
@@ -223,10 +206,6 @@ class EmbeddedSSRController(Controller):
 
         assets_prefix = getattr(settings, "static_assets_prefix", "")
 
-        # Audit log — 1:1 with the original's
-        # ``@event_logger.log_this_with_extra_payload`` +
-        # ``add_extra_log_payload(embedded_dashboard_id=uuid,
-        # dashboard_version="v2")`` (superset_old/embedded/view.py:37-77).
         from superset.events import event_logger
 
         await event_logger.alog_with_context(

@@ -64,7 +64,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         self,
         id_or_slug: int | str,
     ) -> Dashboard | None:
-        """Find a dashboard by integer ID, UUID, or slug."""
         stmt = select(Dashboard).where(self._id_or_slug_filter(id_or_slug))
         result = await self.session.execute(stmt)
         return result.scalars().unique().one_or_none()
@@ -109,7 +108,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         filters: list[Any],
         options: list[Any] | None = None,
     ) -> Dashboard | None:
-        """Find a single dashboard matching all filters, with eager-loaded options."""
         stmt = select(Dashboard).where(*filters)
         if options:
             stmt = stmt.options(*options)
@@ -121,7 +119,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         dashboard_id: int,
         options: list[Any] | None = None,
     ) -> Dashboard | None:
-        """Find a dashboard by ID with eager-loaded options."""
         stmt = select(Dashboard).where(Dashboard.id == dashboard_id)
         if options:
             stmt = stmt.options(*options)
@@ -129,7 +126,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         return result.scalars().unique().one_or_none()
 
     async def validate_slug_uniqueness(self, slug: str) -> bool:
-        """Check that no dashboard exists with the given slug."""
         if not slug:
             return True
         existing = await self.find_one_or_none(slug=slug)
@@ -140,7 +136,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         dashboard_id: int,
         slug: str | None,
     ) -> bool:
-        """Check slug uniqueness excluding the dashboard being updated."""
         if slug is None:
             return True
         stmt = select(Dashboard).where(
@@ -170,10 +165,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         if dashboard.json_metadata:
             try:
                 parsed = loads(dashboard.json_metadata)  # type: ignore[arg-type]
-                # Only a JSON object is usable here — a list/str/number would
-                # crash the ``md.pop`` / ``md.setdefault`` calls below. The
-                # schema validator rejects non-object json_metadata (422), but
-                # guard the copy path and any legacy-stored value too.
                 if isinstance(parsed, dict):
                     md = parsed
             except (ValueError, TypeError):
@@ -213,7 +204,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
                 pass
 
         if (positions := data.get("positions")) is not None:
-            # find slices in the position data
             slice_ids = [
                 value.get("meta", {}).get("chartId")
                 for value in positions.values()
@@ -227,7 +217,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
             await self.session.refresh(dashboard, attribute_names=["slices"])
             dashboard.slices = current_slices
 
-            # add UUID to positions
             uuid_map = {slc.id: str(slc.uuid) for slc in current_slices}
             for obj in positions.values():
                 if (
@@ -238,7 +227,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
                     chart_id = obj["meta"]["chartId"]
                     obj["meta"]["uuid"] = uuid_map.get(chart_id)
 
-            # remove leading and trailing white spaces in the dumped json
             dashboard.position_json = dumps(  # type: ignore[assignment]
                 positions,
                 indent=None,
@@ -247,8 +235,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
             )
 
             if "filter_scopes" in data:
-                # replace filter_id and immune ids from old slice id to new slice id:
-                # and remove slice ids that are not in dash anymore
                 slc_id_dict: dict[int, int] = {}
                 if old_to_new_slice_ids:
                     slc_id_dict = {
@@ -272,8 +258,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
                 if int(key) in slice_ids
             }
             md["default_filters"] = dumps(applicable_filters)
-
-            # positions have their own column, no need to store it in metadata
             md.pop("positions", None)
 
         if new_filter_scopes:
@@ -332,9 +316,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         dash.dashboard_title = data["dashboard_title"]
         dash.css = data.get("css")
 
-        # ``metadata`` is fed to ``set_dash_metadata`` as its ``data`` arg
-        # (``data.get(...)``); coerce a non-object parse to {} so a malformed
-        # json_metadata doesn't crash the copy (the schema also rejects it 4xx).
         metadata = loads(data["json_metadata"])
         if not isinstance(metadata, dict):
             metadata = {}
@@ -344,7 +325,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         await self.session.refresh(original_dash, attribute_names=["slices"])
 
         if data.get("duplicate_slices"):
-            # Duplicating slices as well, mapping old ids to new ones
             for slc in original_dash.slices:
                 new_slice = Slice(
                     slice_name=slc.slice_name,
@@ -363,7 +343,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
                 new_slice.dashboards.append(dash)
                 old_to_new_slice_ids[slc.id] = new_slice.id
 
-            # update chartId of layout entities
             for value in metadata.get("positions", {}).values():
                 if isinstance(value, dict) and value.get("meta", {}).get("chartId"):
                     old_id = value["meta"]["chartId"]
@@ -381,26 +360,23 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         self,
         dashboard: Dashboard,
     ) -> datetime:
-        """Return dashboard's last changed timestamp (truncated to seconds)."""
         changed_on = dashboard.changed_on
         if changed_on is None:
             return datetime.now().replace(microsecond=0)
         return changed_on.replace(microsecond=0)
 
     async def get_charts_for_dashboard(self, dashboard: Dashboard) -> list[Slice]:
-        """Get all charts (slices) for a dashboard."""
         await self.session.refresh(dashboard, attribute_names=["slices"])
         return list(dashboard.slices) if dashboard.slices else []
 
     async def get_datasets_for_dashboard(self, dashboard: Dashboard) -> list[Any]:
         """Get all datasources used by a dashboard's charts.
 
-        1:1 with upstream ``Dashboard.datasets_trimmed_for_slices`` which groups
-        slices by ``(cls_model, datasource_id)`` across ALL datasource types
-        (table / query / saved_query) — not just ``SqlaTable``.  Charts may be
-        backed by a SQL Lab ``Query`` or ``SavedQuery`` datasource; restricting
-        to ``datasource_type == 'table'`` silently dropped those from
-        ``GET /dashboard/{id}/datasets``.
+        Groups slices by ``(cls_model, datasource_id)`` across ALL datasource
+        types (table / query / saved_query) — not just ``SqlaTable``.  Charts
+        may be backed by a SQL Lab ``Query`` or ``SavedQuery`` datasource;
+        restricting to ``datasource_type == 'table'`` silently dropped those
+        from ``GET /dashboard/{id}/datasets``.
         """
         slices = await self.get_charts_for_dashboard(dashboard)
         if not slices:
@@ -448,7 +424,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         self,
         dashboard: Dashboard,
     ) -> datetime:
-        """Get max changed_on across dashboard and all its slices."""
         dash_changed = await self.get_dashboard_changed_on(dashboard)
         slices = await self.get_charts_for_dashboard(dashboard)
         if not slices:
@@ -463,7 +438,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         self,
         dashboard: Dashboard,
     ) -> datetime:
-        """Get max changed_on across dashboard and all its datasets."""
         dash_changed = await self.get_dashboard_changed_on(dashboard)
         datasets = await self.get_datasets_for_dashboard(dashboard)
         if not datasets:
@@ -479,7 +453,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         dashboard: Dashboard,
         native_filter_configuration: list[dict[str, Any]],
     ) -> None:
-        """Update native filter configuration in dashboard metadata."""
         md: dict[str, Any] = {}
         if dashboard.json_metadata:
             try:
@@ -495,7 +468,6 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         data: dict[str, Any],
         mark_updated: bool = True,
     ) -> None:
-        """Update color-related keys in dashboard metadata."""
         md: dict[str, Any] = {}
         if dashboard.json_metadata:
             try:
@@ -515,8 +487,7 @@ class AsyncDashboardDAO(FavoriteMixin, BaseAsyncDAO[Dashboard]):
         # Note: changed_on restoration when mark_updated=False is handled by the
         # caller (UpdateDashboardColorsCommand.run) *after* the intermediate flush,
         # so that SA's onupdate trigger has already fired and the restored value
-        # is written on the second flush — 1:1 with the original's intermediate
-        # db.session.commit() + reassignment pattern.
+        # is written on the second flush.
 
 
 class AsyncEmbeddedDashboardDAO(BaseAsyncDAO[EmbeddedDashboard]):
@@ -526,7 +497,6 @@ class AsyncEmbeddedDashboardDAO(BaseAsyncDAO[EmbeddedDashboard]):
         self,
         dashboard_id: int,
     ) -> EmbeddedDashboard | None:
-        """Find embedded dashboard config by dashboard ID."""
         return await self.find_one_or_none(dashboard_id=dashboard_id)
 
     async def find_by_uuid(
@@ -558,7 +528,6 @@ class AsyncEmbeddedDashboardDAO(BaseAsyncDAO[EmbeddedDashboard]):
         dashboard_id: int,
         allowed_domains: list[str],
     ) -> EmbeddedDashboard:
-        """Create or update embedded dashboard config."""
         existing = await self.find_by_dashboard_id(dashboard_id)
         if existing:
             existing.allow_domain_list = ",".join(allowed_domains)  # type: ignore[assignment]

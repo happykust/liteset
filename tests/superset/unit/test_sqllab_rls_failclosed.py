@@ -20,9 +20,7 @@ CRITICAL security regression test. When ``RLS_IN_SQLLAB`` is enabled and the
 row-level-security rewrite (:func:`superset.utils.rls.apply_rls`) raises while
 applying filters to the user's SQL, the query MUST fail (the exception must
 propagate) — it must NOT swallow the error and fall through to executing the
-raw, unfiltered SQL. This mirrors the original Flask
-``superset_old/sql_lab.py::execute_sql_statements`` where the ``apply_rls``
-loop runs unguarded.
+raw, unfiltered SQL. The ``apply_rls`` loop runs unguarded.
 """
 
 from __future__ import annotations

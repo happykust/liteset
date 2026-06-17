@@ -14,13 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/database/ssh_tunnel/create.py``.
+"""Command for creating an SSH tunnel for a database connection.
 
-Mirrors the original :class:`CreateSSHTunnelCommand` 1:1 — same
-validation rules (server address / port / username + credentials,
-plus database-port presence), same error class hierarchy.  The only
-behavioural change is that DAO calls go through the AsyncSession-backed
-``AsyncSSHTunnelDAO`` instead of the sync ``SSHTunnelDAO``.
+Validates server address / port / username + credentials (plus database-port
+presence) and raises structured errors for missing fields or mismatched
+credential modes.
 """
 
 from __future__ import annotations
@@ -46,11 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 class CreateSSHTunnelCommand(AsyncBaseCommand[Any]):
-    """Create an SSH tunnel for a database.
-
-    Async port of
-    ``superset_old.commands.database.ssh_tunnel.create.CreateSSHTunnelCommand``.
-    """
+    """Create an SSH tunnel for a database."""
 
     def __init__(self, dao: AsyncSSHTunnelDAO, database: Any, data: dict[str, Any]):
         self._dao = dao
@@ -90,11 +84,6 @@ class CreateSSHTunnelCommand(AsyncBaseCommand[Any]):
         if exceptions:
             exception = SSHTunnelInvalidError()
             exception.extend(exceptions)
-            # 1:1 with original — emit an audit event before raising so
-            # observability tooling can flag the validation miss.  Uses
-            # ``get_list_classnames`` if the exception class exposes it
-            # (the original did via ``CommandInvalidError``); otherwise
-            # falls back to a flat class-name listing.
             try:
                 if hasattr(exception, "get_list_classnames"):
                     suffix = ".".join(exception.get_list_classnames())
@@ -106,8 +95,7 @@ class CreateSSHTunnelCommand(AsyncBaseCommand[Any]):
                         f"{exception.__class__.__name__}.{suffix}"
                     )
                 )
-            except Exception:  # noqa: BLE001
-                # Audit logging must never break validation flow.
+            except Exception:  # noqa: BLE001  # audit logging must never break validation
                 logger.exception("Failed to emit ssh_tunnel_creation_failed event")
             raise exception
 
@@ -119,8 +107,8 @@ class CreateSSHTunnelCommand(AsyncBaseCommand[Any]):
                 **{
                     k: v
                     for k, v in self._properties.items()
-                    # ``database`` is the ORM relationship — strip it; we already
-                    # set ``database_id`` so SQLAlchemy can resolve it.
+                    # ``database`` is the ORM relationship; strip it since
+                    # ``database_id`` is already set for SA resolution.
                     if k != "database"
                 }
             )

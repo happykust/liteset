@@ -75,11 +75,6 @@ class BytesUUID(TypeDecorator[UUID]):
         return UUID(bytes=bytes(value))
 
 
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
-
-
 class KeyValueEntry(AuditMixinNullable, ImportExportMixin, Base):
     """Structured key-value entry for the key-value store
     subsystem (table ``key_value``).
@@ -103,10 +98,8 @@ class KeyValueEntry(AuditMixinNullable, ImportExportMixin, Base):
     id = Column(Integer, primary_key=True)
     resource = Column(String(32), nullable=False)
     value = Column(LargeBinary(length=2**24 - 1), nullable=False)
-    # UUID column created by migration 6766938c6065; the original
-    # model at superset_old/key_value/models.py forgets to
-    # declare it but code assigns ``entry.uuid = key`` directly.
-    # Declare it explicitly so our async DAO can query it.
+    # UUID column created by migration 6766938c6065; declared explicitly
+    # so the async DAO can query it.
     uuid = Column(BytesUUID(), default=uuid4)
 
     # Explicit audit columns (override AuditMixinNullable defaults)

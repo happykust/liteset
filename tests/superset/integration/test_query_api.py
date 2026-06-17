@@ -34,7 +34,6 @@ def app():
 
 
 async def test_get_query_list(app):
-    """GET /api/v1/query/ returns empty list with count."""
     async with AsyncTestClient(app=app) as client:
         resp = await client.get("/api/v1/query/")
         assert resp.status_code == 200
@@ -46,7 +45,6 @@ async def test_get_query_list(app):
 
 
 async def test_get_query_info(app):
-    """GET /api/v1/query/_info returns permissions metadata."""
     async with AsyncTestClient(app=app) as client:
         resp = await client.get("/api/v1/query/_info")
         assert resp.status_code == 200
@@ -58,8 +56,7 @@ async def test_get_query_info(app):
 async def test_get_query_info_keys_filter():
     """_info handler forwards rison_params to get_info_payload so the keys filter works.
 
-    1:1 with FAB set_response_key_mappings (flask_appbuilder/api/__init__.py:741-757):
-    when the client sends ``keys`` in the rison payload the response is filtered to
+    When the client sends ``keys`` in the rison payload the response is filtered to
     include only the requested top-level keys.  Without the fix the full payload was
     returned regardless of the ``keys`` parameter (rison_params was never forwarded).
     """
@@ -93,7 +90,6 @@ async def test_get_query_info_keys_filter():
 
 
 async def test_get_query_updated_since(app):
-    """GET /api/v1/query/updated_since returns result list."""
     async with AsyncTestClient(app=app) as client:
         resp = await client.get("/api/v1/query/updated_since")
         assert resp.status_code == 200
@@ -103,7 +99,6 @@ async def test_get_query_updated_since(app):
 
 
 async def test_unauthenticated_returns_401():
-    """GET /api/v1/query/ without credentials returns 401."""
     no_auth_app = create_test_app_no_auth(QueryController)
     async with AsyncTestClient(app=no_auth_app) as client:
         resp = await client.get("/api/v1/query/")

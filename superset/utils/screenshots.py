@@ -15,12 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Screenshot / thumbnail computation utilities — port of
-``superset_old/utils/screenshots.py`` to Liteset.
-
-The original module reached into ``app.config`` and the
-``thumbnail_cache`` LocalProxy (an upstream ``Cache`` instance
-configured by ``THUMBNAIL_CACHE_CONFIG``).  In Liteset:
+"""Screenshot / thumbnail computation utilities.
 
 * All config reads go through :class:`SupersetSettings` (lazily cached
   via :func:`_cached_settings`, mirroring the pattern in
@@ -32,10 +27,7 @@ configured by ``THUMBNAIL_CACHE_CONFIG``).  In Liteset:
   ``THUMBNAIL_CACHE_CONFIG``) so the keyspace stays unified, but the
   sync client owns its own Redis connection pool so there is no risk
   of cross-event-loop awaits when a Celery worker or Selenium /
-  Playwright thread reads from it.  The original Superset
-  achieved the same effect with a single upstream ``Cache``
-  instance shared across the request thread and Celery workers; we
-  mirror that here with the sync/async sibling pair.
+  Playwright thread reads from it.
 * The previous implementation used a sync-bridging adapter that ran
   the async cache from a worker thread via a sync→async bridge.
   That adapter has been replaced with the canonical
@@ -95,11 +87,6 @@ if TYPE_CHECKING:
     from superset.models.security import User
 
 
-# ---------------------------------------------------------------------------
-# Thumbnail cache — single source of truth (CacheManager.sync_thumbnail_cache)
-# ---------------------------------------------------------------------------
-
-
 def _get_thumbnail_cache() -> Any:
     """Return the canonical thumbnail cache (always
     :attr:`CacheManager.sync_thumbnail_cache`).
@@ -152,11 +139,6 @@ class _ThumbnailCacheProxy:
 # Module-level handle for legacy callers that did
 # ``from superset.utils.screenshots import thumbnail_cache``.
 thumbnail_cache: Any = _ThumbnailCacheProxy()
-
-
-# ---------------------------------------------------------------------------
-# Cache payload
-# ---------------------------------------------------------------------------
 
 
 class StatusValues(Enum):
@@ -258,11 +240,6 @@ class ScreenshotCachePayload:
             or (self.status == StatusValues.COMPUTING and self.is_computing_stale())
             or (self.status == StatusValues.UPDATED and self._image is None)
         )
-
-
-# ---------------------------------------------------------------------------
-# Screenshot classes
-# ---------------------------------------------------------------------------
 
 
 class BaseScreenshot:

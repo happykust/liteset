@@ -14,9 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for chart data endpoints — verifies endpoints wire through
-ChartDataCommand.
-"""
+"""Unit tests for chart data endpoints."""
 
 from __future__ import annotations
 
@@ -28,25 +26,13 @@ import pytest
 from superset.controllers.chart import ChartController
 from superset.exceptions import ObjectNotFoundError
 
-# ---------------------------------------------------------------------------
-# Helpers — Litestar decorators wrap methods; access the raw fn for unit tests.
-# ---------------------------------------------------------------------------
-
 
 def _get_raw_method(controller_cls: type, method_name: str):
-    """Return the underlying async function from a Litestar-decorated controller
-    method.
-    """
     handler = getattr(controller_cls, method_name)
     # Litestar stores the original function in .fn
     if hasattr(handler, "fn"):
         return handler.fn
     return handler
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -62,9 +48,6 @@ def mock_ds_dao():
 @pytest.fixture
 def mock_security_manager():
     sm = MagicMock()
-    # The POST /data handler enforces datasource access before result_type
-    # dispatch (await raise_for_access); make it awaitable + permissive so the
-    # happy-path tests reach the command. Denial is covered by the live probe.
     sm.raise_for_access = AsyncMock()
     return sm
 
@@ -93,10 +76,6 @@ def controller():
     return ChartController(owner=MagicMock())
 
 
-# ---------------------------------------------------------------------------
-# get_chart_data tests
-# ---------------------------------------------------------------------------
-
 _get_chart_data = _get_raw_method(ChartController, "get_chart_data")
 _data = _get_raw_method(ChartController, "data")
 
@@ -111,6 +90,7 @@ async def test_get_chart_data_chart_not_found(
 ):
     """get_chart_data raises ObjectNotFoundError when chart is missing."""
     # The handler does an access-scoped lookup via find_all (not find_by_id).
+    # find_by_id would bypass row-level security filters applied in find_all.
     mock_chart_dao.find_all = AsyncMock(return_value=[])
     with pytest.raises(ObjectNotFoundError):
         await _get_chart_data(
@@ -133,13 +113,8 @@ async def test_get_chart_data_no_query_context(
     mock_user,
     mock_state,
 ):
-    """get_chart_data returns a 400 response when chart has no query_context.
-
-    1:1 with the original ``data(pk)`` view
-    (``superset_old/charts/data/api.py:134-139``): a missing/empty
-    ``query_context`` collapses to ``json_body is None`` →
-    ``response_400("Chart has no query context saved...")`` — a returned 400,
-    not a raised exception.
+    """A missing/empty query_context collapses to json_body is None →
+    returned 400, not a raised exception.
     """
     chart = MagicMock()
     chart.query_context = None
@@ -166,10 +141,8 @@ async def test_get_chart_data_invalid_json(
     mock_user,
     mock_state,
 ):
-    """get_chart_data returns a 400 response when query_context is invalid JSON.
-
-    1:1 with the original: a JSON parse failure also collapses to
-    ``json_body is None`` → the same ``response_400`` message.
+    """A JSON parse failure collapses to json_body is None → same response_400
+    path as missing query_context.
     """
     chart = MagicMock()
     chart.query_context = "not valid json {"
@@ -196,7 +169,6 @@ async def test_get_chart_data_datasource_not_found(
     mock_user,
     mock_state,
 ):
-    """get_chart_data raises ObjectNotFoundError when datasource is missing."""
     chart = MagicMock()
     chart.query_context = json.dumps(
         {
@@ -229,7 +201,6 @@ async def test_get_chart_data_executes_command(
     mock_user,
     mock_state,
 ):
-    """get_chart_data creates and executes a ChartDataCommand."""
     chart = MagicMock()
     chart.query_context = json.dumps(
         {
@@ -259,28 +230,16 @@ async def test_get_chart_data_executes_command(
 
     mock_chart_data_command_cls.assert_called_once()
     mock_cmd.execute.assert_awaited_once()
-    # get_chart_data renders the command output via _render_chart_data_payload:
-    # a Response carrying ``{"result": [<query>, ...]}`` (1:1 with the original
-    # ``_send_chart_response`` JSON branch), not the raw command dict.
     import msgspec as _msgspec
 
     payload = _msgspec.json.decode(result.content)
     assert payload["result"][0]["data"] == [1]
 
 
-# ---------------------------------------------------------------------------
-# data (POST) tests
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def post_body_bytes() -> bytes:
-    """A POST /data JSON body that routes through the default (full) branch.
-
-    The ``data`` handler no longer accepts a typed ``data`` parameter — it
-    reads and ``msgspec``-decodes the raw body off ``request`` (1:1 with the
-    original ``request.form.get("form_data")`` / JSON dispatch), so tests must
-    drive it with real bytes rather than a pre-built struct.
+    """The ``data`` handler reads raw body bytes off the request (not a typed param),
+    so tests must supply real bytes.
     """
     return json.dumps(
         {
@@ -293,7 +252,6 @@ def post_body_bytes() -> bytes:
 
 
 def _make_post_request(body: bytes) -> MagicMock:
-    """Mock a Litestar request exposing a JSON body + content-type."""
     request = MagicMock()
     request.scope = {"headers": []}
     request.content_type = ("application/json",)
@@ -309,7 +267,6 @@ async def test_data_datasource_not_found(
     mock_user,
     mock_state,
 ):
-    """POST /data raises ObjectNotFoundError when datasource is missing."""
     mock_ds_dao.get_datasource = AsyncMock(return_value=None)
     with pytest.raises(ObjectNotFoundError):
         await _data(
@@ -332,16 +289,11 @@ async def test_data_executes_command(
     mock_user,
     mock_state,
 ):
-    """POST /data creates and executes a ChartDataCommand."""
     datasource = MagicMock()
     mock_ds_dao.get_datasource = AsyncMock(return_value=datasource)
-    # Non-guest user: the response keeps the raw query untouched.
     mock_security_manager.is_guest_user = MagicMock(return_value=False)
 
     mock_cmd = AsyncMock()
-    # Realistic query result: ``data`` is a list of record dicts (the shape
-    # ``df.to_dict(orient="records")`` produces), which the handler's
-    # NaN/Decimal cleanup pass iterates over.
     mock_cmd.execute = AsyncMock(return_value={"queries": [{"data": [{"value": 99}]}]})
     mock_chart_data_command_cls.return_value = mock_cmd
 
@@ -356,8 +308,6 @@ async def test_data_executes_command(
 
     mock_chart_data_command_cls.assert_called_once()
     mock_cmd.execute.assert_awaited_once()
-    # The default JSON path serializes the command output as a Response
-    # carrying ``{"result": [<query>, ...]}``.
     import msgspec as _msgspec
 
     payload = _msgspec.json.decode(result.content)
@@ -371,10 +321,9 @@ async def test_data_enforces_datasource_access_before_result_type(
     mock_user,
     mock_state,
 ):
-    """Regression: POST /data must enforce datasource access BEFORE the
-    result_type dispatch, so the ``result_type=query`` SQL-preview branch
-    (which returns before ChartDataCommand.execute) cannot leak generated SQL
-    to a user with no datasource access."""
+    """Regression: access check must fire before result_type dispatch so the
+    result_type=query SQL-preview branch cannot leak generated SQL to an
+    unauthorized user."""
     from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
     from superset.exceptions import SupersetSecurityException
 
@@ -407,10 +356,6 @@ async def test_data_enforces_datasource_access_before_result_type(
 
 
 class TestTableLikeFileResponseVerboseMap:
-    """CSV/XLSX exports must apply the datasource verbose_map to column names
-    (1:1 with upstream get_data, which renames columns from
-    datasource.data['verbose_map'])."""
-
     def test_csv_export_applies_verbose_map(self) -> None:
         from superset.controllers.chart import _table_like_file_response
 

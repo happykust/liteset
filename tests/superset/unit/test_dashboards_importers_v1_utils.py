@@ -14,8 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Ported from tests/unit_tests/dashboards/commands/importers/v1/utils_test.py."""
-
 from __future__ import annotations
 
 from typing import Any

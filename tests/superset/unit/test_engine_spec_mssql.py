@@ -14,9 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for MssqlEngineSpec.
-
-Verifies 1:1 parity with superset_old/db_engine_specs/mssql.py:
+"""Unit tests for MssqlEngineSpec:
 - custom_errors dict: correct patterns, error types and message templates
 - extract_errors: all four MSSQL connection error regexes produce the right
   SupersetError (error_type, message, level, issue_codes)

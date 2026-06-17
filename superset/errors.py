@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Error types and structures -- port of superset_old/errors.py."""
+"""Error types and structures."""
 
 from __future__ import annotations
 
@@ -29,15 +29,13 @@ class SupersetErrorType(str, Enum):
     """
     Types of errors that can exist within Superset.
 
-    Kept in sync with superset_old/errors.py and the frontend Query.ts.
+    Kept in sync with the frontend Query.ts.
     """
 
-    # Frontend errors
     FRONTEND_CSRF_ERROR = "FRONTEND_CSRF_ERROR"
     FRONTEND_NETWORK_ERROR = "FRONTEND_NETWORK_ERROR"
     FRONTEND_TIMEOUT_ERROR = "FRONTEND_TIMEOUT_ERROR"
 
-    # DB Engine errors
     GENERIC_DB_ENGINE_ERROR = "GENERIC_DB_ENGINE_ERROR"
     COLUMN_DOES_NOT_EXIST_ERROR = "COLUMN_DOES_NOT_EXIST_ERROR"
     TABLE_DOES_NOT_EXIST_ERROR = "TABLE_DOES_NOT_EXIST_ERROR"
@@ -56,12 +54,10 @@ class SupersetErrorType(str, Enum):
     SYNTAX_ERROR = "SYNTAX_ERROR"
     CONNECTION_DATABASE_TIMEOUT = "CONNECTION_DATABASE_TIMEOUT"
 
-    # Viz errors
     VIZ_GET_DF_ERROR = "VIZ_GET_DF_ERROR"
     UNKNOWN_DATASOURCE_TYPE_ERROR = "UNKNOWN_DATASOURCE_TYPE_ERROR"
     FAILED_FETCHING_DATASOURCE_INFO_ERROR = "FAILED_FETCHING_DATASOURCE_INFO_ERROR"
 
-    # Security access errors
     TABLE_SECURITY_ACCESS_ERROR = "TABLE_SECURITY_ACCESS_ERROR"
     DATASOURCE_SECURITY_ACCESS_ERROR = "DATASOURCE_SECURITY_ACCESS_ERROR"
     DATABASE_SECURITY_ACCESS_ERROR = "DATABASE_SECURITY_ACCESS_ERROR"
@@ -73,12 +69,10 @@ class SupersetErrorType(str, Enum):
     OAUTH2_REDIRECT = "OAUTH2_REDIRECT"
     OAUTH2_REDIRECT_ERROR = "OAUTH2_REDIRECT_ERROR"
 
-    # Other errors
     BACKEND_TIMEOUT_ERROR = "BACKEND_TIMEOUT_ERROR"
     DATABASE_NOT_FOUND_ERROR = "DATABASE_NOT_FOUND_ERROR"
     TABLE_NOT_FOUND_ERROR = "TABLE_NOT_FOUND_ERROR"
 
-    # Sql Lab errors
     MISSING_TEMPLATE_PARAMS_ERROR = "MISSING_TEMPLATE_PARAMS_ERROR"
     INVALID_TEMPLATE_PARAMS_ERROR = "INVALID_TEMPLATE_PARAMS_ERROR"
     RESULTS_BACKEND_NOT_CONFIGURED_ERROR = "RESULTS_BACKEND_NOT_CONFIGURED_ERROR"
@@ -92,32 +86,24 @@ class SupersetErrorType(str, Enum):
     INVALID_SQL_ERROR = "INVALID_SQL_ERROR"
     RESULT_TOO_LARGE_ERROR = "RESULT_TOO_LARGE_ERROR"
 
-    # Generic errors
     GENERIC_COMMAND_ERROR = "GENERIC_COMMAND_ERROR"
     GENERIC_BACKEND_ERROR = "GENERIC_BACKEND_ERROR"
 
-    # API errors
     INVALID_PAYLOAD_FORMAT_ERROR = "INVALID_PAYLOAD_FORMAT_ERROR"
     INVALID_PAYLOAD_SCHEMA_ERROR = "INVALID_PAYLOAD_SCHEMA_ERROR"
     MARSHMALLOW_ERROR = "MARSHMALLOW_ERROR"
 
-    # Report errors
     REPORT_NOTIFICATION_ERROR = "REPORT_NOTIFICATION_ERROR"
 
 
 class ErrorLevel(str, Enum):
-    """
-    Levels of errors that can exist within Superset.
-    """
-
     INFO = "info"
     WARNING = "warning"
     ERROR = "error"
 
 
 # User-facing issue codes displayed in the UI as "Issue <code> - <message>".
-# Ported 1:1 from ``superset_old/errors.py::ISSUE_CODES``; the numbers are
-# load-bearing because they appear in Cypress snapshots and the frontend
+# The numbers are load-bearing because they appear in Cypress snapshots and the frontend
 # error documentation links point at them.
 ISSUE_CODES: dict[int, Any] = {
     1000: _("The datasource is too large to query."),
@@ -215,10 +201,6 @@ ERROR_TYPES_TO_ISSUE_CODES_MAPPING: dict[SupersetErrorType, list[int]] = {
 
 @dataclass
 class SupersetError:
-    """
-    An error that is returned to a client.
-    """
-
     message: str
     error_type: SupersetErrorType
     level: ErrorLevel
@@ -227,7 +209,6 @@ class SupersetError:
     def __post_init__(self) -> None:
         """Attach ``issue_codes`` to ``extra`` based on ``error_type``.
 
-        Mirrors ``superset_old/errors.py::SupersetError.__post_init__``.
         The frontend uses these codes to render "Issue <code>" links, and
         test fixtures snapshot them — so they must be present on any
         client-facing error response.

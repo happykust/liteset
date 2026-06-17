@@ -41,7 +41,6 @@ def _get_alembic_config(sql: bool = False) -> "Config":  # noqa: F821
 
     from superset.config import SupersetSettings
 
-    # Ensure alembic logger outputs to console
     logging.basicConfig(
         format="%(levelname)-5.5s [%(name)s] %(message)s",
         level=logging.INFO,
@@ -62,8 +61,7 @@ def _get_alembic_config(sql: bool = False) -> "Config":  # noqa: F821
     )
     # configparser interpolation: a literal ``%`` (e.g. in a DB password)
     # must be escaped as ``%%`` or ``superset db upgrade`` dies with
-    # InterpolationSyntaxError — 1:1 with upstream env.py's
-    # ``DATABASE_URI.replace("%", "%%")``.
+    # InterpolationSyntaxError.
     cfg.set_main_option("sqlalchemy.url", sync_url.replace("%", "%%"))
     cfg.set_main_option(
         "script_location",
@@ -79,11 +77,6 @@ def db_group() -> None:
     """Database migration commands (Alembic)."""
 
 
-# ------------------------------------------------------------------
-# upgrade
-# ------------------------------------------------------------------
-
-
 @db_group.command()
 @click.option("--revision", default="head", help="Revision target")
 @click.option("--sql", is_flag=True, help="Generate SQL script instead of applying")
@@ -94,11 +87,6 @@ def upgrade(revision: str, sql: bool, tag: str | None) -> None:
 
     cfg = _get_alembic_config(sql=sql)
     command.upgrade(cfg, revision, sql=sql, tag=tag)
-
-
-# ------------------------------------------------------------------
-# downgrade
-# ------------------------------------------------------------------
 
 
 @db_group.command()
@@ -116,11 +104,6 @@ def downgrade(revision: str, sql: bool, tag: str | None) -> None:
         click.echo(f"Database downgraded to {revision}.")
 
 
-# ------------------------------------------------------------------
-# current
-# ------------------------------------------------------------------
-
-
 @db_group.command()
 @click.option("--verbose", "-v", is_flag=True, help="Show full revision info")
 def current(verbose: bool) -> None:
@@ -129,11 +112,6 @@ def current(verbose: bool) -> None:
 
     cfg = _get_alembic_config()
     command.current(cfg, verbose=verbose)
-
-
-# ------------------------------------------------------------------
-# heads
-# ------------------------------------------------------------------
 
 
 @db_group.command()
@@ -149,11 +127,6 @@ def heads(verbose: bool, resolve_dependencies: bool) -> None:
 
     cfg = _get_alembic_config()
     command.heads(cfg, verbose=verbose, resolve_dependencies=resolve_dependencies)
-
-
-# ------------------------------------------------------------------
-# history
-# ------------------------------------------------------------------
 
 
 @db_group.command()
@@ -182,11 +155,6 @@ def history(
     )
 
 
-# ------------------------------------------------------------------
-# stamp
-# ------------------------------------------------------------------
-
-
 @db_group.command()
 @click.argument("revision")
 @click.option("--sql", is_flag=True, help="Generate SQL script instead of applying")
@@ -203,11 +171,6 @@ def stamp(revision: str, sql: bool, tag: str | None, purge: bool) -> None:
     cfg = _get_alembic_config(sql=sql)
     command.stamp(cfg, revision, sql=sql, tag=tag, purge=purge)
     click.echo(f"Database stamped to {revision}.")
-
-
-# ------------------------------------------------------------------
-# migrate  (autogenerate revision)
-# ------------------------------------------------------------------
 
 
 @db_group.command()
@@ -239,11 +202,6 @@ def migrate(
     click.echo("New migration generated.")
 
 
-# ------------------------------------------------------------------
-# revision  (manual revision)
-# ------------------------------------------------------------------
-
-
 @db_group.command()
 @click.option("-m", "--message", default=None, help="Revision message")
 @click.option("--head", default="head", help="Head revision to base new revision on")
@@ -273,11 +231,6 @@ def revision(
     click.echo("New revision created.")
 
 
-# ------------------------------------------------------------------
-# branches
-# ------------------------------------------------------------------
-
-
 @db_group.command()
 @click.option("--verbose", "-v", is_flag=True, help="Show full revision info")
 def branches(verbose: bool) -> None:
@@ -288,11 +241,6 @@ def branches(verbose: bool) -> None:
     command.branches(cfg, verbose=verbose)
 
 
-# ------------------------------------------------------------------
-# show
-# ------------------------------------------------------------------
-
-
 @db_group.command()
 @click.argument("revision")
 def show(revision: str) -> None:
@@ -301,11 +249,6 @@ def show(revision: str) -> None:
 
     cfg = _get_alembic_config()
     command.show(cfg, revision)
-
-
-# ------------------------------------------------------------------
-# merge
-# ------------------------------------------------------------------
 
 
 @db_group.command()
@@ -335,11 +278,6 @@ def merge(
         rev_id=rev_id,
     )
     click.echo("Merge revision created.")
-
-
-# ------------------------------------------------------------------
-# check
-# ------------------------------------------------------------------
 
 
 @db_group.command()

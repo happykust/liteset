@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Date parsing utilities ported from superset/utils/date_parser.py."""
+"""Date parsing and time-range utilities."""
 
 from __future__ import annotations
 
@@ -54,10 +54,6 @@ ParserElement.enable_packrat()
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 DTTM_ALIAS = "__timestamp"
 NO_TIME_RANGE = "No filter"
 LRU_CACHE_MAX_SIZE = 256
@@ -68,11 +64,6 @@ class InstantTimeComparison(StrEnum):
     YEAR = "y"
     MONTH = "m"
     WEEK = "w"
-
-
-# ---------------------------------------------------------------------------
-# Exception classes (replace superset.commands.chart.exceptions)
-# ---------------------------------------------------------------------------
 
 
 class TimeRangeAmbiguousError(SupersetValidationException):
@@ -108,11 +99,6 @@ class TimeDeltaAmbiguousError(SupersetValidationException):
         )
 
 
-# ---------------------------------------------------------------------------
-# DateColumn dataclass (from superset/utils/core.py)
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class DateColumn:
     col_label: str
@@ -139,11 +125,6 @@ class DateColumn:
             time_shift=time_shift,
             col_label=DTTM_ALIAS,
         )
-
-
-# ---------------------------------------------------------------------------
-# Core date helpers
-# ---------------------------------------------------------------------------
 
 
 def dttm_from_timetuple(date_: struct_time) -> datetime:
@@ -251,11 +232,6 @@ def add_ago_to_since(since: str) -> str:
     return since
 
 
-# ---------------------------------------------------------------------------
-# Relative-time helper functions used inside get_since_until
-# ---------------------------------------------------------------------------
-
-
 def get_relative_base(unit: str, relative_start: str | None = None) -> str:
     if relative_start is not None:
         return relative_start
@@ -307,11 +283,6 @@ def handle_scope_and_unit(scope: str, delta: str, unit: str, relative_base: str)
         return f"DATEADD(DATETIME('{relative_base}'), {_delta}, {unit})"
     else:
         raise ValueError(f"Invalid scope: {scope}")
-
-
-# ---------------------------------------------------------------------------
-# pyparsing-based datetime expression evaluator
-# ---------------------------------------------------------------------------
 
 
 class EvalText:
@@ -553,11 +524,6 @@ def datetime_eval(datetime_expression: str | None = None) -> datetime | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# get_since_until -- the main entry point
-# ---------------------------------------------------------------------------
-
-
 def get_since_until(  # noqa: C901
     time_range: str | None = None,
     since: str | None = None,
@@ -760,10 +726,10 @@ def get_since_until(  # noqa: C901
             _until = _until if _until is None else (_until - time_delta_until)
 
     # ``instant_time_comparison_range`` is only honored behind the
-    # ``CHART_PLUGINS_EXPERIMENTAL`` feature flag — 1:1 with upstream
-    # ``date_parser.py:495-502``. The control is only surfaced in some plugins
-    # when the flag is on; without this gate a crafted request with the param
-    # set would rewrite the time bounds even on a default (flag-off) deployment.
+    # ``CHART_PLUGINS_EXPERIMENTAL`` feature flag. The control is only surfaced
+    # in some plugins when the flag is on; without this gate a crafted request
+    # with the param set would rewrite the time bounds even on a default
+    # (flag-off) deployment.
     from superset.utils.feature_flags import feature_flag_manager
 
     if instant_time_comparison_range and feature_flag_manager.is_feature_enabled(
@@ -806,11 +772,6 @@ def get_since_until(  # noqa: C901
         raise ValueError(_("From date cannot be larger than to date"))
 
     return _since, _until
-
-
-# ---------------------------------------------------------------------------
-# normalize_dttm_col (from superset/utils/core.py)
-# ---------------------------------------------------------------------------
 
 
 def normalize_dttm_col(
@@ -857,11 +818,6 @@ def normalize_dttm_col(
             df[_col.col_label] += parse_human_timedelta(_col.time_shift)
 
 
-# ---------------------------------------------------------------------------
-# humanize_timedelta — human-readable "X minutes ago" strings
-# ---------------------------------------------------------------------------
-
-
 def humanize_timedelta(dt: datetime) -> str:
     """Return a human-readable delta string like 'an hour ago'.
 
@@ -878,11 +834,9 @@ def humanize_timedelta(dt: datetime) -> str:
 def _default_relative_times() -> tuple[str, str]:
     """Return the configured ``(DEFAULT_RELATIVE_START_TIME, ...END_TIME)``.
 
-    Mirrors the original helper which read these straight off
-    the upstream ``current_app.config``.  Cached because the values are static
-    after
-    startup; falls back to ``"today"`` (the upstream default) if settings
-    cannot be constructed (e.g. outside an initialised app).
+    Cached because the values are static after startup; falls back to
+    ``"today"`` if settings cannot be constructed (e.g. outside an
+    initialised app).
     """
     try:
         from superset.config import SupersetSettings
@@ -903,12 +857,9 @@ def get_since_until_from_time_range(
 ) -> tuple[datetime | None, datetime | None]:
     """Compute ``(since, until)`` from a *time_range* string.
 
-    Replacement for the original helper that lived in
-    ``superset.common.utils.time_range_utils``.  The relative-time defaults
-    come from ``DEFAULT_RELATIVE_START_TIME`` / ``DEFAULT_RELATIVE_END_TIME``
-    (``settings.default_relative_start_time`` / ``...end_time``) — 1:1 with the
-    original which read ``current_app.config[...]`` — and can be overridden
-    per-request via the *extras* dict.
+    The relative-time defaults come from ``DEFAULT_RELATIVE_START_TIME`` /
+    ``DEFAULT_RELATIVE_END_TIME`` (``settings.default_relative_start_time`` /
+    ``...end_time``) and can be overridden per-request via the *extras* dict.
     """
     default_start, default_end = _default_relative_times()
     return get_since_until(

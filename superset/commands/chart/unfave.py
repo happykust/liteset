@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/chart/unfave.py``."""
+"""Commands for removing charts from user favorites."""
 
 from __future__ import annotations
 
@@ -38,9 +38,8 @@ logger = logging.getLogger(__name__)
 class RemoveFavoriteChartCommand(AsyncBaseCommand[None]):
     """Remove a chart from a user's favorites.
 
-    1:1 port of ``superset_old/commands/chart/unfave.py`` (``DelFavoriteChartCommand``).
-    The original calls ``security_manager.raise_for_ownership(chart)`` before
-    unfavoriting — only the chart owner can remove it from favorites.
+    ``security_manager.raise_for_ownership`` ensures only the chart owner
+    can remove it from favorites.
     """
 
     def __init__(
@@ -62,11 +61,6 @@ class RemoveFavoriteChartCommand(AsyncBaseCommand[None]):
         if not chart:
             raise ObjectNotFoundError("Chart", self._chart_id)
 
-        # 1:1 with original: ``raise_for_ownership`` takes the user *id*
-        # positionally and raises ``SupersetSecurityException`` for non-owners
-        # → 403. (The previous ``user=`` kwarg raised ``TypeError`` that the
-        # broad ``except Exception`` masked as a 403 for everyone, owners
-        # included.)
         if self._security_manager is not None:
             try:
                 await self._security_manager.raise_for_ownership(chart, self._user_id)

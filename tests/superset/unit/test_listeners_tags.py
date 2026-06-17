@@ -14,12 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Parity tests for the implicit-tag SQLA event listener wiring.
+"""Tests for the implicit-tag SQLA event listener wiring.
 
-1:1 with upstream ``register_sqla_event_listeners`` which is invoked ONLY when
-``TAGGING_SYSTEM`` is enabled (superset_old/app.py:158-161) and registers the
-``QueryUpdater`` on ``SavedQuery`` (user-saved queries), NOT ``Query`` (every
-SQL Lab execution).
+``register_sqla_event_listeners`` is invoked ONLY when ``TAGGING_SYSTEM`` is
+enabled and registers the ``QueryUpdater`` on ``SavedQuery`` (user-saved
+queries), NOT ``Query`` (every SQL Lab execution).
 """
 
 from __future__ import annotations
@@ -46,9 +45,8 @@ def test_tag_listeners_not_wired_when_flag_off() -> None:
 
 def test_query_tag_updater_targets_saved_query_not_query() -> None:
     """When TAGGING_SYSTEM is enabled the query tag updater must listen on
-    ``SavedQuery`` (user-saved queries), 1:1 with upstream
-    (superset_old/tags/core.py:51). Listening on ``Query`` would create an
-    implicit ``type:query`` + ``owner:`` tag on EVERY SQL Lab execution."""
+    ``SavedQuery`` (user-saved queries).  Listening on ``Query`` would create
+    an implicit ``type:query`` + ``owner:`` tag on EVERY SQL Lab execution."""
     _listeners._register_tag_listeners()
     try:
         assert event.contains(
@@ -58,7 +56,6 @@ def test_query_tag_updater_targets_saved_query_not_query() -> None:
             Query, "after_insert", _listeners._query_tag_after_insert
         )
     finally:
-        # Clean up so the global registry is unaffected by this test.
         from superset.models.connectors import SqlaTable
         from superset.models.core import FavStar
         from superset.models.dashboard import Dashboard

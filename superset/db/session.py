@@ -56,10 +56,8 @@ def create_db_engine(
     If ``isolation_level`` is not already present in ``extra_engine_options``
     and the target dialect is PostgreSQL or MySQL, ``isolation_level`` is set
     to ``"READ COMMITTED"`` at engine-creation time so that **all** connections
-    drawn from the pool use that level.  This is a 1:1 port of the original
-    ``SupersetAppInitializer.set_db_default_isolation`` which called
-    ``db.engine.execution_options(isolation_level=...)`` — setting it once on
-    the engine rather than on individual connections.
+    drawn from the pool use that level, set once on the engine rather than on
+    individual connections.
     """
     global _engine  # noqa: PLW0603
     kwargs: dict[str, Any] = {"echo": echo, **extra_engine_options}
@@ -70,7 +68,6 @@ def create_db_engine(
         kwargs.setdefault("pool_recycle", pool_recycle)
         kwargs.setdefault("pool_pre_ping", pool_pre_ping)
 
-    # Set READ COMMITTED at engine level for PG/MySQL when not already specified.
     if "isolation_level" not in kwargs:
         try:
             dialect_name = make_url(url).get_dialect().name
@@ -138,10 +135,6 @@ async def dispose_engine(engine: AsyncEngine) -> None:
     await engine.dispose()
 
 
-# ---------------------------------------------------------------------------
-# Sync session helpers (for Celery workers)
-# ---------------------------------------------------------------------------
-
 _sync_engine: Engine | None = None
 _sync_session_factory: scoped_session[Session] | None = None
 
@@ -161,9 +154,8 @@ def _ensure_sync_session_factory() -> scoped_session[Session]:
 
     Returns a :class:`~sqlalchemy.orm.scoped_session` so that all callers in
     the same thread (task body *and* the ``task_postrun`` teardown handler)
-    share the **same** :class:`~sqlalchemy.orm.Session` object — exactly
-    mirroring the upstream ``db.session`` which is itself a
-    ``scoped_session`` proxy.
+    share the **same** :class:`~sqlalchemy.orm.Session` object — matching
+    the ``db.session`` scoped-session proxy behaviour.
     """
     global _sync_engine, _sync_session_factory  # noqa: PLW0603
     if _sync_engine is None:

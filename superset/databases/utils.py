@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Database utilities — ported 1:1 from ``superset_old/databases/utils.py``."""
+"""Database utilities."""
 
 from __future__ import annotations
 
@@ -23,9 +23,6 @@ from typing import Any
 from sqlalchemy.engine import make_url
 from sqlalchemy.engine.url import URL
 
-# Re-export the single canonical class (upstream has ONE DatabaseInvalidError);
-# keep this import path for callers in models/controllers while making
-# isinstance checks consistent with the commands layer.
 from superset.commands.database.exceptions import DatabaseInvalidError
 from superset.sql.parse import Table
 
@@ -76,8 +73,6 @@ def get_table_metadata(database: Any, table: Table) -> dict[str, Any]:
     """
     Get table metadata information, including type, pk, fks.
     This function raises SQLAlchemyError when a schema is not found.
-
-    Ported 1:1 from ``superset_old/databases/utils.py:65``.
 
     :param database: The database model
     :param table: Table instance

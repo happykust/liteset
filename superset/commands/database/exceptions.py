@@ -16,9 +16,8 @@
 # under the License.
 """Database-specific exceptions.
 
-The async port re-uses the centralized exceptions from
-:mod:`superset.exceptions`.  Per-resource exception aliases are exposed here
-to mirror the layout of ``superset_old/commands/database/exceptions.py``.
+Re-uses centralized exceptions from :mod:`superset.exceptions` and exposes
+per-resource aliases for use by the database command modules.
 """
 
 from __future__ import annotations
@@ -45,11 +44,7 @@ class DatabaseNotFoundError(ObjectNotFoundError):
 
 
 class DatabaseParametersInvalidError(CommandInvalidError):
-    """Parameters are invalid.
-
-    1:1 with ``superset_old.commands.database.exceptions
-    .DatabaseParametersInvalidError``.
-    """
+    """Parameters provided for database connection are invalid."""
 
     status_code = 400
 
@@ -57,9 +52,7 @@ class DatabaseParametersInvalidError(CommandInvalidError):
 class DatabaseExistsValidationError(CommandInvalidError):
     """Database-name uniqueness violation — field-keyed leaf error.
 
-    1:1 with ``superset_old.commands.database.exceptions
-    .DatabaseExistsValidationError`` (marshmallow ``ValidationError`` with
-    ``field_name="database_name"``).
+    Returns a ``{"database_name": [msg]}`` shaped validation error.
     """
 
     status_code = 422
@@ -70,29 +63,21 @@ class DatabaseExistsValidationError(CommandInvalidError):
 
 
 class DatabaseInvalidError(CommandInvalidError):
-    """Accumulating database validation error.
-
-    1:1 with ``superset_old.commands.database.exceptions
-    .DatabaseInvalidError`` — the registered handler emits
-    ``{"message": normalized_messages()}`` (per-field 422).
-    """
+    """Accumulating database validation error (per-field 422)."""
 
     status_code = 422
     message = _("Database parameters are invalid.")
 
 
 class UserNotFoundInSessionError(CommandException):
-    """1:1 with ``superset_old/commands/database/exceptions.py``."""
+    """Raised when the current user cannot be found in the session."""
 
     status_code = 500
     message = _("Could not validate the user in the current session.")
 
 
 class MissingOAuth2TokenError(DatabaseUpdateFailedError):
-    """Connection is missing an OAuth2 token and no OAuth2 dance is possible.
-
-    1:1 with ``superset_old/commands/database/exceptions.py``.
-    """
+    """Connection is missing an OAuth2 token and no OAuth2 dance is possible."""
 
     message = _("Missing OAuth2 token")
 
@@ -123,11 +108,7 @@ class DatabaseTablesUnexpectedError(CommandException):
 
 
 class DatabaseDeleteDatasetsExistFailedError(CommandInvalidError):
-    """A database can't be deleted because datasets are attached to it.
-
-    1:1 with
-    ``superset_old.commands.database.exceptions.DatabaseDeleteDatasetsExistFailedError``.
-    """
+    """A database can't be deleted because datasets are attached to it."""
 
     status_code = 422
     message = _("Cannot delete a database that has datasets attached")
@@ -136,8 +117,6 @@ class DatabaseDeleteDatasetsExistFailedError(CommandInvalidError):
 class DatabaseDeleteFailedReportsExistError(CommandInvalidError):
     """A database can't be deleted because alerts/reports reference it.
 
-    1:1 with
-    ``superset_old.commands.database.exceptions.DatabaseDeleteFailedReportsExistError``.
     The human-readable message (with the offending report names) is supplied
     by the delete command.
     """

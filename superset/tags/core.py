@@ -15,8 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async tag helpers -- ported 1:1 from superset_old/tags/models.py and
-superset_old/tags/core.py.
+"""Async tag helpers.
 
 The synchronous ORM event listeners (``ObjectUpdater``, ``ChartUpdater``,
 etc.) cannot be used in async sessions.  Instead, the equivalent logic is
@@ -54,12 +53,9 @@ async def get_tag(
     """Fetch an existing tag by *name* + *type*, or create one if it does not
     exist.
 
-    Port of ``superset_old/tags/models.py::get_tag`` -- async version.
-
-    The original code is the same naive read-then-insert and has the
-    same race; under the sync stack it surfaced rarely because most paths
-    served one request per process at a time.  Under async + Locust the
-    race fires on every burst:
+    The naive read-then-insert has a race; under the sync stack it surfaced
+    rarely because most paths served one request per process at a time.
+    Under async + Locust the race fires on every burst:
 
       worker A: SELECT owner:1   → not found
       worker B: SELECT owner:1   → not found  (concurrent)
@@ -101,8 +97,7 @@ async def get_tag(
 def get_object_type(class_name: str) -> ObjectType:
     """Map a class name (case-insensitive) to an :class:`ObjectType`.
 
-    Port of ``superset_old/tags/models.py::get_object_type`` -- kept
-    synchronous because it is a pure mapping with no I/O.
+    Synchronous because it is a pure mapping with no I/O.
 
     :param class_name: One of ``"slice"``, ``"dashboard"``, ``"query"``,
         ``"dataset"`` (case-insensitive).
@@ -119,11 +114,6 @@ def get_object_type(class_name: str) -> ObjectType:
         return mapping[class_name.lower()]
     except KeyError as ex:
         raise ValueError(f"No mapping found for {class_name}") from ex
-
-
-# ---------------------------------------------------------------------------
-# Async equivalents of ObjectUpdater.after_insert / after_update / after_delete
-# ---------------------------------------------------------------------------
 
 
 async def _add_tag_object_if_not_tagged(
@@ -348,7 +338,6 @@ async def remove_favorited_by_tag(
 def register_sqla_event_listeners() -> None:
     """Register synchronous SQLAlchemy event listeners for the tagging system.
 
-    Port of ``superset_old/tags/core.py::register_sqla_event_listeners``.
     Delegates to :func:`superset.models._listeners.register` which holds
     the full listener wiring logic (slice perms, database PVM sync, user
     welcome-dashboard clone, and all tag updaters).

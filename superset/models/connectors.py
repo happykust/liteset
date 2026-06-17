@@ -15,11 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Connector models: SqlaTable, TableColumn, SqlMetric, RowLevelSecurityFilter.
-
-Pure SQLAlchemy -- no legacy WSGI dependencies.
-Includes async_query() for chart data execution via the async engine specs.
-"""
+"""Connector models: SqlaTable, TableColumn, SqlMetric, RowLevelSecurityFilter."""
 
 from __future__ import annotations
 
@@ -63,11 +59,6 @@ from superset.utils.core import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Module-level helpers
-# ---------------------------------------------------------------------------
 
 
 def _escape_sql_string(value: str) -> str:
@@ -199,11 +190,6 @@ def _parse_dttm(value: Any) -> datetime | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# QueryResult — return type for SqlaTable.async_query()
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class QueryResult:
     """Result of executing a query against a datasource.
@@ -232,8 +218,7 @@ class QueryResult:
 
 @dataclass
 class MetadataResult:
-    """Diff returned by ``fetch_metadata`` — 1:1 with the original
-    ``superset_old/connectors/sqla/models.py:131``: the column names added,
+    """Diff returned by ``fetch_metadata``: the column names added,
     removed and (type-)modified during an introspection refresh.
     """
 
@@ -241,10 +226,6 @@ class MetadataResult:
     removed: list[str] = field(default_factory=list)
     modified: list[str] = field(default_factory=list)
 
-
-# ---------------------------------------------------------------------------
-# Association tables
-# ---------------------------------------------------------------------------
 
 sqlatable_user = Table(
     "sqlatable_user",
@@ -262,10 +243,8 @@ sqlatable_user = Table(
     ),
 )
 
-# M2M tables — ported 1:1 from
-# ``superset_old/connectors/sqla/models.py``: no ``ondelete=CASCADE`` (the
-# original Superset migrations don't define one), and ``role_id`` is
-# ``nullable=False``.
+# M2M tables — no ``ondelete=CASCADE`` (the original Superset migrations
+# don't define one), and ``role_id`` is ``nullable=False``.
 RLSFilterRoles = Table(
     "rls_filter_roles",
     metadata,
@@ -281,11 +260,6 @@ RLSFilterTables = Table(
     Column("table_id", Integer, ForeignKey("tables.id")),
     Column("rls_filter_id", Integer, ForeignKey("row_level_security_filters.id")),
 )
-
-
-# ---------------------------------------------------------------------------
-# BaseDatasource mixin
-# ---------------------------------------------------------------------------
 
 
 class BaseDatasource:
@@ -320,9 +294,6 @@ class BaseDatasource:
         """If a datasource needs to provide additional keys for calculation of
         cache keys, those can be provided via this method.
 
-        1:1 with ``BaseDatasource.get_extra_cache_keys`` in
-        ``superset_old/connectors/sqla/models.py`` (line 609).
-
         :param query_obj: The dict representation of a query object
         :return: list of keys
         """
@@ -334,19 +305,15 @@ class BaseDatasource:
     ) -> list[Any]:
         """Return the row-level-security filters for this datasource.
 
-        1:1 with
-        ``superset_old.connectors.sqla.models.BaseDatasource.get_sqla_row_level_filters``
-        (line 654). Delegates to
-        :func:`superset.utils.rls.compose_rls_text_clauses` which mirrors
-        the original group_key OR-within / AND-across composition, Jinja
+        Delegates to :func:`superset.utils.rls.compose_rls_text_clauses`
+        which handles group_key OR-within / AND-across composition, Jinja
         templating, and ``EMBEDDED_SUPERSET`` guest RLS.
 
         This lives on :class:`BaseDatasource` (not :class:`ExploreMixin`)
-        so that — exactly like the original — only real dataset-backed
-        datasources (:class:`SqlaTable`) get RLS applied. A SQL Lab
-        :class:`~superset.models.sql_lab.Query` mixes in only
-        :class:`ExploreMixin`, whose stub returns ``[]`` because RLS is
-        not applicable for datasources of type ``query``.
+        so that only real dataset-backed datasources (:class:`SqlaTable`)
+        get RLS applied. A SQL Lab :class:`~superset.models.sql_lab.Query`
+        mixes in only :class:`ExploreMixin`, whose stub returns ``[]``
+        because RLS is not applicable for datasources of type ``query``.
         """
         from superset.utils.rls import compose_rls_text_clauses
 
@@ -384,11 +351,6 @@ def link_table_backrefs(table: Any) -> None:
             set_committed_value(child, "table", table)
 
 
-# ---------------------------------------------------------------------------
-# TableColumn
-# ---------------------------------------------------------------------------
-
-
 class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base):
     """A column belonging to a SQL dataset (SqlaTable)."""
 
@@ -396,7 +358,6 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
     __table_args__ = (UniqueConstraint("table_id", "column_name"),)
 
     def __repr__(self) -> str:
-        # 1:1 superset_old/connectors/sqla/models.py:823.
         return str(self.column_name)
 
     id = Column(Integer, primary_key=True)
@@ -417,8 +378,6 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
     expression = Column(MediumText())
     python_date_format = Column(String(255))
     extra = Column(Text)
-
-    # -- relationships --------------------------------------------------------
 
     table = relationship(
         "SqlaTable",
@@ -443,8 +402,6 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
     ]
     update_from_object_fields = [s for s in export_fields if s not in ("table_id",)]
     export_parent = "table"
-
-    # -- Computed properties ---------------------------------------------------
 
     _NUMERIC_TYPES = frozenset(
         {
@@ -476,9 +433,7 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
     def is_string(self) -> bool:
         """Check if the column has a string datatype.
 
-        1:1 with ``TableColumn.is_string`` in
-        ``superset_old/connectors/sqla/models.py`` — delegates to the
-        engine-spec generic-type resolution via :attr:`type_generic`.
+        Delegates to the engine-spec generic-type resolution via :attr:`type_generic`.
         """
         from superset.typing import GenericDataType
 
@@ -539,8 +494,6 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
         )
         return {s: getattr(self, s) for s in attrs if hasattr(self, s)}
 
-    # -- AST hooks used by helpers.ExploreMixin.get_sqla_query ---------------
-
     @property
     def database(self) -> Any:
         """Return the parent dataset's database, or None."""
@@ -568,16 +521,12 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
     def is_temporal(self) -> bool:
         """True if this column represents a datetime.
 
-        1:1 with ``TableColumn.is_temporal`` in
-        ``superset_old/connectors/sqla/models.py``
-        (line 848): tri-state semantics — when ``is_dttm`` has been
-        explicitly set (``True`` or ``False``) we honour it, otherwise
-        we fall through to the engine spec's column-spec resolution.
-        This is materially different from a two-state ``bool(is_dttm)``
-        check because users can opt a column *out* of being temporal
-        even when the database type would suggest otherwise (e.g.
-        manual override on a numeric epoch column with
-        ``python_date_format`` set elsewhere).
+        Tri-state semantics: when ``is_dttm`` has been explicitly set
+        (``True`` or ``False``) we honour it, otherwise we fall through
+        to the engine spec's column-spec resolution. This is materially
+        different from a two-state ``bool(is_dttm)`` check because users
+        can opt a column *out* of being temporal even when the database
+        type would suggest otherwise.
         """
         if self.is_dttm is not None:
             return bool(self.is_dttm)
@@ -597,11 +546,9 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
     ) -> Any:
         """Return a SQLAlchemy ``ColumnElement`` for this column.
 
-        1:1 with ``TableColumn.get_sqla_col`` in
-        ``superset_old/connectors/sqla/models.py``
-        (line 887). Honours calculated columns (``self.expression``)
-        with optional Jinja templating, and applies engine-spec label
-        compatibility via ``Database.make_sqla_column_compatible``.
+        Honours calculated columns (``self.expression``) with optional
+        Jinja templating, and applies engine-spec label compatibility via
+        ``Database.make_sqla_column_compatible``.
         """
         from sqlalchemy import column as sa_column
         from sqlalchemy.sql import literal_column
@@ -647,12 +594,9 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
     ) -> Any:
         """Return time-grain-truncated timestamp expression.
 
-        1:1 with ``TableColumn.get_timestamp_expression`` in
-        ``superset_old/connectors/sqla/models.py``
-        (line 918). Builds a ``TimestampExpression`` AST node via the
-        engine spec's ``get_timestamp_expr`` for time-bucketing of
-        datetime columns; supports epoch-stored columns via
-        ``python_date_format``.
+        Builds a ``TimestampExpression`` AST node via the engine spec's
+        ``get_timestamp_expr`` for time-bucketing of datetime columns;
+        supports epoch-stored columns via ``python_date_format``.
         """
         from sqlalchemy import column as sa_column, DateTime
         from sqlalchemy.sql import literal_column
@@ -702,11 +646,6 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
         return time_expr
 
 
-# ---------------------------------------------------------------------------
-# SqlMetric
-# ---------------------------------------------------------------------------
-
-
 class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base):
     """A metric defined on a SQL dataset."""
 
@@ -714,7 +653,6 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
     __table_args__ = (UniqueConstraint("table_id", "metric_name"),)
 
     def __repr__(self) -> str:
-        # 1:1 superset_old/connectors/sqla/models.py:1024.
         return str(self.metric_name)
 
     id = Column(Integer, primary_key=True)
@@ -732,8 +670,6 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
     )
     expression = Column(MediumText(), nullable=False)
     extra = Column(Text)
-
-    # -- relationships --------------------------------------------------------
 
     table = relationship(
         "SqlaTable",
@@ -756,8 +692,6 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
     update_from_object_fields = [s for s in export_fields if s != "table_id"]
     export_parent = "table"
 
-    # -- Computed properties ---------------------------------------------------
-
     @property
     def data(self) -> dict[str, Any]:
         """Data representation sent to the frontend."""
@@ -778,8 +712,6 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
         )
         return {s: getattr(self, s) for s in attrs}
 
-    # -- AST hook used by helpers.ExploreMixin.get_sqla_query ---------------
-
     def get_sqla_col(
         self,
         label: str | None = None,
@@ -787,10 +719,8 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
     ) -> Any:
         """Return a SQLAlchemy ``ColumnElement`` for this metric.
 
-        1:1 with ``SqlMetric.get_sqla_col`` in
-        ``superset_old/connectors/sqla/models.py``
-        (line 1027). Honours optional Jinja templating of the metric
-        expression and applies engine-spec label compatibility.
+        Honours optional Jinja templating of the metric expression and
+        applies engine-spec label compatibility.
         """
         from sqlalchemy.sql import literal_column
 
@@ -801,12 +731,10 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
 
         label = label or self.metric_name
         expression = self.expression
-        # 1:1 with original — Jinja-process the expression even when
-        # it is empty / falsy. The original at
-        # ``superset_old/connectors/sqla/models.py:SqlMetric.get_sqla_col``
-        # only gates on ``template_processor`` being supplied; gating
-        # on ``expression`` would skip Jinja for legitimately empty
-        # macros that resolve to non-empty SQL post-processing.
+        # Jinja-process the expression even when it is empty / falsy —
+        # only gate on ``template_processor`` being supplied; gating on
+        # ``expression`` would skip Jinja for legitimately empty macros
+        # that resolve to non-empty SQL post-processing.
         if template_processor:
             try:
                 expression = template_processor.process_template(expression)
@@ -816,18 +744,12 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
                 ) from ex
 
         sqla_col = literal_column(expression)
-        # 1:1 with original — let the AttributeError bubble when
-        # ``self.table`` or ``self.table.database`` is missing.
-        # Silently returning the raw column would skip the
-        # engine-spec ``make_label_compatible`` step (Oracle 30-char
-        # truncation / MSSQL bracketed alias), which produces invalid
-        # SQL on those dialects rather than a loud failure here.
+        # Let the AttributeError bubble when ``self.table`` or
+        # ``self.table.database`` is missing. Silently returning the raw
+        # column would skip the engine-spec ``make_label_compatible`` step
+        # (Oracle 30-char truncation / MSSQL bracketed alias), which
+        # produces invalid SQL on those dialects rather than a loud failure.
         return self.table.database.make_sqla_column_compatible(sqla_col, label)
-
-
-# ---------------------------------------------------------------------------
-# AsyncQueryExecutionMixin
-# ---------------------------------------------------------------------------
 
 
 class AsyncQueryExecutionMixin:
@@ -856,9 +778,7 @@ class AsyncQueryExecutionMixin:
         through the chart-data pipeline) uses snake_case names like
         ``filter`` (not ``filters``) and lumps temporal extras into
         ``extras``. The :meth:`helpers.ExploreMixin.get_sqla_query`
-        signature is the original Superset 1:1 contract — see
-        ``superset_old/models/helpers.py:1653`` — so we translate keys
-        here.
+        signature uses different key names, so we translate keys here.
         """
         # Build the kwargs dict, accepting both ``filter`` and ``filters``
         # for compatibility with both the wire format and dataclasses
@@ -933,10 +853,8 @@ class AsyncQueryExecutionMixin:
     ) -> tuple[str, datetime | None, datetime | None]:
         """Build a SQL string from query_dict parameters.
 
-        Strategy A — thin wrapper over
-        :meth:`helpers.ExploreMixin.get_sqla_query` which is a 1:1
-        port of the original Apache Superset AST pipeline at
-        ``superset_old/models/helpers.py:1653-2347``. The wrapper:
+        Thin wrapper over :meth:`helpers.ExploreMixin.get_sqla_query`.
+        The wrapper:
 
         1. Adapts the QueryContext wire-format keys to
            ``get_sqla_query`` kwargs.
@@ -984,10 +902,8 @@ class AsyncQueryExecutionMixin:
     def _build_from_ast(self) -> tuple[Any, str | None]:
         """Return ``(from_clause, cte_sql)`` as a SQLAlchemy AST node.
 
-        Mirrors the original ``ExploreMixin.get_from_clause``
-        (``superset_old/models/helpers.py:1163``) but returns a
-        SQLAlchemy ``FromClause`` rather than a ``str`` so it can be
-        passed directly to ``sa.select(...).select_from(...)``.
+        Returns a SQLAlchemy ``FromClause`` so it can be passed directly
+        to ``sa.select(...).select_from(...)``.
 
         - Physical dataset → ``sa.table(table_name, schema=...)``
           (catalog is folded into the schema for engines that need it).
@@ -1118,10 +1034,8 @@ class AsyncQueryExecutionMixin:
 
             df = await self._execute_sql(sql)
 
-            # 1:1 with original
-            # ``superset_old/connectors/sqla/models.py:assign_column_label``
-            # (line 1626) — dialects like MSSQL / Snowflake may rename
-            # or change the case of columns. The expected behaviour is:
+            # Dialects like MSSQL / Snowflake may rename or change the
+            # case of columns. The expected behaviour is:
             #
             # 1. If the engine returned *fewer* columns than the
             #    helpers-mixin counted (``labels_expected``), the
@@ -1174,9 +1088,7 @@ class AsyncQueryExecutionMixin:
                 ex,
                 exc_info=True,
             )
-            # Mirror the original sync query() error path
-            # (superset_old/connectors/sqla/models.py:1663-1687):
-            # populate ``errors`` via db_engine_spec.extract_errors so the
+            # Populate ``errors`` via db_engine_spec.extract_errors so the
             # viz payload has a non-empty errors list and the UI shows the
             # error instead of silently showing no data.
             _db_engine_spec = getattr(self, "db_engine_spec", None)
@@ -1196,11 +1108,6 @@ class AsyncQueryExecutionMixin:
             )
 
 
-# ---------------------------------------------------------------------------
-# SqlaTable
-# ---------------------------------------------------------------------------
-
-
 class SqlaTable(
     Base,
     AuditMixinNullable,
@@ -1216,7 +1123,6 @@ class SqlaTable(
     is_rls_supported = True
 
     def __repr__(self) -> str:
-        # 1:1 superset_old/connectors/sqla/models.py:1186 — dropdown text.
         return self.name
 
     __tablename__ = "tables"
@@ -1234,14 +1140,12 @@ class SqlaTable(
     sql = Column(MediumText())
     is_sqllab_view = Column(Boolean, default=False)
     template_params = Column(Text)
-    # 1:1 with superset_old/connectors/sqla/models.py: SqlaTable.extra has no
-    # Python default (stays NULL), unlike Database.extra which has a template.
+    # SqlaTable.extra has no Python default (stays NULL), unlike Database.extra
+    # which has a template.
     extra = Column(Text)
     normalize_columns = Column(Boolean, default=False)
     always_filter_main_dttm = Column(Boolean, default=False)
     folders = Column(JSON, nullable=True)
-
-    # -- relationships --------------------------------------------------------
 
     columns = relationship(
         "TableColumn",
@@ -1287,15 +1191,8 @@ class SqlaTable(
     export_parent = "database"
     export_children = ["metrics", "columns"]
 
-    # -- DatasourceProtocol implementation ------------------------------------
-
-    #: Datasource type identifier used by QueryContext
     type: str = "table"
 
-    #: Aggregation functions mapping for SIMPLE adhoc metrics.
-    # Function names are lowercase to match the original SQLAlchemy output
-    # (``sa.func.SUM(col)`` compiles to ``sum(col)``), which Cypress tests
-    # rely on.
     _SQLA_AGGREGATIONS: dict[str, str] = {
         "COUNT_DISTINCT": "COUNT(DISTINCT {col})",
         "COUNT": "COUNT({col})",
@@ -1305,7 +1202,6 @@ class SqlaTable(
         "MAX": "max({col})",
     }
 
-    #: Simple filter operator mapping
     _FILTER_OPS: dict[str, str] = {
         "==": "=",
         "!=": "!=",
@@ -1339,7 +1235,7 @@ class SqlaTable(
 
     @property
     def columns_types(self) -> dict[str, str]:
-        """Map column name -> native type (1:1 with BaseDatasource)."""
+        """Map column name -> native type."""
         return {c.column_name: c.type for c in (self.columns or [])}
 
     @property
@@ -1381,8 +1277,7 @@ class SqlaTable(
     def select_star(self) -> str | None:
         """Generate a ``SELECT * … LIMIT 100`` preview for this table.
 
-        1:1 with the original ``SqlaTable.select_star`` (line 1331-1338):
-        delegates to ``Database.select_star`` with ``show_cols`` /
+        Delegates to ``Database.select_star`` with ``show_cols`` /
         ``latest_partition`` False to skip the expensive DB inspection.
         """
         # Guard against an unloaded ``database`` relationship — a sync
@@ -1423,12 +1318,9 @@ class SqlaTable(
     def health_check_message(self) -> str | None:
         """Result of the optional ``DATASET_HEALTH_CHECK`` config hook.
 
-        1:1 with the original ``SqlaTable.health_check_message`` (line
-        1340-1343): ``check = config["DATASET_HEALTH_CHECK"]; return
-        check(self) if check else None``. The hook is a rarely-used
-        enterprise callable; it defaults to ``None`` (no message). Read
-        lazily from :class:`SupersetSettings` because models must not import
-        config at module load.
+        The hook is a rarely-used enterprise callable; it defaults to
+        ``None`` (no message). Read lazily from :class:`SupersetSettings`
+        because models must not import config at module load.
         """
         from superset.config import SupersetSettings
 
@@ -1442,7 +1334,6 @@ class SqlaTable(
     def external_metadata(self) -> list[dict[str, Any]]:
         """Fetch column metadata from the underlying database.
 
-        Matches original SqlaTable.external_metadata (line 1313-1321):
         - Virtual datasets (with custom SQL) -> get_virtual_table_metadata
         - Physical tables -> get_physical_table_metadata
         """
@@ -1457,12 +1348,10 @@ class SqlaTable(
         Executes the SQL with a LIMIT 0 to get column names and types from the
         result set metadata.
 
-        Execution errors are raised as ``SupersetGenericDBErrorException`` (1:1
-        with the original ``get_virtual_table_metadata`` in
-        ``superset_old/connectors/sqla/utils.py:99``) rather than swallowed to
-        ``[]`` — otherwise a transient warehouse / invalid-SQL error during
-        ``fetch_metadata`` would silently drop every introspected column via the
-        ``all, delete-orphan`` cascade.
+        Execution errors are raised as ``SupersetGenericDBErrorException`` rather
+        than swallowed to ``[]`` — otherwise a transient warehouse / invalid-SQL
+        error during ``fetch_metadata`` would silently drop every introspected
+        column via the ``all, delete-orphan`` cascade.
         """
         if not self.sql:
             return []
@@ -1475,10 +1364,9 @@ class SqlaTable(
         )
         from superset.utils.database import get_sync_connection
 
-        # Process Jinja templates first (1:1 with the original
-        # ``get_virtual_table_metadata``); a raw ``{{ }}`` would otherwise be
+        # Process Jinja templates first; a raw ``{{ }}`` would otherwise be
         # sent to the warehouse and fail. A template syntax error maps to a
-        # ``SupersetGenericDBErrorException`` (400), as in the original.
+        # ``SupersetGenericDBErrorException`` (400).
         inner_sql = self.sql.strip().rstrip(";")
         try:
             inner_sql = self.get_template_processor().process_template(
@@ -1498,9 +1386,8 @@ class SqlaTable(
                 for col in result.cursor.description or []:
                     # ``cursor.description`` type codes are DBAPI-specific
                     # (psycopg2 returns int OIDs); map to a string type repr via
-                    # the engine spec — 1:1 with the original ``SupersetResultSet``
-                    # path (``get_datatype``).  Persisting the raw int code would
-                    # crash on the VARCHAR ``TableColumn.type`` column.
+                    # the engine spec (``get_datatype``).  Persisting the raw int
+                    # code would crash on the VARCHAR ``TableColumn.type`` column.
                     type_repr = spec.get_datatype(col[1]) if len(col) > 1 else None
                     columns.append({"column_name": col[0], "type": type_repr})
                 return columns
@@ -1510,19 +1397,15 @@ class SqlaTable(
     def _get_physical_table_metadata(self) -> list[dict[str, Any]]:
         """Use a SQLAlchemy inspector to get physical-table column metadata.
 
-        Async port of ``get_physical_table_metadata`` in
-        ``superset_old/connectors/sqla/utils.py`` (line 50). The original
-        sources columns via ``Database.get_columns``; liteset has no such model
-        method, so columns are read directly from the engine spec + a sync
-        inspector (``Database.get_inspector``). ``schema_options`` is forwarded
-        so engine specs that expand nested columns (Trino ``expand_rows``)
-        behave identically. Each column's SQLAlchemy ``type`` is converted to
-        the dialect type string and enriched with ``type_generic`` / ``is_dttm``
-        so the persisted ``TableColumn`` rows match the original contract.
+        Sources columns directly from the engine spec + a sync inspector
+        (``Database.get_inspector``). ``schema_options`` is forwarded so engine
+        specs that expand nested columns (Trino ``expand_rows``) behave
+        identically. Each column's SQLAlchemy ``type`` is converted to the
+        dialect type string and enriched with ``type_generic`` / ``is_dttm``.
 
-        Introspection errors (e.g. a missing table) are *not* swallowed: the
-        original raises ``NoSuchTableError`` so the dataset create / refresh API
-        surfaces a proper error rather than silently producing zero columns.
+        Introspection errors (e.g. a missing table) are *not* swallowed: a
+        ``NoSuchTableError`` surfaces a proper error rather than silently
+        producing zero columns.
         """
         from sqlalchemy.types import TypeEngine
 
@@ -1628,9 +1511,7 @@ class SqlaTable(
     def add_missing_metrics(self, metrics: list[SqlMetric]) -> None:
         """Append metrics not already present on this dataset.
 
-        1:1 with ``SqlaTable.add_missing_metrics`` in
-        ``superset_old/connectors/sqla/models.py`` (line 310). Requires the
-        ``metrics`` relationship to be loaded by the caller.
+        Requires the ``metrics`` relationship to be loaded by the caller.
         """
         existing_metrics = {m.metric_name for m in self.metrics}
         for metric in metrics:
@@ -1719,7 +1600,6 @@ class SqlaTable(
             "select_star": self.select_star,
         }
 
-        # SqlaTable-specific extensions (matches original .data property)
         data_["granularity_sqla"] = [(c, c) for c in self.dttm_cols]
         # Same unloaded-guard as ``db_data`` above — an unguarded
         # ``self.database`` access on a bare-fetched instance raises
@@ -1752,11 +1632,8 @@ class SqlaTable(
     def data_for_slices(self, slices: list[Any]) -> dict[str, Any]:  # noqa: C901
         """Datasource representation with only the data the given slices need.
 
-        1:1 with ``BaseDatasource.data_for_slices`` in
-        ``superset_old/connectors/sqla/models.py`` — used to shrink the
-        dashboard payload to the metrics/columns the charts actually reference.
-        The chart's ``query_context`` JSON is read directly (the legacy
-        ``Slice.get_query_context`` helper is not part of the port).
+        Used to shrink the dashboard payload to the metrics/columns the charts
+        actually reference. The chart's ``query_context`` JSON is read directly.
         """
         from superset.utils import json
         from superset.utils.column import (
@@ -1931,10 +1808,9 @@ class SqlaTable(
     def has_extra_cache_key_calls(self, query_obj: dict[str, Any]) -> bool:  # noqa: C901
         """Detect calls to ``ExtraCache`` template methods in templatable items.
 
-        1:1 with ``SqlaTable.has_extra_cache_key_calls`` in
-        ``superset_old/connectors/sqla/models.py`` (line 1859). If any present,
-        the query must be evaluated to extract additional cache keys. This avoids
-        executing the (potentially expensive) template code unnecessarily.
+        If any present, the query must be evaluated to extract additional cache
+        keys. This avoids executing the (potentially expensive) template code
+        unnecessarily.
 
         :param query_obj: query object to analyze
         :return: True if there are call(s) to an ``ExtraCache`` method
@@ -2012,9 +1888,6 @@ class SqlaTable(
         For virtual datasets, RLS predicates are included in the cache key to
         ensure users with different RLS rules get different cached results.
 
-        1:1 with ``SqlaTable.get_extra_cache_keys`` in
-        ``superset_old/connectors/sqla/models.py`` (line 1909).
-
         :param query_obj: query object to analyze
         :return: The extra cache keys
         """
@@ -2039,8 +1912,6 @@ class SqlaTable(
 
         return list(set(extra_cache_keys))
 
-    # -- AST hooks used by helpers.ExploreMixin.get_sqla_query --------------
-
     @property
     def db_extra(self) -> dict[str, Any] | None:
         """Return the database extra JSON dict."""
@@ -2058,20 +1929,14 @@ class SqlaTable(
 
     @property
     def is_virtual(self) -> bool:
-        """True if this dataset wraps a custom SQL query (vs. a physical table).
-
-        1:1 with ``SqlaTable.is_virtual`` in
-        ``superset_old/connectors/sqla/models.py``.
-        """
+        """True if this dataset wraps a custom SQL query (vs. a physical table)."""
         return bool(self.sql)
 
     def get_sqla_table(self) -> Any:
         """Return a SQLAlchemy ``TableClause`` for the physical table.
 
-        1:1 with ``SqlaTable.get_sqla_table`` in
-        ``superset_old/connectors/sqla/models.py``
-        (line 1400). Honours BigQuery-style cross-catalog queries by
-        baking the catalog into a manually-quoted identifier.
+        Honours BigQuery-style cross-catalog queries by baking the catalog
+        into a manually-quoted identifier.
         """
         from sqlalchemy.sql import quoted_name as _quoted_name, table as _sa_table
 
@@ -2102,13 +1967,10 @@ class SqlaTable(
     ) -> tuple[Any, str | None]:
         """Return ``(FromClause, optional_cte)`` for this dataset.
 
-        1:1 with ``SqlaTable.get_from_clause`` in
-        ``superset_old/connectors/sqla/models.py``
-        (line 1425). Physical datasets short-circuit to
-        :meth:`get_sqla_table`; virtual datasets fall through to
-        :meth:`ExploreMixin.get_from_clause` which renders the user
-        SQL, applies RLS predicates inside the subquery, and decides
-        whether the engine needs a CTE hoisted to the top.
+        Physical datasets short-circuit to :meth:`get_sqla_table`; virtual
+        datasets fall through to :meth:`ExploreMixin.get_from_clause` which
+        renders the user SQL, applies RLS predicates inside the subquery,
+        and decides whether the engine needs a CTE hoisted to the top.
         """
         if not self.is_virtual:
             return self.get_sqla_table(), None
@@ -2118,11 +1980,7 @@ class SqlaTable(
 
     @property
     def template_params_dict(self) -> dict[str, Any]:
-        """Return parsed ``template_params`` JSON, or empty dict.
-
-        1:1 with ``SqlaTable.template_params_dict`` in
-        ``superset_old/connectors/sqla/models.py``.
-        """
+        """Return parsed ``template_params`` JSON, or empty dict."""
         import json as _json
 
         try:
@@ -2135,12 +1993,7 @@ class SqlaTable(
         return {}
 
     def get_template_processor(self, **kwargs: Any) -> Any:
-        """Return a Jinja template processor for this dataset.
-
-        1:1 with ``SqlaTable.get_template_processor`` in
-        ``superset_old/connectors/sqla/models.py``
-        (line 1397).
-        """
+        """Return a Jinja template processor for this dataset."""
         from superset.jinja_context import get_template_processor
 
         return get_template_processor(table=self, database=self.database, **kwargs)
@@ -2150,9 +2003,8 @@ class SqlaTable(
     ) -> Any:
         """Apply engine-spec label compatibility (Oracle truncation, etc.).
 
-        Delegates to :meth:`Database.make_sqla_column_compatible` which
-        is the 1:1 port of the original. The wrapper exists because
-        :class:`ExploreMixin` calls
+        Delegates to :meth:`Database.make_sqla_column_compatible`. The
+        wrapper exists because :class:`ExploreMixin` calls
         ``self.make_sqla_column_compatible`` directly.
         """
         return self.database.make_sqla_column_compatible(sqla_col, label)
@@ -2165,11 +2017,9 @@ class SqlaTable(
     ) -> Any:
         """Wrap a ``TableColumn`` as a SQLAlchemy expression.
 
-        1:1 with ``SqlaTable.convert_tbl_column_to_sqla_col`` in
-        ``superset_old/connectors/sqla/models.py``
-        (line ~860). Delegates to :meth:`TableColumn.get_sqla_col`
-        which produces a properly-typed and properly-labelled
-        ``ColumnElement`` honouring the engine spec.
+        Delegates to :meth:`TableColumn.get_sqla_col` which produces a
+        properly-typed and properly-labelled ``ColumnElement`` honouring
+        the engine spec.
         """
         return tbl_column.get_sqla_col(
             label=label, template_processor=template_processor
@@ -2181,9 +2031,7 @@ class SqlaTable(
     ) -> Any:
         """Return a SQLAlchemy ``TextClause`` for the fetch-values predicate.
 
-        1:1 with ``SqlaTable.get_fetch_values_predicate`` in
-        ``superset_old/connectors/sqla/models.py``
-        (line 1377). Used by ``apply_fetch_values_predicate`` and
+        Used by ``apply_fetch_values_predicate`` and
         :meth:`values_for_column` to scope filter-dropdown queries.
         """
         from jinja2.exceptions import TemplateError
@@ -2223,12 +2071,8 @@ class SqlaTable(
     ) -> Any:
         """Convert an adhoc metric dict to a SQLAlchemy ``ColumnElement``.
 
-        1:1 with ``SqlaTable.adhoc_metric_to_sqla`` in
-        ``superset_old/connectors/sqla/models.py``
-        (line 1434). Resolves SIMPLE adhoc metrics through
-        ``TableColumn.get_sqla_col`` so calculated columns retain
-        their expression — the bug-fix the original made over the
-        helpers-mixin version.
+        Resolves SIMPLE adhoc metrics through ``TableColumn.get_sqla_col``
+        so calculated columns retain their expression.
         """
         from typing import cast as _cast
 
@@ -2242,13 +2086,11 @@ class SqlaTable(
         from superset.models.helpers import AdhocMetricExpressionType
         from superset.utils.column import get_metric_name
 
-        # Support both camelCase (frontend payload, original Apache Superset
-        # convention) and snake_case (msgspec ``rename="camel"`` round-trips
-        # may surface either form).
+        # Support both camelCase (frontend payload) and snake_case
+        # (msgspec ``rename="camel"`` round-trips may surface either form).
         expression_type = metric.get("expressionType") or metric.get("expression_type")
-        # 1:1 with original — passes the dataset's ``verbose_map`` so
-        # SIMPLE adhoc metrics that reference a TableColumn render
-        # with the user-friendly verbose name when one is configured.
+        # Passes the dataset's ``verbose_map`` so SIMPLE adhoc metrics that
+        # reference a TableColumn render with the user-friendly verbose name.
         label = get_metric_name(metric, self.verbose_map)
 
         if expression_type == AdhocMetricExpressionType.SIMPLE:
@@ -2277,12 +2119,10 @@ class SqlaTable(
                         template_processor=template_processor,
                     )
                 except SupersetSecurityException as ex:
-                    # 1:1 with original — surface the structured
-                    # ``ex.message`` (a SupersetError summary) rather
-                    # than ``str(ex)`` which would include the full
-                    # ``SupersetSecurityException`` repr and leak
-                    # internal trace information into chart-data
-                    # validation errors.
+                    # Surface the structured ``ex.message`` (a SupersetError
+                    # summary) rather than ``str(ex)`` which would include the
+                    # full ``SupersetSecurityException`` repr and leak internal
+                    # trace information into chart-data validation errors.
                     raise QueryObjectValidationError(ex.message) from ex
             sqla_metric = literal_column(expression)
         else:
@@ -2298,19 +2138,16 @@ class SqlaTable(
     ) -> Any:
         """Turn an adhoc column dict into a SQLAlchemy ``ColumnElement``.
 
-        1:1 with ``SqlaTable.adhoc_column_to_sqla`` in
-        ``superset_old/connectors/sqla/models.py``
-        (line 1486). Honours:
+        Honours:
 
         - ``isColumnReference``: quote bare identifiers via the dialect
-          preparer so reserved words / mixed-case names round-trip
-          correctly.
+          preparer so reserved words / mixed-case names round-trip correctly.
         - Time-grain on adhoc BASE_AXIS columns: dispatch to
-          ``db_engine_spec.get_timestamp_expr`` after probing the
-          column type when ``force_type_check`` is set.
-        - Calculated columns referenced by name in ``sqlExpression``:
-          fall through to ``TableColumn.get_sqla_col`` which carries
-          the calculated-column expression.
+          ``db_engine_spec.get_timestamp_expr`` after probing the column type
+          when ``force_type_check`` is set.
+        - Calculated columns referenced by name in ``sqlExpression``: fall
+          through to ``TableColumn.get_sqla_col`` which carries the
+          calculated-column expression.
         """
         import sqlalchemy as _sa
         from sqlalchemy.sql import literal_column
@@ -2403,17 +2240,11 @@ class SqlaTable(
         """Return True if executing ``sql`` yields a temporal column.
 
         Helper for :meth:`adhoc_column_to_sqla` — runs a LIMIT 1
-        introspection query through the sync engine and asks the
-        database's engine spec to interpret the DBAPI ``cursor.description``
-        type codes via :meth:`BaseEngineSpec.get_column_spec`.
-
-        1:1 with ``get_columns_description`` in
-        ``superset_old/connectors/sqla/utils.py``
-        and ``superset_old/result_set.py:SupersetResultSet.is_temporal``:
-        the original wraps the query in
-        :class:`SupersetResultSet` which derives ``is_dttm`` from
-        ``db_engine_spec.get_column_spec(native_type).is_dttm`` — *not*
-        from a brittle string-match on the DBAPI type-code repr.
+        introspection query through the sync engine and asks the database's
+        engine spec to interpret the DBAPI ``cursor.description`` type codes
+        via :meth:`BaseEngineSpec.get_column_spec`. Derives ``is_dttm`` from
+        ``db_engine_spec.get_column_spec(native_type).is_dttm`` — not from a
+        brittle string-match on the DBAPI type-code repr.
         """
         try:
             from sqlalchemy import text as sa_text
@@ -2426,10 +2257,8 @@ class SqlaTable(
                 if not description:
                     return False
 
-                # Value-based temporal detection first (driver-agnostic; mirrors
-                # upstream ``SupersetResultSet`` deriving ``is_dttm`` from the
-                # fetched data via PyArrow ``is_temporal``). Drivers like
-                # psycopg2 report INTEGER type OIDs (e.g. 1114=TIMESTAMP) in
+                # Value-based temporal detection first (driver-agnostic). Drivers
+                # like psycopg2 report INTEGER type OIDs (e.g. 1114=TIMESTAMP) in
                 # ``cursor.description`` that don't map to a native-type string,
                 # but return real ``datetime``/``date``/``time`` objects — so a
                 # type-code-only check misses them on Postgres.
@@ -2455,9 +2284,8 @@ class SqlaTable(
                 type_code: Any = desc_row[1]
 
                 # Coerce the DBAPI type-code into a string the engine
-                # spec can map.  This mirrors
-                # ``superset_old/result_set.py:convert_to_string`` —
-                # str | bytes pass through, anything else is stringified.
+                # spec can map: str | bytes pass through, anything else
+                # is stringified.
                 if isinstance(type_code, bytes):
                     native_type = type_code.decode("utf-8")
                 elif isinstance(type_code, str):
@@ -2486,7 +2314,6 @@ class SqlaTable(
     def clone(self) -> SqlaTable:
         """Create a copy of this dataset.
 
-        Ported from superset_old/commands/dataset/duplicate.py.
         Copies key fields and deep-copies columns and metrics into new
         instances (without IDs) so the clone can be persisted independently.
         """
@@ -2589,8 +2416,6 @@ class SqlaTable(
             "external_url": self.external_url,
         }
 
-    # -- SQL generation -------------------------------------------------------
-
     def _get_table_ref(self) -> str:
         """Return fully-qualified table reference for FROM clause.
 
@@ -2616,19 +2441,16 @@ class SqlaTable(
     def _get_virtual_from_clause(self) -> tuple[str, str | None]:
         """Return ``(table_ref, cte_sql)`` for use in a SELECT.
 
-        Async port of the original ``helpers.get_from_clause`` +
-        ``_apply_cte`` pair (``superset_old/models/helpers.py:1163``
-        and line 942).  Produces the same output shape:
+        Produces the following output shapes:
 
         - For a physical dataset → ``(fully.qualified.table, None)``.
         - For a virtual dataset on an engine that supports CTEs inside
-          subqueries (the default) → ``((user_sql) AS virtual_table,
-          None)`` — same as :meth:`_get_table_ref`.
-        - For a virtual dataset on an engine that does *not* allow
-          CTEs inside a subquery (e.g., MSSQL, Ocient) *and* whose
-          user SQL itself starts with ``WITH`` → returns
-          ``(__cte, 'WITH __cte AS (...)')`` so callers can prepend
-          the CTE text to the final SQL and select from the alias.
+          subqueries (the default) → ``((user_sql) AS virtual_table, None)``
+          — same as :meth:`_get_table_ref`.
+        - For a virtual dataset on an engine that does *not* allow CTEs
+          inside a subquery (e.g., MSSQL, Ocient) *and* whose user SQL
+          starts with ``WITH`` → returns ``(__cte, 'WITH __cte AS (...)')``
+          so callers can prepend the CTE text to the final SQL.
         """
         if not self.sql:
             return self._get_table_ref(), None
@@ -2659,10 +2481,9 @@ class SqlaTable(
     def _apply_cte(sql: str, cte: str | None) -> str:
         """Prepend a CTE statement to a SELECT statement.
 
-        Mirrors ``superset_old.models.helpers._apply_cte`` (line 942):
-        when the engine spec determined the user's virtual-dataset SQL
-        must be hoisted into a top-level CTE, the rendered SELECT is
-        concatenated after the CTE text.
+        When the engine spec determines the user's virtual-dataset SQL must
+        be hoisted into a top-level CTE, the rendered SELECT is concatenated
+        after the CTE text.
         """
         if cte:
             return f"{cte}\n{sql}"
@@ -2785,14 +2606,11 @@ class SqlaTable(
 
         op_upper = op.upper().strip()
 
-        # Mirror the original ``BaseDatasource._get_sqla_query`` behaviour:
-        # if the filter references a column that doesn't exist on this
-        # datasource (and isn't an adhoc/SQL expression), silently drop
-        # the filter rather than generating SQL that the database will
-        # reject. The column is recorded under ``rejected_filter_columns``
-        # in the response payload by ``query_context_processor``. Only
-        # plain column-name strings are validated; dicts (adhoc columns)
-        # are passed through unchanged.
+        # If the filter references a column that doesn't exist on this datasource
+        # (and isn't an adhoc/SQL expression), silently drop the filter rather
+        # than generating SQL that the database will reject. The column is recorded
+        # under ``rejected_filter_columns`` in the response payload. Only plain
+        # column-name strings are validated; dicts (adhoc columns) pass through.
         #
         # This check runs BEFORE TEMPORAL_RANGE handling because a
         # TEMPORAL_RANGE filter referencing a non-existent datetime
@@ -2891,14 +2709,7 @@ class SqlaTable(
 
         return " AND ".join(clauses) if clauses else None
 
-    # ------------------------------------------------------------------
-    # SQL build pipeline — Strategy A: wire-up
-    # ``helpers.ExploreMixin.get_sqla_query``
-    # ------------------------------------------------------------------
-
-    # -- Async query execution ------------------------------------------------
-
-    async def async_values_for_column(  # noqa: C901  # complex business logic
+    async def async_values_for_column(  # noqa: C901
         self,
         column_name: str,
         limit: int = 10000,
@@ -2907,8 +2718,6 @@ class SqlaTable(
     ) -> list[Any]:
         """Return distinct values of ``column_name`` for filter dropdowns.
 
-        Async port of
-        ``superset_old.models.helpers.values_for_column``.
         Builds ``SELECT DISTINCT <col> AS column_values FROM <table>
         [WHERE <fetch_values_predicate> AND <rls_filters>] LIMIT <n>`` and
         executes it via the dataset's async engine.
@@ -2938,9 +2747,9 @@ class SqlaTable(
         from sqlalchemy.sql.elements import ClauseElement
 
         # Denormalize the column name before querying for values unless disabled
-        # in the dataset configuration — 1:1 with upstream ``values_for_column``.
-        # ``denormalize_name`` is a no-op except on dialects that normalize
-        # identifiers (Oracle/Snowflake), so the common case is unchanged.
+        # in the dataset configuration. ``denormalize_name`` is a no-op except
+        # on dialects that normalize identifiers (Oracle/Snowflake), so the
+        # common case is unchanged.
         if denormalize_column:
             column_name = self.database.db_engine_spec.denormalize_name(
                 self.database.get_dialect(), column_name
@@ -2953,21 +2762,16 @@ class SqlaTable(
         target_col = cols[column_name]
 
         # Build a single template processor up-front and reuse it for both the
-        # SELECT column and the fetch-values predicate — 1:1 with original
-        # ``helpers.values_for_column`` (line 1570) which creates ``tp`` once
-        # via ``self.get_template_processor()`` and threads it through
-        # ``get_sqla_col`` / ``get_fetch_values_predicate``.
+        # SELECT column and the fetch-values predicate.
         from superset.jinja_context import get_template_processor
 
         processor = get_template_processor(database=self.database, table=self)
 
         # Use ``TableColumn.get_sqla_col`` so calculated columns get their
         # ``expression`` run through Jinja templating (e.g. macros referencing
-        # ``{{ current_user_id() }}``) exactly like the original which uses
-        # ``target_col.get_sqla_col(template_processor=tp).label(...)``.
-        # ``process_template`` is pure CPU/Jinja work with no I/O, so it is
-        # safe to run inside this coroutine; hand it to a worker thread to
-        # match how the other sync helpers are invoked from the async path.
+        # ``{{ current_user_id() }}``). ``process_template`` is pure CPU/Jinja
+        # work with no I/O; dispatched to a worker thread to match how other
+        # sync helpers are invoked from the async path.
         select_col = (
             await asyncio.to_thread(
                 target_col.get_sqla_col,
@@ -2978,20 +2782,15 @@ class SqlaTable(
 
         # Resolve the FROM clause as a native SQLAlchemy AST node.
         # For virtual datasets this may produce a CTE that has to be
-        # prepended to the final SQL — matches original
-        # ``helpers.values_for_column`` (lines 1569 and 1593) where
-        # ``get_from_clause`` returns ``(tbl, cte)`` and ``_apply_cte``
-        # hoists the CTE above the SELECT.
+        # prepended to the final SQL.
         from_clause, cte_sql = self._build_from_ast()
 
         # Build the AST: SELECT DISTINCT <col> AS column_values FROM <tbl>
         qry = sa.select(select_col).distinct().select_from(from_clause)
 
         # Assemble WHERE clause from fetch_values_predicate + RLS filters.
-        # Matches original ``helpers.values_for_column`` (lines 1585-1589)
-        # where both predicates are ANDed together — but here we add each
-        # as a SQLAlchemy ``ClauseElement`` and let ``and_(...)`` compose
-        # them so RLS clauses (which may be ``BooleanClauseList`` /
+        # Both predicates are ANDed together — each is added as a SQLAlchemy
+        # ``ClauseElement`` so RLS clauses (which may be ``BooleanClauseList`` /
         # ``or_(...)`` for group_key OR-within / AND-across) integrate as
         # native AST nodes rather than via string concatenation.
         where_clauses: list[ClauseElement] = []
@@ -2999,14 +2798,9 @@ class SqlaTable(
         if fvp:
             # Apply Jinja template processing so expressions like
             # ``{{ current_username() }}`` or ``{{ current_user_id() }}``
-            # are resolved at query time.  Matches original
-            # ``helpers.values_for_column`` (line 1586) which calls
-            # ``self.get_fetch_values_predicate(template_processor=tp)``
-            # where the processor runs ``process_template(clause)``.
-            # ``process_template`` is pure CPU/Jinja work with no I/O,
-            # so calling it from async code is safe; we still wrap it
-            # in ``asyncio.to_thread`` to match how other long-running
-            # sync helpers are invoked from the async pipeline.
+            # are resolved at query time. ``process_template`` is pure
+            # CPU/Jinja work with no I/O; wrapped in ``asyncio.to_thread``
+            # to match how other long-running sync helpers are invoked.
             fvp_processed = await asyncio.to_thread(processor.process_template, fvp)
             where_clauses.append(sa_text(f"({fvp_processed})"))
 
@@ -3046,16 +2840,14 @@ class SqlaTable(
         # inside a subquery still execute a well-formed statement.
         sql = self._apply_cte(sql, cte_sql)
 
-        # Apply the user-defined ``SQL_QUERY_MUTATOR`` config hook — 1:1 with
-        # original ``helpers.values_for_column`` (line 1594)
-        # ``self.database.mutate_sql_based_on_config(sql)``. Sync/CPU work, so
-        # dispatched to a worker thread like the other sync DB helpers.
+        # Apply the user-defined ``SQL_QUERY_MUTATOR`` config hook.
+        # Sync/CPU work, so dispatched to a worker thread like the other
+        # sync DB helpers.
         sql = await asyncio.to_thread(self.database.mutate_sql_based_on_config, sql)
 
         # ``literal_binds`` rendering doubles literal percent signs on dialects
         # whose identifier preparer escapes them (``%`` -> ``%%``); undo this
-        # so the executed SQL matches the user's intent — 1:1 with original
-        # ``helpers.values_for_column`` (lines 1597-1598).
+        # so the executed SQL matches the user's intent.
         if dialect.identifier_preparer._double_percents:  # noqa: SLF001
             sql = sql.replace("%%", "%")
 
@@ -3066,17 +2858,8 @@ class SqlaTable(
         return values
 
 
-# ---------------------------------------------------------------------------
-# RowLevelSecurityFilter
-# ---------------------------------------------------------------------------
-
-
 class RowLevelSecurityFilter(Base, AuditMixinNullable):
-    """A row-level security filter applied to datasets.
-
-    Schema mirrors ``superset_old/connectors/sqla/models.py`` exactly so
-    existing Apache Superset metadata databases work unchanged.
-    """
+    """A row-level security filter applied to datasets."""
 
     __tablename__ = "row_level_security_filters"
 
@@ -3099,8 +2882,8 @@ class RowLevelSecurityFilter(Base, AuditMixinNullable):
     group_key = Column(String(255), nullable=True)
     clause = Column(MediumText(), nullable=False)
 
-    # ``backref`` mirrors the original — gives ``Role.row_level_security_filters``
-    # and ``SqlaTable.row_level_security_filters``. ``overlaps="table"`` on
+    # ``backref`` gives ``Role.row_level_security_filters`` and
+    # ``SqlaTable.row_level_security_filters``. ``overlaps="table"`` on
     # ``tables`` silences the SQLAlchemy warning caused by the same column
     # being referenced from ``SqlaTable.table_name`` aliases.
     roles = relationship(

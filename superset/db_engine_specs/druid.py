@@ -15,11 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Apache Druid engine spec -- sync-compatible.
-
-Ported 1:1 from ``superset_old/db_engine_specs/druid.py`` with legacy
-imports removed.  Only overridden methods and attributes are included.
-"""
+"""Apache Druid database engine spec."""
 
 from __future__ import annotations
 
@@ -49,8 +45,6 @@ def _is_feature_enabled(feature: str) -> bool:
 
 
 class DruidEngineSpec(BaseEngineSpec):
-    """Engine spec for Druid.io"""
-
     engine = "druid"
     engine_name = "Apache Druid"
     allows_joins = _is_feature_enabled("DRUID_JOINS")
@@ -90,7 +84,7 @@ class DruidEngineSpec(BaseEngineSpec):
 
     @staticmethod
     def get_extra_params(database: Database, source: Any = None) -> dict[str, Any]:
-        """For Druid, the path to a SSL certificate is placed in ``connect_args``."""
+        # SSL cert path goes into connect_args (not engine_params root).
         try:
             extra = json_utils.loads(database.extra or "{}")
         except json_utils.JSONDecodeError as ex:

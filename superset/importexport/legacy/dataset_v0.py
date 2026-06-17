@@ -16,8 +16,6 @@
 # under the License.
 """Legacy (v0) dataset importer.
 
-Direct port of ``superset_old/commands/dataset/importers/v0.py``.
-
 v0 datasets are exported as YAML files containing either:
 
 * a top-level ``databases`` key (CLI ``superset export_datasources``)
@@ -30,9 +28,9 @@ v0 datasets are exported as YAML files containing either:
 Because the original :class:`~superset.models.helpers.ImportExportMixin`
 no longer ships ``import_from_dict``, ``alter_params``, ``override`` and
 related helpers, the equivalent generic algorithm is reimplemented
-locally in this module.  The logic mirrors the original 1:1 — same
-unique-constraint discovery, same parent-FK rewriting, same recursive
-child handling, same ``sync`` semantics.
+locally in this module.  It preserves the same unique-constraint
+discovery, parent-FK rewriting, recursive child handling, and ``sync``
+semantics.
 
 The command runs synchronously against a regular SQLAlchemy ``Session``
 because v0 imports are exclusively driven from CLI / Celery contexts.
@@ -56,17 +54,8 @@ from superset.utils.dict_import_export import DATABASES_KEY
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Generic import_from_dict — reimplementation of ``ImportExportMixin``
-# ---------------------------------------------------------------------------
-
-
 def _unique_constraints(cls: type) -> list[set[str]]:
-    """Return every (single- and multi-column) unique constraint as a set.
-
-    Mirrors :func:`ImportExportMixin._unique_constraints` from the
-    original ``superset_old/models/helpers.py``.
-    """
+    """Return every (single- and multi-column) unique constraint as a set."""
     unique: list[set[str]] = []
     table_args = getattr(cls, "__table_args__", ()) or ()
     if isinstance(table_args, dict):
@@ -105,9 +94,9 @@ def import_from_dict(  # noqa: C901
     sync: list[str] | None = None,
     allow_reparenting: bool = False,
 ) -> Any:
-    """Import a model row from a dict, mirroring the original mixin.
+    """Import a model row from a dict.
 
-    Direct port of ``ImportExportMixin.import_from_dict`` adapted to take
+    Adapted from ``ImportExportMixin.import_from_dict`` to take
     an explicit ``session`` argument and operate as a free function.
     """
     if sync is None:
@@ -138,15 +127,12 @@ def import_from_dict(  # noqa: C901
                 if prnt not in dict_rep:
                     raise RuntimeError(f"{cls.__name__}: Missing field {prnt}")
     else:
-        # Set foreign keys to parent obj
         for k, v in parent_refs.items():
             dict_rep[k] = getattr(parent, v)
 
     if not allow_reparenting:
-        # Add filter for parent obj
         filters.extend([getattr(cls, k) == dict_rep.get(k) for k in parent_refs])
 
-    # Add filter for unique constraints
     ucs = [
         and_(
             *[
@@ -160,7 +146,6 @@ def import_from_dict(  # noqa: C901
     if ucs:
         filters.append(or_(*ucs))
 
-    # Check if object already exists in DB; raise on duplicates
     try:
         obj_query = session.query(cls).filter(and_(*filters))
         obj = obj_query.one_or_none()
@@ -187,7 +172,6 @@ def import_from_dict(  # noqa: C901
         for k, v in dict_rep.items():
             setattr(obj, k, v)
 
-    # Recursively create children
     if recursive:
         for child in getattr(cls, "export_children", []):
             argument = cls.__mapper__.relationships[child].argument  # type: ignore[attr-defined]
@@ -203,8 +187,6 @@ def import_from_dict(  # noqa: C901
                         sync=sync,
                     )
                 )
-            # If children should get synced, delete the ones that did not
-            # get updated.
             if child in sync and not is_new_obj:
                 back_refs = _parent_foreign_key_mappings(child_class)
                 delete_filters = [
@@ -219,11 +201,6 @@ def import_from_dict(  # noqa: C901
                     session.delete(o)
 
     return obj
-
-
-# ---------------------------------------------------------------------------
-# Database-level helpers
-# ---------------------------------------------------------------------------
 
 
 def lookup_sqla_table(session: Any, table: Any) -> Any | None:
@@ -385,7 +362,6 @@ def _import_datasource(  # noqa: C901
     )
     _alter_params(i_datasource, import_time=import_time)
 
-    # Override the datasource if it exists.
     datasource = lookup_datasource(i_datasource)
 
     if datasource:
@@ -441,17 +417,8 @@ def import_from_yaml(
         logger.info("Supplied object is not a dictionary.")
 
 
-# ---------------------------------------------------------------------------
-# Public command
-# ---------------------------------------------------------------------------
-
-
 class ImportDatasetsCommand:
-    """Import datasources in YAML format (the original unversioned export).
-
-    Direct port of
-    ``superset_old/commands/dataset/importers/v0.py:ImportDatasetsCommand``.
-    """
+    """Import datasources in YAML format (the original unversioned export)."""
 
     # pylint: disable=unused-argument
     def __init__(
@@ -496,9 +463,6 @@ class ImportDatasetsCommand:
                     import_from_yaml(session, config, sync=self.sync)
                 else:  # list — UI export
                     for dataset in config:
-                        # UI exports don't include database metadata, so we
-                        # assume the DB already exists and has the same
-                        # name (matching the original behaviour).
                         params = json.loads(dataset["params"])
                         database = (
                             session.query(Database)
@@ -526,13 +490,10 @@ class ImportDatasetsCommand:
                     f"{file_name} is not a valid YAML file"
                 ) from ex
 
-            # CLI export — must contain ``databases``.
             if isinstance(config, dict):
                 if DATABASES_KEY not in config:
                     raise IncorrectVersionError(f"{file_name} has no valid keys")
 
-            # UI export — list of datasets.  Per-row schema validation is
-            # left to ``import_from_dict`` (matching the original).
             elif isinstance(config, list):
                 pass
 

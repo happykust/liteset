@@ -33,18 +33,12 @@ from superset.schemas.base import (
     UserRef,
 )
 
-# ---------------------------------------------------------------------------
-# Request bodies
-# ---------------------------------------------------------------------------
-
 
 class ChartPostSchema(msgspec.Struct):
     """POST /api/v1/chart/
 
-    Mirrors original ``ChartPostSchema`` at
-    superset_old/charts/schemas.py:186-245 — only ``slice_name``,
-    ``datasource_id`` and ``datasource_type`` are required. ``viz_type``
-    is optional (charts can be saved without a visualization picked).
+    Only ``slice_name``, ``datasource_id`` and ``datasource_type`` are required.
+    ``viz_type`` is optional (charts can be saved without a visualization picked).
     """
 
     # ``slices.slice_name`` is ``VARCHAR(250)`` — overrun crashes asyncpg with
@@ -127,11 +121,6 @@ class ChartPutSchema(msgspec.Struct):
                     ) from exc
 
 
-# ---------------------------------------------------------------------------
-# Query-parameter schemas (Rison / URL params)
-# ---------------------------------------------------------------------------
-
-
 class ChartExportParams(msgspec.Struct):
     """GET /api/v1/chart/export/?q=(ids:!(...))"""
 
@@ -156,11 +145,6 @@ class ChartCacheWarmUpRequest(msgspec.Struct):
     chart_id: int
     dashboard_id: int | None = None
     extra_filters: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# Chart data query schemas
-# ---------------------------------------------------------------------------
 
 
 class ChartDataDatasource(msgspec.Struct):
@@ -474,11 +458,6 @@ class ChartDataQueryContext(msgspec.Struct):
     force: bool = False
     form_data: dict[str, Any] | None = None
     custom_cache_timeout: int | None = None
-
-
-# ---------------------------------------------------------------------------
-# Response schemas
-# ---------------------------------------------------------------------------
 
 
 # Reuse base response schemas — avoid duplication

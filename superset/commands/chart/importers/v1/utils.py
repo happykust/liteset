@@ -15,17 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/chart/importers/v1/utils.py``.
+"""Per-resource UUID-based dedup importers for charts, datasets, and databases.
 
-Provides the per-resource UUID-based dedup importers used by the chart,
-dashboard, and asset bundle importers.
-
-This module also re-exports :func:`_import_database` and
-:func:`_import_dataset` (full ports of the original
-``import_database`` / ``import_dataset``) so the asset bundle
-orchestrator can chain database -> dataset -> chart imports without
-pulling the full ``ImportDatabasesCommand`` / ``ImportDatasetsCommand``
-classes (which require a ``BytesIO`` archive).
+Used by the chart, dashboard, and asset bundle importers. Re-exports
+:func:`_import_database` and :func:`_import_dataset` so the asset bundle
+orchestrator can chain database -> dataset -> chart imports without pulling the
+full ``ImportDatabasesCommand`` / ``ImportDatasetsCommand`` classes (which
+require a ``BytesIO`` archive).
 """
 
 from __future__ import annotations
@@ -47,21 +43,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Annotation type constant — matches superset.utils.core.AnnotationType.FORMULA
 _ANNOTATION_TYPE_FORMULA = "FORMULA"
-
-# Export version
 EXPORT_VERSION = "1.0.0"
-
-# JSON-serialised columns on SqlaTable (matches the original).
 _DATASET_JSON_KEYS = {"params", "template_params", "extra"}
 
 
 def _get_filename(name: str, model_id: int | None) -> str:
-    """Generate safe file name for export using a secure-filename helper.
-
-    Behaviour-compatible with ``superset_old.utils.file.get_filename``.
-    """
+    """Generate safe file name for export using a secure-filename helper."""
     safe = secure_filename(name or "") or "unnamed"
     if model_id is not None:
         return f"{safe}_{model_id}"
@@ -87,10 +75,7 @@ def update_chart_config_dataset(
     config: dict[str, Any],
     dataset_info: dict[str, Any],
 ) -> dict[str, Any]:
-    """Update chart configuration and query_context with new dataset info.
-
-    Ported 1:1 from superset_old/commands/utils.py.
-    """
+    """Update chart configuration and query_context with new dataset info."""
     config.update(dataset_info)
 
     dataset_uid = f"{dataset_info['datasource_id']}__{dataset_info['datasource_type']}"
@@ -117,11 +102,6 @@ def update_chart_config_dataset(
     return config
 
 
-# --------------------------------------------------------------------------- #
-# Chart importer
-# --------------------------------------------------------------------------- #
-
-
 async def _import_chart(  # noqa: C901
     session: AsyncSession,
     config: dict[str, Any],
@@ -131,7 +111,6 @@ async def _import_chart(  # noqa: C901
 ) -> Slice:
     """Import a single chart from config dict.
 
-    Ported 1:1 from superset_old/commands/chart/importers/v1/utils.py.
     Handles UUID-based dedup, annotation filtering, params JSON
     serialization, and owner management.
     """
@@ -148,7 +127,6 @@ async def _import_chart(  # noqa: C901
             "can_write", "Chart", user=current_user
         )
 
-    # UUID-based dedup
     stmt = sa_select(Slice).where(Slice.uuid == _UUID(str(config["uuid"])))
     result = await session.execute(stmt)
     existing = result.scalars().one_or_none()
@@ -179,14 +157,9 @@ async def _import_chart(  # noqa: C901
             "Chart doesn't exist and user doesn't have permission to create charts"
         )
 
-    # Filter non-FORMULA annotations
     filter_chart_annotations(config)
-
-    # Serialize params dict to JSON string
     if isinstance(config.get("params"), dict):
         config["params"] = _json.dumps(config["params"])
-
-    # Migrate old viz types to new ones (1:1 port of import_chart()).
     config = migrate_chart(config)
 
     chart_id = config.pop("id", None)
@@ -215,7 +188,6 @@ async def _import_chart(  # noqa: C901
 
     await session.flush()
 
-    # Owner management
     if current_user is not None:
         await session.refresh(chart, ["owners"])
         if current_user not in chart.owners:
@@ -227,10 +199,9 @@ async def _import_chart(  # noqa: C901
 def migrate_chart(config: dict[str, Any]) -> dict[str, Any]:
     """Migrate deprecated viz types to their modern equivalents.
 
-    1:1 port of ``superset_old/commands/chart/importers/v1/utils.py``
-    ``migrate_chart``. Builds the source-viz-type -> migrator map from the
+    Builds the source-viz-type -> migrator map from the
     :mod:`superset.migrations.shared.migrate_viz.processors` module, applies
-    the matching :class:`MigrateViz` pipeline to the chart's ``params`` and
+    the matching :class:`MigrateViz` pipeline to the chart's ``params``, and
     keeps ``query_context.form_data`` in sync.
     """
     import copy
@@ -265,7 +236,6 @@ def migrate_chart(config: dict[str, Any]) -> dict[str, Any]:
         }
     )
 
-    # also update ``query_context``
     try:
         query_context = _json.loads(output.get("query_context") or "{}")
     except (_json.JSONDecodeError, TypeError):
@@ -277,11 +247,6 @@ def migrate_chart(config: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
-# --------------------------------------------------------------------------- #
-# Database importer (full port of original ``import_database``)
-# --------------------------------------------------------------------------- #
-
-
 async def _import_database(  # noqa: C901
     session: AsyncSession,
     config: dict[str, Any],
@@ -289,8 +254,7 @@ async def _import_database(  # noqa: C901
     ignore_permissions: bool = True,
     security_manager: Any | None = None,
 ) -> Database:
-    """Full async port of
-    ``superset_old.commands.database.importers.v1.utils.import_database``.
+    """Import a database from config dict.
 
     Handles:
     - permission check
@@ -341,10 +305,6 @@ async def _import_database(  # noqa: C901
             "create databases"
         )
 
-    # URI safety check (gated on PREVENT_UNSAFE_DB_CONNECTIONS) — 1:1 with
-    # upstream import_database:56-60.  NOTE: the previous version imported a
-    # phantom ``superset.config.current_config`` whose ImportError silently
-    # skipped the whole check.
     from superset.config import SupersetSettings
     from superset.databases.utils import make_url_safe
     from superset.exceptions import SupersetSecurityException
@@ -355,32 +315,24 @@ async def _import_database(  # noqa: C901
         try:
             check_sqlalchemy_uri(make_url_safe(cfg.get("sqlalchemy_uri", "")))
         except SupersetSecurityException as exc:
-            # 1:1 upstream: ``raise ImportFailedError(exc.message) from exc``.
             raise ImportFailedError(getattr(exc, "message", str(exc))) from exc
 
-    # ``allow_csv_upload`` -> ``allow_file_upload`` rename
     if "allow_csv_upload" in cfg:
         cfg["allow_file_upload"] = cfg.pop("allow_csv_upload")
-
-    # ``schemas_allowed_for_csv_upload`` -> ``schemas_allowed_for_file_upload``
     extra = cfg.get("extra")
     if isinstance(extra, dict) and "schemas_allowed_for_csv_upload" in extra:
         extra["schemas_allowed_for_file_upload"] = extra.pop(
             "schemas_allowed_for_csv_upload"
         )
 
-    # Serialise extra dict into JSON for the column
     if isinstance(extra, dict):
         cfg["extra"] = _json.dumps(extra)
     elif extra is None:
         cfg["extra"] = "{}"
 
-    # Pop ssh_tunnel before constructing the Database — it lives in a
-    # separate table.
     ssh_tunnel_config = cfg.pop("ssh_tunnel", None)
     sqlalchemy_uri = cfg.pop("sqlalchemy_uri", "")
 
-    # Trim non-model fields.
     cfg.pop("id", None)
     cfg.pop("version", None)
     cfg.pop("database_uuid", None)
@@ -418,7 +370,6 @@ async def _import_database(  # noqa: C901
             database.uuid = _UUID(uuid_str)  # type: ignore[assignment]
         session.add(database)
 
-    # set_sqlalchemy_uri masks the password in the stored URI.
     if hasattr(database, "set_sqlalchemy_uri"):
         database.set_sqlalchemy_uri(sqlalchemy_uri)
     else:
@@ -433,14 +384,8 @@ async def _import_database(  # noqa: C901
             session, database.id, dict(ssh_tunnel_config)
         )
 
-    # Create catalog/schema DAR permission-view-menus — port of
-    # ``superset_old/commands/database/importers/v1/utils.py`` ->
-    # ``superset_old/commands/database/utils.py:add_permissions``.  Best-effort
-    # (the original wrapped this in ``try/except SupersetDBAPIConnectionError``)
-    # so a database that's unreachable at import time doesn't abort the import.
-    # The just-imported (uncommitted) tunnel is forwarded so enumeration works
-    # for tunnel-only databases — 1:1 with upstream add_permissions(database,
-    # ssh_tunnel) (R11-04).
+    # Best-effort: unreachable DB at import time doesn't abort. Forward the
+    # just-imported tunnel so enumeration works for tunnel-only databases.
     await add_permissions(session, database, ssh_tunnel=ssh_tunnel)
 
     return database
@@ -451,9 +396,7 @@ async def add_permissions(  # noqa: C901
     database: Database,
     ssh_tunnel: Any | None = None,
 ) -> None:
-    """Add DAR (data-access-role) permission-view-menus for catalogs/schemas.
-
-    1:1 port of ``superset_old/commands/database/utils.py:add_permissions``:
+    """Add permission-view-menus for catalogs and schemas of a database.
 
     * If the engine supports catalogs, enumerate every catalog (or only the
       default one when cross-catalog queries / multi-catalog aren't enabled)
@@ -461,9 +404,8 @@ async def add_permissions(  # noqa: C901
     * For every catalog enumerate its schemas and create a ``schema_access``
       PVM for each.
 
-    The catalog/schema enumeration mirrors the async pattern used by
-    :class:`superset.commands.database.sync_permissions.SyncPermissionsCommand`
-    (blocking inspector calls run in a thread).  PVMs are written via
+    Blocking inspector calls run in a thread via ``asyncio.to_thread``.
+    PVMs are written via
     :class:`superset.security.permission_manager.AsyncPermissionManager` against
     the import ``session`` so the new rows stay inside the import transaction.
     """
@@ -593,11 +535,6 @@ async def _import_ssh_tunnel(
     return tunnel
 
 
-# --------------------------------------------------------------------------- #
-# Dataset importer (full port of original ``import_dataset``)
-# --------------------------------------------------------------------------- #
-
-
 async def _import_dataset(  # noqa: C901
     session: AsyncSession,
     config: dict[str, Any],
@@ -607,8 +544,7 @@ async def _import_dataset(  # noqa: C901
     security_manager: Any | None = None,
     current_user: Any | None = None,
 ) -> SqlaTable:
-    """Full async port of
-    ``superset_old.commands.dataset.importers.v1.utils.import_dataset``.
+    """Import a dataset from config dict.
 
     Handles:
     - UUID-based dedup with ``MultipleResultsFound`` recovery
@@ -628,7 +564,7 @@ async def _import_dataset(  # noqa: C901
             "can_write", "Dataset", user=current_user
         )
 
-    cfg = dict(config)  # shallow copy
+    cfg = dict(config)
     uuid_str = cfg.get("uuid")
 
     existing: SqlaTable | None = None
@@ -665,7 +601,6 @@ async def _import_dataset(  # noqa: C901
             "Dataset doesn't exist and user doesn't have permission to create datasets"
         )
 
-    # JSON-serialise params/template_params/extra dicts.
     for key in _DATASET_JSON_KEYS:
         if cfg.get(key) is not None and isinstance(cfg[key], dict):
             try:
@@ -673,7 +608,6 @@ async def _import_dataset(  # noqa: C901
             except TypeError:
                 logger.info("Unable to encode `%s` field: %s", key, cfg[key])
 
-    # Same JSON-encode for nested column/metric extras.
     for nested in ("metrics", "columns"):
         for attributes in cfg.get(nested, []) or []:
             if isinstance(attributes, dict) and isinstance(
@@ -694,7 +628,6 @@ async def _import_dataset(  # noqa: C901
     columns_config = cfg.pop("columns", []) or []
     metrics_config = cfg.pop("metrics", []) or []
 
-    # Resolve database_id from database_uuid if needed.
     database_id = cfg.get("database_id")
     db_uuid = cfg.get("database_uuid")
     if not database_id and db_uuid:
@@ -708,7 +641,6 @@ async def _import_dataset(  # noqa: C901
             database_id = db.id
             cfg["database_id"] = database_id
 
-    # Trim non-model fields.
     cfg.pop("id", None)
     cfg.pop("version", None)
     cfg.pop("database_uuid", None)
@@ -745,11 +677,9 @@ async def _import_dataset(  # noqa: C901
     }
 
     if existing:
-        # Historical two-row guard — upstream's ``except MultipleResultsFound``
-        # recovery (utils.py:161-170): if ANOTHER row already holds the
-        # incoming (database_id, catalog, schema, table_name), applying the
-        # update would violate the unique constraint; return the UUID-matched
-        # row unmodified instead (R11-03).
+        # Two-row guard: if another row already holds the incoming
+        # (database_id, catalog, schema, table_name), applying the update would
+        # violate the unique constraint; return the UUID-matched row unmodified.
         conflict_id = (
             (
                 await session.execute(
@@ -779,15 +709,10 @@ async def _import_dataset(  # noqa: C901
     if dataset.id is None:
         await session.flush()
 
-    # Recursive children.
     await _import_columns(session, dataset, columns_config, sync=sync_columns)
     await _import_metrics(session, dataset, metrics_config, sync=sync_metrics)
     await session.flush()
 
-    # Optional data URL load — 1:1 with upstream import_dataset:175-187:
-    # load when the physical table does not exist OR the caller forced a
-    # reload (R11-02; the previous ``force_data``-only gate left example
-    # bundles without their physical tables).
     if data_uri:
         try:
             table_exists = await _table_exists(session, dataset)
@@ -801,7 +726,6 @@ async def _import_dataset(  # noqa: C901
         if not table_exists or force_data:
             await _load_data(session, data_uri, dataset)
 
-    # Owner management.
     if current_user is not None:
         await session.refresh(dataset, ["owners"])
         if current_user not in dataset.owners:
@@ -956,11 +880,10 @@ async def _import_metrics(  # noqa: C901
 
 
 async def _table_exists(session: AsyncSession, dataset: SqlaTable) -> bool:
-    """1:1 port of the ``Database.has_table`` check in upstream
-    ``import_dataset`` (utils.py:176-178), incl. the lowercase fallback.
+    """Check whether the dataset's physical table exists in the database.
 
-    Raises on connection/inspection failure so the caller can apply the
-    original "assume it exists" recovery.
+    Includes a lowercase fallback; raises on connection/inspection failure
+    so the caller can apply the "assume it exists" recovery.
     """
     import asyncio
 
@@ -992,12 +915,7 @@ async def _table_exists(session: AsyncSession, dataset: SqlaTable) -> bool:
 
 
 def _dataset_import_allowed_urls() -> list[str]:
-    """``DATASET_IMPORT_ALLOWED_DATA_URLS`` from settings.
-
-    The previous code imported the phantom ``superset.config.current_config``
-    whose ImportError silently emptied the allow-list AND inverted the
-    empty-list semantics to allow-all (R11-01).
-    """
+    """Return the ``DATASET_IMPORT_ALLOWED_DATA_URLS`` setting."""
     from superset.config import SupersetSettings
 
     settings = SupersetSettings()  # type: ignore[call-arg]
@@ -1011,10 +929,8 @@ async def _load_data(  # noqa: C901  # complex business logic
 ) -> None:
     """Load CSV data from ``data_uri`` into the dataset's table.
 
-    Mirrors the original ``load_data``: validates the URI against
-    ``DATASET_IMPORT_ALLOWED_DATA_URLS``, downloads + decodes, and writes
-    via ``database.get_sqla_engine`` (or, when the same Superset metadata
-    DB is the target, the active session connection).
+    Validates the URI against ``DATASET_IMPORT_ALLOWED_DATA_URLS``, downloads
+    and decodes, then writes via ``database.get_sqla_engine``.
 
     Exceptions are propagated up — the caller's transaction handling is
     responsible for rolling back on failure.
@@ -1027,12 +943,6 @@ async def _load_data(  # noqa: C901  # complex business logic
     import pandas as pd
     from sqlalchemy import Date, DateTime
 
-    # Normalise example URLs, then validate against the allow-list —
-    # 1:1 with upstream ``load_data`` → ``validate_data_uri``: ANY matching
-    # regex passes; no match (incl. an EMPTY allow-list) raises
-    # ``DatasetForbiddenDataURI`` (R11-01: the previous phantom
-    # ``current_config`` import silently skipped the check and treated an
-    # empty list as allow-all).
     try:
         from superset.examples.helpers import normalize_example_data_url
 
@@ -1064,7 +974,6 @@ async def _load_data(  # noqa: C901  # complex business logic
         data = gzip.open(data)
     df = await asyncio.to_thread(pd.read_csv, data, encoding="utf-8")
 
-    # Convert temporal columns (port of get_dtype + the to_datetime loop).
     from sqlalchemy import BigInteger, Boolean, Float, String, Text  # noqa: F401
 
     type_map = {
@@ -1120,7 +1029,6 @@ async def _load_data(  # noqa: C901  # complex business logic
     catalog = getattr(dataset, "catalog", None)
 
     def _load_via_engine() -> None:
-        # Prefer the database's own engine factory when available.
         get_engine = getattr(database, "get_sqla_engine", None)
         if get_engine is not None:
             with get_engine(catalog=catalog, schema=schema) as engine:

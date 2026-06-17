@@ -15,11 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""BigQuery engine spec -- sync-compatible.
-
-Ported 1:1 from ``superset_old/db_engine_specs/bigquery.py`` with legacy
-imports removed.  Only overridden methods and attributes are included.
-"""
+"""Google BigQuery database engine spec."""
 
 from __future__ import annotations
 
@@ -74,10 +70,6 @@ except ModuleNotFoundError:
     can_upload = False
 
 
-# ---------------------------------------------------------------------------
-# Parameter types / schema
-# ---------------------------------------------------------------------------
-
 BIGQUERY_PARAMETERS_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -98,10 +90,6 @@ class BigQueryParametersType(TypedDict):
     credentials_info: dict[str, Any]
     query: dict[str, Any]
 
-
-# ---------------------------------------------------------------------------
-# Error regexes
-# ---------------------------------------------------------------------------
 
 CONNECTION_DATABASE_PERMISSIONS_REGEX = re.compile(
     "Access Denied: Project (?P<project_name>.+?): User does not have "
@@ -128,11 +116,6 @@ SYNTAX_ERROR_REGEX = re.compile(
 
 
 class BigQueryEngineSpec(BaseEngineSpec):
-    """Engine spec for Google's BigQuery.
-
-    As contributed by @mxmzdlv on issue #945.
-    """
-
     engine = "bigquery"
     engine_name = "Google BigQuery"
     max_column_name_length = 128
@@ -143,8 +126,7 @@ class BigQueryEngineSpec(BaseEngineSpec):
     default_driver = "bigquery"
     sqlalchemy_uri_placeholder = "bigquery://{project_id}"
 
-    # BigQuery doesn't maintain context when running multiple statements in the
-    # same cursor, so we need to run all statements at once.
+    # BigQuery loses context between statements in the same cursor.
     run_multiple_statements_as_one = True
 
     allows_hidden_cc_in_orderby = True
@@ -155,9 +137,7 @@ class BigQueryEngineSpec(BaseEngineSpec):
 
     # when editing the database, mask this field in ``encrypted_extra``
     encrypted_extra_sensitive_fields = {"$.credentials_info.private_key"}
-
-    # https://www.python.org/dev/peps/pep-0249/#arraysize
-    # The default value of 5000 is derived from the sqlalchemy-bigquery.
+    # default from sqlalchemy-bigquery (PEP 249 arraysize)
     arraysize = 5000
 
     _date_trunc_functions = {
@@ -263,45 +243,31 @@ class BigQueryEngineSpec(BaseEngineSpec):
     @classmethod
     def fetch_data(cls, cursor: Any, limit: int | None = None) -> list[tuple[Any, ...]]:
         data = super().fetch_data(cursor, limit)
-        # Support type BigQuery Row, introduced here PR #4071
-        # google.cloud.bigquery.table.Row
+        # google.cloud.bigquery.table.Row objects are not plain tuples; convert.
         if data and type(data[0]).__name__ == "Row":
             data = [r.values() for r in data]  # type: ignore[union-attr]
         return data
 
     @staticmethod
     def _mutate_label(label: str) -> str:
-        """BigQuery field_name should start with a letter or underscore and
-        contain only alphanumeric characters.  Labels that start with a
-        number are prefixed with an underscore.  Any unsupported characters
-        are replaced with underscores and an md5 hash is added to the end
-        of the label to avoid possible collisions.
+        """Enforce BigQuery column name rules.
 
-        :param label: Expected expression label
-        :return: Conditionally mutated label
+        BigQuery requires identifiers to start with a letter or underscore and
+        contain only alphanumeric characters.  Numbers get an underscore prefix;
+        unsupported characters become underscores with an md5 suffix to avoid
+        collisions.
         """
         label_hashed = "_" + md5_sha_from_str(label)
-
-        # if label starts with number, add underscore as first character
         label_mutated = "_" + label if re.match(r"^\d", label) else label
-
-        # replace non-alphanumeric characters with underscores
         label_mutated = re.sub(r"[^\w]+", "_", label_mutated)
         if label_mutated != label:
-            # add first 5 chars from md5 hash to label to avoid possible collisions
             label_mutated += label_hashed[:6]
-
         return label_mutated
 
     @classmethod
     def _truncate_label(cls, label: str) -> str:
-        """BigQuery requires column names start with either a letter or
-        underscore.  To make sure this is always the case, an underscore is
-        prefixed to the md5 hash of the original label.
-
-        :param label: expected expression label
-        :return: truncated label
-        """
+        # Underscore prefix ensures the result starts with a
+        # letter/underscore (BQ rule).
         return "_" + md5_sha_from_str(label)
 
     @classmethod
@@ -330,12 +296,10 @@ class BigQueryEngineSpec(BaseEngineSpec):
 
     @classmethod
     def get_default_catalog(cls, database: Database) -> str:
-        """Get the default catalog.
+        """Return the GCP project.
 
-        The SQLAlchemy driver accepts both ``bigquery://project`` (where the
-        project is technically a host) and ``bigquery:///project`` (where
-        it's a database).  But both can be missing, and the project is
-        inferred from the authentication credentials.
+        The driver accepts ``bigquery://project`` (host) or ``bigquery:///project``
+        (database); both can be absent, in which case the project comes from ADC.
         """
         url = database.url_object
 
@@ -352,10 +316,7 @@ class BigQueryEngineSpec(BaseEngineSpec):
         database: Database,
         inspector: Inspector,
     ) -> set[str]:
-        """Get all catalogs.
-
-        In BigQuery, a catalog is called a "project".
-        """
+        # In BigQuery a "catalog" is a GCP project.
         with database.get_sqla_engine() as engine:
             try:
                 client = cls._get_client(engine, database)
@@ -365,7 +326,6 @@ class BigQueryEngineSpec(BaseEngineSpec):
                     "credentials. This is normal in certain circustances, for example, "
                     "doing an import."
                 )
-                # return {} here, since it will be repopulated when creds are added
                 return set()
 
             projects = client.list_projects()
@@ -393,7 +353,6 @@ class BigQueryEngineSpec(BaseEngineSpec):
         database: Database,
         table: Table,
     ) -> Select | None:
-        # Compose schema from catalog and schema
         schema_parts: list[str] = []
         if table.catalog:
             schema_parts.append(table.catalog)
@@ -402,7 +361,6 @@ class BigQueryEngineSpec(BaseEngineSpec):
         schema_parts.append("INFORMATION_SCHEMA")
         schema = ".".join(schema_parts)
 
-        # Define a virtual table reference to INFORMATION_SCHEMA.PARTITIONS
         partitions_table = sql_table(
             "PARTITIONS",
             sql_column("partition_id"),
@@ -410,18 +368,15 @@ class BigQueryEngineSpec(BaseEngineSpec):
             schema=schema,
         )
 
-        # Build the query
         query = select(
             func.max(partitions_table.c.partition_id).label("max_partition_id")
         ).where(partitions_table.c.table_name == table.table)
 
-        # Compile to BigQuery SQL
         compiled_query = query.compile(
             dialect=database.get_dialect(),
             compile_kwargs={"literal_binds": True},
         )
 
-        # Run the query and handle result
         with database.get_raw_connection(
             catalog=table.catalog,
             schema=table.schema,
@@ -496,14 +451,6 @@ class BigQueryEngineSpec(BaseEngineSpec):
         sql: str,
         source: utils.QuerySource | None = None,
     ) -> list[dict[str, Any]]:
-        """Estimate the cost of a multiple statement SQL query.
-
-        :param database: Database instance
-        :param catalog: Database project
-        :param schema: Database schema
-        :param sql: SQL query with possibly multiple statements
-        :param source: Source of the query (eg, "sql_lab")
-        """
         extra = database.get_extra(source) or {}
         if not cls.get_allow_cost_estimate(extra):
             raise SupersetException("Database does not support cost estimation")
@@ -531,7 +478,6 @@ class BigQueryEngineSpec(BaseEngineSpec):
         engine: Engine,
         database: Database,
     ) -> bigquery.Client:
-        """Return the BigQuery client associated with an engine."""
         if not dependencies_installed:
             raise SupersetException(
                 "Could not import libraries needed to connect to BigQuery."
@@ -557,7 +503,6 @@ class BigQueryEngineSpec(BaseEngineSpec):
         statement: str,
         client: bigquery.Client,
     ) -> dict[str, Any]:
-        """Custom version that receives a client instead of a cursor."""
         job_config = bigquery.QueryJobConfig(dry_run=True)
         query_job = client.query(statement, job_config=job_config)
 
@@ -622,10 +567,8 @@ class BigQueryEngineSpec(BaseEngineSpec):
 
         value = make_url_safe(uri)
 
-        # Building parameters from encrypted_extra and uri
         if encrypted_extra:
-            # ``value.query`` needs to be explicitly converted into a dict (from an
-            # ``immutabledict``) so that it can be JSON serialized
+            # ``value.query`` is an immutabledict; convert so it can be JSON serialized.
             return {**encrypted_extra, "query": dict(value.query)}
 
         raise ValueError("Invalid service credentials")
@@ -638,18 +581,8 @@ class BigQueryEngineSpec(BaseEngineSpec):
         df: pd.DataFrame,
         to_sql_kwargs: dict[str, Any],
     ) -> None:
-        """
-        Upload data from a Pandas DataFrame to a database.
-
-        Calls `pandas_gbq.DataFrame.to_gbq` which requires `pandas_gbq` to be installed.
-
-        Note this method does not create metadata for the table.
-
-        :param database: The database to upload the data to
-        :param table: The table to upload the data to
-        :param df: The dataframe with data to be uploaded
-        :param to_sql_kwargs: The kwargs to be passed to pandas.DataFrame.to_sql` method
-        """
+        """Upload DataFrame via ``pandas_gbq.to_gbq``;
+        does not create SqlaTable metadata."""
         if not can_upload:
             raise SupersetException(
                 "Could not import libraries needed to upload data to BigQuery."
@@ -669,14 +602,11 @@ class BigQueryEngineSpec(BaseEngineSpec):
                 "project_id": engine.url.host,
             }
 
-        # Add credentials if they are set on the SQLAlchemy dialect.
-
         if creds := engine.dialect.credentials_info:
             to_gbq_kwargs["credentials"] = (
                 service_account.Credentials.from_service_account_info(creds)
             )
 
-        # Only pass through supported kwargs.
         supported_kwarg_keys = {"if_exists"}
 
         for key in supported_kwarg_keys:
@@ -694,7 +624,6 @@ class BigQueryEngineSpec(BaseEngineSpec):
 
     @classmethod
     def parameters_json_schema(cls) -> Any:
-        """Return configuration parameters as JSON Schema."""
         return cls.parameters_schema or None
 
     @classmethod
@@ -716,13 +645,10 @@ class BigQueryEngineSpec(BaseEngineSpec):
         latest_partition: bool = True,
         cols: list[ResultSetColumnType] | None = None,
     ) -> str:
-        """Remove array structures from ``SELECT *``.
+        """Strip array-struct pseudo-columns from SELECT *.
 
-        BigQuery supports structures and arrays of structures.  When loading
-        metadata for a table each key in the struct is displayed as a
-        separate pseudo-column.  When generating the ``SELECT *`` statement
-        we want to remove any keys from structs inside an array, since
-        selecting them results in an error.
+        BigQuery expands struct fields inside arrays as separate pseudo-columns;
+        selecting them causes an error, so they are removed here.
         """
         if cols:
             array_prefixes = {
@@ -750,12 +676,7 @@ class BigQueryEngineSpec(BaseEngineSpec):
 
     @classmethod
     def _get_fields(cls, cols: list[ResultSetColumnType]) -> list[Any]:
-        """Label columns using their fully qualified name.
-
-        BigQuery supports columns of type ``struct``, which are dictionaries.
-        We explicitly label the columns using their fully qualified name to
-        prevent clashes with other columns.
-        """
+        # Label struct columns with fully qualified names to avoid clashes.
         return [
             column(c["column_name"]).label(c["column_name"].replace(".", "__"))
             for c in cols

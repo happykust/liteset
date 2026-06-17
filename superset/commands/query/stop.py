@@ -14,16 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Stop-query command.
-
-LITESET ADDITION (no 1:1 counterpart in
-``superset_old/commands/query/``).  Apache Superset 6.0 calls
-``QueryDAO.stop_query(client_id)`` directly inline in
-``superset_old/queries/api.py::stop_query``; no Command class wraps the
-call.  In Liteset the same logic lives here so the Litestar controller
-stays thin.  File name kept short to match the single-verb convention in
-``superset_old/commands/query/`` (``delete.py``, ``export.py``).
-"""
+"""Stop-query command — thin wrapper so the Litestar controller stays lean."""
 
 from __future__ import annotations
 

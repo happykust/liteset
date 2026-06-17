@@ -35,7 +35,6 @@ class AsyncCrateDbEngineSpec(AsyncPostgresEngineSpec):
     engine_name = "CrateDB"
     default_driver = "asyncpg"
 
-    # CrateDB supports only basic DATE_TRUNC grains (no sub-minute).
     _time_grain_expressions: dict[str | None, str] = {
         None: "{col}",
         "PT1S": "DATE_TRUNC('second', {col})",
@@ -50,14 +49,13 @@ class AsyncCrateDbEngineSpec(AsyncPostgresEngineSpec):
 
     @classmethod
     def epoch_to_dttm(cls) -> str:
-        """CrateDB timestamps are stored as milliseconds since epoch."""
         return "{col} * 1000"
 
     @classmethod
     def epoch_ms_to_dttm(cls) -> str:
         # CrateDB stores ms-epoch natively, so ms → dttm is identity. Without
         # this override the base default emits ``({col}/1000) * 1000`` whose
-        # integer division truncates sub-second precision (1:1 with upstream).
+        # integer division truncates sub-second precision.
         return "{col}"
 
     @classmethod

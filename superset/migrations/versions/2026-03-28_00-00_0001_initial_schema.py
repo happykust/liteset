@@ -41,28 +41,24 @@ def upgrade() -> None:
     # Layer 0: Independent tables (no foreign keys to other app tables)
     # =====================================================================
 
-    # -- ab_permission -------------------------------------------------------
     op.create_table(
         "ab_permission",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("name", sa.String(length=512), unique=True, nullable=False),
     )
 
-    # -- ab_view_menu --------------------------------------------------------
     op.create_table(
         "ab_view_menu",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("name", sa.String(length=512), unique=True, nullable=False),
     )
 
-    # -- ab_role -------------------------------------------------------------
     op.create_table(
         "ab_role",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("name", sa.String(length=256), unique=True, nullable=False),
     )
 
-    # -- ab_user -------------------------------------------------------------
     op.create_table(
         "ab_user",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -116,7 +112,6 @@ def upgrade() -> None:
     op.create_index("idx_permission_id", "ab_permission_view", ["permission_id"])
     op.create_index("idx_view_menu_id", "ab_permission_view", ["view_menu_id"])
 
-    # -- ab_user_role --------------------------------------------------------
     op.create_table(
         "ab_user_role",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -135,7 +130,6 @@ def upgrade() -> None:
         sa.UniqueConstraint("user_id", "role_id"),
     )
 
-    # -- ab_permission_view_role ---------------------------------------------
     op.create_table(
         "ab_permission_view_role",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -159,7 +153,6 @@ def upgrade() -> None:
     # FAB canonical name (flask_appbuilder/security/sqla/models.py:94)
     op.create_index("idx_role_id", "ab_permission_view_role", ["role_id"])
 
-    # -- ab_group (FAB Groups) -----------------------------------------------
     op.create_table(
         "ab_group",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -173,7 +166,6 @@ def upgrade() -> None:
         sa.Column("description", sa.String(length=512)),
     )
 
-    # -- ab_user_group -------------------------------------------------------
     op.create_table(
         "ab_user_group",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -193,7 +185,6 @@ def upgrade() -> None:
     op.create_index("idx_user_id", "ab_user_group", ["user_id"])
     op.create_index("idx_user_group_id", "ab_user_group", ["group_id"])
 
-    # -- ab_group_role -------------------------------------------------------
     op.create_table(
         "ab_group_role",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -213,14 +204,12 @@ def upgrade() -> None:
     op.create_index("idx_group_id", "ab_group_role", ["group_id"])
     op.create_index("idx_group_role_id", "ab_group_role", ["role_id"])
 
-    # -- keyvalue (legacy) ---------------------------------------------------
     op.create_table(
         "keyvalue",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("value", sa.Text(), nullable=False),
     )
 
-    # -- annotation_layer ----------------------------------------------------
     op.create_table(
         "annotation_layer",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -242,7 +231,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- cache_keys ----------------------------------------------------------
     op.create_table(
         "cache_keys",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -257,7 +245,6 @@ def upgrade() -> None:
         ["datasource_uid"],
     )
 
-    # -- dynamic_plugin ------------------------------------------------------
     op.create_table(
         "dynamic_plugin",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -280,7 +267,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- key_value (new) -----------------------------------------------------
     op.create_table(
         "key_value",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -308,15 +294,13 @@ def upgrade() -> None:
         ),
         sa.Column("expires_on", sa.DateTime(), nullable=True),
     )
-    # 1:1 with upstream 6766938c6065 — the DAO filters on ``expires_on`` for
-    # validity checks and cleanup scans.
+    # The DAO filters on ``expires_on`` for validity checks and cleanup scans.
     op.create_index("ix_key_value_expires_on", "key_value", ["expires_on"])
 
     # =====================================================================
     # Layer 1: Tables with FKs only to Layer 0
     # =====================================================================
 
-    # -- css_templates -------------------------------------------------------
     op.create_table(
         "css_templates",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -344,7 +328,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- themes --------------------------------------------------------------
     op.create_table(
         "themes",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -379,7 +362,6 @@ def upgrade() -> None:
     op.create_index("idx_theme_is_system_default", "themes", ["is_system_default"])
     op.create_index("idx_theme_is_system_dark", "themes", ["is_system_dark"])
 
-    # -- dbs (Database) ------------------------------------------------------
     op.create_table(
         "dbs",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -435,7 +417,6 @@ def upgrade() -> None:
         sa.UniqueConstraint("database_name", name="uq_dbs_database_name"),
     )
 
-    # -- database_user_oauth2_tokens -----------------------------------------
     op.create_table(
         "database_user_oauth2_tokens",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -475,7 +456,6 @@ def upgrade() -> None:
         ["user_id", "database_id"],
     )
 
-    # -- logs ----------------------------------------------------------------
     op.create_table(
         "logs",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -494,7 +474,6 @@ def upgrade() -> None:
         sa.Column("referrer", sa.String(length=1024), nullable=True),
     )
 
-    # -- favstar -------------------------------------------------------------
     op.create_table(
         "favstar",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -515,7 +494,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- annotation ----------------------------------------------------------
     op.create_table(
         "annotation",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -551,7 +529,6 @@ def upgrade() -> None:
         ["layer_id", "start_dttm", "end_dttm"],
     )
 
-    # -- tag -----------------------------------------------------------------
     op.create_table(
         "tag",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -574,7 +551,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- tagged_object -------------------------------------------------------
     op.create_table(
         "tagged_object",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -605,7 +581,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- user_favorite_tag ---------------------------------------------
     op.create_table(
         "user_favorite_tag",
         sa.Column(
@@ -622,7 +597,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- ssh_tunnels ---------------------------------------------------------
     op.create_table(
         "ssh_tunnels",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -666,7 +640,6 @@ def upgrade() -> None:
     # Layer 2: Tables (tables/datasets) with FKs to dbs
     # =====================================================================
 
-    # -- tables (SqlaTable / dataset) ----------------------------------------
     op.create_table(
         "tables",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -737,7 +710,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- table_columns -------------------------------------------------------
     op.create_table(
         "table_columns",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -787,7 +759,6 @@ def upgrade() -> None:
         sa.UniqueConstraint("table_id", "column_name"),
     )
 
-    # -- sql_metrics ---------------------------------------------------------
     op.create_table(
         "sql_metrics",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -834,7 +805,6 @@ def upgrade() -> None:
         sa.UniqueConstraint("table_id", "metric_name"),
     )
 
-    # -- sqlatable_user (association) ----------------------------------------
     op.create_table(
         "sqlatable_user",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -852,7 +822,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- row_level_security_filters ------------------------------------------
     op.create_table(
         "row_level_security_filters",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -881,7 +850,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- rls_filter_roles (association) --------------------------------------
     op.create_table(
         "rls_filter_roles",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -901,7 +869,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- rls_filter_tables (association) -----
     op.create_table(
         "rls_filter_tables",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -925,7 +892,6 @@ def upgrade() -> None:
     # Layer 3: Slices (charts) -- depend on ab_user
     # =====================================================================
 
-    # -- slices --------------------------------------------------------------
     op.create_table(
         "slices",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -981,7 +947,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- slice_user (association) --------------------------------------------
     op.create_table(
         "slice_user",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -1003,7 +968,6 @@ def upgrade() -> None:
     # Layer 4: Dashboards -- depend on themes
     # =====================================================================
 
-    # -- dashboards ----------------------------------------------------------
     op.create_table(
         "dashboards",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -1053,7 +1017,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- dashboard_slices (association) --------------------------------------
     op.create_table(
         "dashboard_slices",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -1072,7 +1035,6 @@ def upgrade() -> None:
         sa.UniqueConstraint("dashboard_id", "slice_id"),
     )
 
-    # -- dashboard_user (association) ----------------------------------------
     op.create_table(
         "dashboard_user",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -1090,7 +1052,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- dashboard_roles (association) ---------------------------------------
     op.create_table(
         "dashboard_roles",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -1108,7 +1069,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- embedded_dashboards -------------------------------------------------
     op.create_table(
         "embedded_dashboards",
         sa.Column(
@@ -1144,7 +1104,6 @@ def upgrade() -> None:
     # Layer 5: Tables that depend on dashboards/slices/dbs
     # =====================================================================
 
-    # -- user_attribute (deferred FK to dashboards) --------------------------
     op.create_table(
         "user_attribute",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -1178,7 +1137,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- report_schedule -----------------------------------------------------
     op.create_table(
         "report_schedule",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -1251,14 +1209,13 @@ def upgrade() -> None:
         "report_schedule",
         ["active"],
     )
-    # 1:1 with upstream 3317e9248280 — distinguishes alerts vs reports.
+    # Distinguishes alerts vs reports.
     op.create_index(
         "ix_creation_method",
         "report_schedule",
         ["creation_method"],
     )
 
-    # -- report_schedule_user (association) ----------------------------------
     op.create_table(
         "report_schedule_user",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -1286,7 +1243,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- report_recipient ---------------------------------------------------
     op.create_table(
         "report_recipient",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -1328,7 +1284,6 @@ def upgrade() -> None:
         ["report_schedule_id"],
     )
 
-    # -- report_execution_log ---------------
     op.create_table(
         "report_execution_log",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -1366,7 +1321,6 @@ def upgrade() -> None:
     # Layer 6: SQL Lab tables -- depend on dbs and ab_user
     # =====================================================================
 
-    # -- query ---------------------------------------------------------------
     op.create_table(
         "query",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -1440,7 +1394,6 @@ def upgrade() -> None:
         ["results_key"],
     )
 
-    # -- saved_query ---------------------------------------------------------
     op.create_table(
         "saved_query",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -1490,7 +1443,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- tab_state -----------------------------------------------------------
     op.create_table(
         "tab_state",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -1546,7 +1498,6 @@ def upgrade() -> None:
         ),
     )
 
-    # -- table_schema --------------------------------------------------------
     op.create_table(
         "table_schema",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),

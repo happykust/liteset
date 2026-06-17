@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dashboard/export.py``."""
+"""Dashboard export command."""
 
 from __future__ import annotations
 
@@ -46,7 +46,6 @@ logger = logging.getLogger(__name__)
 
 EXPORT_VERSION = "1.0.0"
 
-# JSON keys stored as strings on the model but exposed as dicts in the export.
 _JSON_KEYS = {"position_json": "position", "json_metadata": "metadata"}
 
 
@@ -58,17 +57,7 @@ def _suffix(length: int = 8) -> str:
 
 
 class ExportDashboardsCommand(AsyncExportModelsCommand):
-    """Export dashboards to a ZIP bundle.
-
-    Ported 1:1 from ``superset_old/commands/dashboard/export.py``: uses
-    ``Dashboard.export_to_dict(recursive=False, include_defaults=True,
-    export_uuids=True)`` to build the payload, then decodes the JSON
-    string fields, replaces native filter dataset IDs with UUIDs, fills
-    in a default position when missing, appends orphan charts, stamps
-    ``theme_uuid``, and stamps the export version.
-
-    Bundles related charts, datasets, and databases alongside.
-    """
+    """Export dashboards to a ZIP bundle."""
 
     _resource_type = "Dashboard"
 
@@ -104,12 +93,7 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
     async def _attach_ssh_tunnel(
         self, db_payload: dict[str, Any], database_id: int
     ) -> None:
-        """Attach the masked SSH-tunnel payload to a database YAML payload.
-
-        1:1 with ``superset_old/commands/dataset/export.py:114-121`` — the
-        path the original dashboard export delegates every database YAML to
-        (via ``ExportChartsCommand`` → ``ExportDatasetsCommand._export``).
-        """
+        """Attach the masked SSH-tunnel payload to a database YAML payload."""
         from superset.db.daos.database import AsyncSSHTunnelDAO
         from superset.utils.ssh_tunnel import mask_password_info
 
@@ -136,13 +120,8 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
         from superset.models.dashboard import Dashboard
         from superset.models.slice import Slice
 
-        # Eager-load relationships before going async.
-        # Each ``ds.export_to_dict(recursive=True)`` walks
-        # ``SqlaTable.export_children`` = ["metrics", "columns"]; without the
-        # selectinload below SQLAlchemy fires an implicit lazy-load on
-        # ``ds.metrics`` / ``ds.columns`` that fails with ``MissingGreenlet``.
-        # We also pre-load ``Dashboard.theme`` / ``.tags`` because the export
-        # payload references them while still inside the async event loop.
+        # Eager-load all relationships export_to_dict will walk. Without
+        # selectinload SA fires implicit lazy-loads that fail with MissingGreenlet.
         stmt = (
             sa_select(Dashboard)
             .where(Dashboard.id == model_id)
@@ -166,7 +145,6 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
         if not dashboard:
             raise ObjectNotFoundError("Dashboard", model_id)
 
-        # ``export_to_dict(recursive=False, include_defaults=True, export_uuids=True)``
         payload: dict[str, Any] = dashboard.export_to_dict(
             recursive=False,
             include_parent_ref=False,
@@ -174,10 +152,9 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
             export_uuids=True,
         )
 
-        # Convert position_json + json_metadata strings to dicts. A
-        # valid-but-non-object value (``[1,2]`` / ``"s"``) must be coerced to
-        # ``{}`` — otherwise the ``metadata.get(...)`` and
-        # ``find_chart_uuids(position)`` calls below raise → HTTP 500 on export.
+        # Decode JSON strings to dicts; coerce non-object values (``[1,2]``,
+        # ``"s"``) to ``{}`` — metadata.get() and find_chart_uuids() would
+        # raise on a non-dict, producing HTTP 500 on export.
         for key, new_name in _JSON_KEYS.items():
             value: str | None = payload.pop(key, None)
             if value:
@@ -188,7 +165,6 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
                     parsed = {}
                 payload[new_name] = parsed if isinstance(parsed, dict) else {}
 
-        # Replace native filter dataset IDs with UUIDs.
         for native_filter in payload.get("metadata", {}).get(
             "native_filter_configuration", []
         ):
@@ -205,7 +181,6 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
         if not payload.get("position"):
             payload["position"] = _get_default_position(dashboard.dashboard_title or "")
 
-        # Append orphan charts not referenced in the position.
         referenced_charts = find_chart_uuids(payload["position"])
         slices = dashboard.slices or []
         orphan_charts = {
@@ -214,21 +189,13 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
         if orphan_charts:
             payload["position"] = _append_charts(payload["position"], orphan_charts)
 
-        # Theme UUID for cross-system imports.
         theme = getattr(dashboard, "theme", None)
         payload["theme_uuid"] = str(theme.uuid) if theme else None
 
         payload["version"] = EXPORT_VERSION
 
-        # Export related theme — gated by export_related, 1:1 with
-        # superset_old/commands/dashboard/export.py:199-203 which emits theme
-        # files only inside the ``if export_related:`` block.  When called from
-        # AsyncFullAssetManager._export_type (export_related=False) the theme
-        # YAML must NOT be emitted here — each theme is already exported by
-        # its own top-level exporter in the full-assets bundle, and emitting
-        # it unconditionally would inject spurious themes/*.yaml entries into
-        # the bundle for every dashboard that has a theme (superset/importexport
-        # /manager.py:266 passes export_related=False for exactly this reason).
+        # When export_related=False, skip theme YAML — the full-assets bundle
+        # exports themes separately; emitting here would inject spurious entries.
         _theme_files: list[tuple[str, str]] = []
         if self._export_related and theme:
             from superset.commands.theme import ExportThemesCommand
@@ -241,7 +208,6 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
             await _export_themes_cmd.validate()
             _theme_files = await _export_themes_cmd.run()
 
-        # Fetch tags from the database if TAGGING_SYSTEM is enabled
         if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
             tags = getattr(dashboard, "tags", []) or []
             payload["tags"] = [tag.name for tag in tags if tag.type == TagType.custom]
@@ -253,14 +219,8 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
             )
         ]
 
-        # Emit a separate ``tags.yaml`` entry only when export_related=True and
-        # TAGGING_SYSTEM is enabled.  The original gates this inside the
-        # ``if export_related:`` block (superset_old/commands/dashboard/export.py
-        # :187-197).  When export_related=False (full-assets bundle from
-        # AsyncFullAssetManager) the tags.yaml must NOT be emitted here: no
-        # prior phase emits a tags.yaml so the first dashboard's tags.yaml would
-        # land in the bundle unchallenged, producing partial tag data that the
-        # original bundle never contained (clean absence is correct).
+        # When export_related=False, skip tags.yaml — no prior phase emits one in
+        # the full-assets bundle; emitting here would produce partial tag data.
         if self._export_related and feature_flag_manager.is_feature_enabled(
             "TAGGING_SYSTEM"
         ):
@@ -276,7 +236,6 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
                     for tag in (getattr(chart, "tags", []) or [])
                     if "type:" not in tag.name and "owner:" not in tag.name
                 )
-            # Merge, preventing duplicates by tag name (dashboard tags win).
             tags_dict = {tag["tag_name"]: tag for tag in dashboard_tags}
             for tag in chart_tags:
                 if tag["tag_name"] not in tags_dict:
@@ -289,15 +248,8 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
                 )
             )
 
-        # Append theme YAML files to the bundle (populated above when
-        # export_related=True and a theme is present).
         files.extend(_theme_files)
 
-        # Bundle related charts + datasets + databases only when export_related is
-        # True — 1:1 with superset_old/commands/dashboard/export.py:187 where the
-        # entire chart/tags/theme/dataset block is guarded by ``if export_related:``.
-        # When export_related=False (e.g. AsyncFullAssetManager passes False to avoid
-        # cascading exports), only the dashboard YAML is emitted.
         if self._export_related:
             seen_datasets: set[int] = set()
             seen_databases: set[int] = set()
@@ -403,7 +355,6 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
                             )
                         )
 
-            # Native-filter referenced datasets that aren't chart datasources.
             for native_filter in payload.get("metadata", {}).get(
                 "native_filter_configuration", []
             ):
@@ -428,9 +379,6 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
                                 include_defaults=True,
                                 export_uuids=True,
                             )
-                            # Apply the same JSON normalization as the chart-datasource
-                            # path and as ExportDatasetsCommand._file_content
-                            # (superset_old/commands/dataset/export.py:62-76).
                             for key in ("params", "template_params", "extra"):
                                 if ds_payload.get(key):
                                     try:
@@ -464,9 +412,6 @@ class ExportDashboardsCommand(AsyncExportModelsCommand):
                                 )
                             )
 
-                            # Emit the database YAML — mirrors ExportDatasetsCommand
-                            # _export() (superset_old/commands/dataset/export.py:94-125)
-                            # and the chart-datasource path above.
                             if ds.database and ds.database.id not in seen_databases:
                                 seen_databases.add(ds.database.id)
                                 db = ds.database

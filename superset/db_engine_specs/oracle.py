@@ -14,12 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Oracle engine spec -- synchronous.
-
-Ported 1:1 from ``superset_old/db_engine_specs/oracle.py`` with the legacy
-WSGI-stack imports removed.  Only overridden methods and attributes are
-included.
-"""
+"""Oracle database engine spec."""
 
 from __future__ import annotations
 

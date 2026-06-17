@@ -16,11 +16,9 @@
 # under the License.
 """``POST /api/v1/sqllab/estimate/`` command.
 
-Ports ``superset_old/commands/sql_lab/estimate.py::QueryEstimationCommand``
-into the async pipeline. Loads the database via the DAO, optionally
-renders Jinja ``template_params`` against the SQL, then dispatches to
-``db_engine_spec.estimate_statement_cost`` (async) per parsed statement
-and runs the result through the engine spec's
+Loads the database via the DAO, optionally renders Jinja ``template_params``
+against the SQL, then dispatches to ``db_engine_spec.estimate_statement_cost``
+(async) per parsed statement and runs the result through the engine spec's
 ``query_cost_formatter``. Honours ``SQLLAB_QUERY_COST_ESTIMATE_TIMEOUT``.
 """
 
@@ -45,15 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 class EstimateQueryCostCommand(AsyncBaseCommand[list[dict[str, Any]]]):
-    """Estimate the cost of a multi-statement SQL query.
-
-    1:1 with the original ``QueryEstimationCommand`` (sync). Differences
-    are only mechanical: ``db.session.query`` -> ``AsyncDatabaseDAO``,
-    sync ``estimate_statement_cost`` -> ``await
-    spec.estimate_statement_cost(conn, statement)``, and the timeout is
-    enforced via :func:`asyncio.wait_for` rather than the unix-signal
-    based ``utils.timeout`` (which is not safe inside the asyncio loop).
-    """
+    """Estimate the cost of a multi-statement SQL query."""
 
     def __init__(
         self,
@@ -70,8 +60,6 @@ class EstimateQueryCostCommand(AsyncBaseCommand[list[dict[str, Any]]]):
         self._catalog = catalog
         self._template_params = template_params or {}
         self._dao = dao
-        # ``validate()`` raises when the database is missing, so
-        # post-validate access is non-None; typed Any.
         self._database: Any = None
 
     async def validate(self) -> None:
@@ -91,10 +79,6 @@ class EstimateQueryCostCommand(AsyncBaseCommand[list[dict[str, Any]]]):
                 )
 
     async def run(self) -> list[dict[str, Any]]:
-        # When invoked from a controller, ``validate()`` has already
-        # populated ``self._database``.  When invoked directly (tests
-        # without a DAO), we still emulate the original by raising the
-        # same SupersetErrorException.
         if self._database is None:
             await self.validate()
 
@@ -126,17 +110,10 @@ class EstimateQueryCostCommand(AsyncBaseCommand[list[dict[str, Any]]]):
 
         return self._format_cost(cost)
 
-    # ------------------------------------------------------------------
-    # internal helpers
-    # ------------------------------------------------------------------
-
     async def _render_template(self, sql: str) -> str:
-        """Render Jinja ``template_params`` against ``sql`` if any.
-
-        Mirrors the original
-        ``superset_old/commands/sql_lab/estimate.py``: we do this *before*
-        dispatching to the engine spec so estimation reflects the same
-        rendered SQL the user would execute.
+        """
+        Render Jinja template_params before dispatching so estimation
+        reflects the same SQL the user executes.
         """
         if not self._template_params:
             return sql
@@ -171,14 +148,6 @@ class EstimateQueryCostCommand(AsyncBaseCommand[list[dict[str, Any]]]):
             return 60
 
     async def _estimate_cost(self, sql: str) -> list[dict[str, Any]]:
-        """Run ``EXPLAIN``-style estimation per statement.
-
-        Mirrors ``BaseEngineSpec.estimate_query_cost`` from the original:
-        - parse ``sql`` into a :class:`SQLScript`,
-        - check ``get_allow_cost_estimate`` (raises if disabled),
-        - open *one* connection and run ``estimate_statement_cost`` per
-          statement, accumulating the dict-typed cost results.
-        """
         from superset.commands.sqllab._shared import get_engine_name
         from superset.sql.parse import SQLScript
         from superset.utils.database import (
@@ -194,9 +163,8 @@ class EstimateQueryCostCommand(AsyncBaseCommand[list[dict[str, Any]]]):
             except Exception:  # noqa: BLE001
                 extra = {}
 
-        # ``get_allow_cost_estimate`` may be a classmethod, a method,
-        # or a plain bool attribute (Postgres declares it as a bool;
-        # Trino as a classmethod). Normalize all three.
+        # ``get_allow_cost_estimate`` can be a bool, classmethod, or method
+        # depending on the engine.
         allow = self._is_cost_estimate_allowed(engine_spec, extra)
         if not allow:
             raise SupersetErrorException(
@@ -252,10 +220,9 @@ class EstimateQueryCostCommand(AsyncBaseCommand[list[dict[str, Any]]]):
     def _format_cost(self, cost: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Apply the engine-spec or config-level cost formatter.
 
-        Mirrors the original which checked
-        ``QUERY_COST_FORMATTERS_BY_ENGINE`` first, then fell back to the
-        engine spec's :meth:`query_cost_formatter`. The
-        ``QUERY_COST_FORMATTERS_BY_ENGINE`` config map is preserved in
+        Checks ``QUERY_COST_FORMATTERS_BY_ENGINE`` first, then falls back to
+        the engine spec's :meth:`query_cost_formatter`. The
+        ``QUERY_COST_FORMATTERS_BY_ENGINE`` config map is in
         :class:`SupersetSettings` and may be empty by default.
         """
         try:

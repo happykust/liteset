@@ -16,8 +16,7 @@
 # under the License.
 """Unit tests for the thumbnail digest helpers.
 
-Covers the 1:1 port of ``superset_old/thumbnails/digest.py`` —
-``_adjust_string_for_executor`` (per-user thumbnails), the RLS-aware
+Covers ``_adjust_string_for_executor`` (per-user thumbnails), the RLS-aware
 ``_adjust_string_with_rls`` (a user who can only see their own rows must not
 be served another tenant's cached thumbnail), and the
 ``_query_dashboard_datasources`` enumeration that feeds the dashboard digest
@@ -36,16 +35,8 @@ from superset.thumbnails.digest import (
     _query_dashboard_datasources,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _session_cm(user: object):
-    """Return a zero-arg context manager factory yielding a mock session whose
-    ``User`` lookup resolves to ``user`` — patches ``_metadata_sync_session``.
-    """
-
     @contextmanager
     def _cm():
         session = MagicMock()
@@ -65,30 +56,17 @@ def _rls_datasource(ds_id: int, filters: list[str]) -> MagicMock:
     return ds
 
 
-# ---------------------------------------------------------------------------
-# _adjust_string_for_executor
-# ---------------------------------------------------------------------------
-
-
 def test_adjust_string_for_executor_current_user_appends():
-    """CURRENT_USER executor appends the executor id (per-user thumbnail)."""
     out = _adjust_string_for_executor("base", ExecutorType.CURRENT_USER, "alice")
     assert out == "base\nalice"
 
 
 def test_adjust_string_for_executor_other_unchanged():
-    """Non per-user executors do not change the unique string."""
     out = _adjust_string_for_executor("base", ExecutorType.OWNER, "owner-1")
     assert out == "base"
 
 
-# ---------------------------------------------------------------------------
-# _adjust_string_with_rls  (the RLS-isolation property)
-# ---------------------------------------------------------------------------
-
-
 def test_adjust_string_with_rls_no_user_unchanged():
-    """With no resolvable user the string is returned untouched."""
     with (
         patch("superset.utils.rls._metadata_sync_session", _session_cm(None)),
         patch("superset.utils.core.get_current_user", return_value=None),
@@ -100,7 +78,6 @@ def test_adjust_string_with_rls_no_user_unchanged():
 
 
 def test_adjust_string_with_rls_appends_filters():
-    """A resolved user with RLS filters folds them into the digest string."""
     with patch("superset.utils.rls._metadata_sync_session", _session_cm(object())):
         out = _adjust_string_with_rls(
             "base", [_rls_datasource(7, ["tenant_id = 1"])], "alice"
@@ -126,7 +103,6 @@ def test_adjust_string_with_rls_differentiates_filters():
 
 
 def test_adjust_string_with_rls_skips_non_rls_datasource():
-    """A datasource that does not support RLS contributes nothing."""
     ds = MagicMock()
     ds.is_rls_supported = False
     with patch("superset.utils.rls._metadata_sync_session", _session_cm(object())):
@@ -135,13 +111,7 @@ def test_adjust_string_with_rls_skips_non_rls_datasource():
     ds.get_sqla_row_level_filters.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# _query_dashboard_datasources
-# ---------------------------------------------------------------------------
-
-
 def test_query_dashboard_datasources_table_type_only():
-    """Only ``table``-type, non-null datasource ids are loaded."""
     session = MagicMock()
     rows_result = MagicMock()
     rows_result.all.return_value = [(1, "table"), (2, "query"), (None, "table")]
@@ -158,7 +128,6 @@ def test_query_dashboard_datasources_table_type_only():
 
 
 def test_query_dashboard_datasources_empty_when_no_tables():
-    """No table-type slices → empty result and no second (bulk-load) query."""
     session = MagicMock()
     rows_result = MagicMock()
     rows_result.all.return_value = [(2, "query"), (None, "table")]

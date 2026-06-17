@@ -14,10 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Annotation models: AnnotationLayer, Annotation.
-
-Pure SQLAlchemy -- no legacy WSGI dependencies.
-"""
+"""Annotation models: AnnotationLayer, Annotation."""
 
 from __future__ import annotations
 
@@ -40,10 +37,6 @@ from superset.models.helpers import (
     MediumText,
 )
 
-# ---------------------------------------------------------------------------
-# Models
-# ---------------------------------------------------------------------------
-
 
 class AnnotationLayer(Base, AuditMixinNullable):
     """A logical grouping of annotations."""
@@ -55,7 +48,6 @@ class AnnotationLayer(Base, AuditMixinNullable):
     descr = Column(Text)
 
     def __repr__(self) -> str:
-        # 1:1 superset_old/models/annotations.py:37.
         return str(self.name)
 
 
@@ -74,12 +66,10 @@ class Annotation(Base, AuditMixinNullable):
     json_metadata = Column(MediumText())
 
     def __repr__(self) -> str:
-        # 1:1 superset_old/models/annotations.py:67.
         return str(self.short_descr)
 
     @property
     def data(self) -> dict[str, Any]:
-        # 1:1 superset_old/models/annotations.py:56-65.
         return {
             "layer_id": self.layer_id,
             "start_dttm": self.start_dttm,
@@ -88,8 +78,6 @@ class Annotation(Base, AuditMixinNullable):
             "long_descr": self.long_descr,
             "layer": self.layer.name if self.layer else None,
         }
-
-    # -- relationships --------------------------------------------------------
 
     layer = relationship(
         "AnnotationLayer",

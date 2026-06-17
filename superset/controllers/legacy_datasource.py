@@ -14,14 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Legacy ``/datasource/*`` routes ported from the original
-``superset/views/datasource/views.py`` upstream views.
-
-Full-functionality port of ``POST /datasource/samples``, used by the
-Explore "View samples" panel and drill-to-detail. Mirrors the original
-``get_samples`` helper: runs a sample query with optional drill-detail
-filters (SamplesPayloadSchema) + a separate count(*) query, then
-merges the results with pagination metadata.
+"""Legacy ``/datasource/*`` routes: ``POST /datasource/samples``, used by the
+Explore "View samples" panel and drill-to-detail. Runs a sample query with
+optional drill-detail filters (SamplesPayloadSchema) + a separate count(*)
+query, then merges the results with pagination metadata.
 """
 
 from __future__ import annotations
@@ -61,9 +57,8 @@ _VALID_DATASOURCE_TYPES = {"table", "query", "saved_query", "view", "dataset"}
 def _sanitize_datasource_data(datasource_data: dict[str, Any]) -> dict[str, Any]:
     """Strip sensitive parameters from ``datasource_data["database"]``.
 
-    Mirrors ``superset_old/views/utils.py:sanitize_datasource_data``
-    exactly — sets ``database.parameters`` to ``{}`` so that engine
-    credentials are never sent to the frontend.
+    Sets ``database.parameters`` to ``{}`` so that engine credentials are
+    never sent to the frontend.
     """
     if datasource_data:
         db_info = datasource_data.get("database")
@@ -80,9 +75,7 @@ def _get_fk_many_from_list(
 ) -> list[Any]:
     """Sync a one-to-many ORM list from a list of plain dicts.
 
-    1:1 port of ``BaseDatasource.get_fk_many_from_list`` from
-    ``superset_old/connectors/sqla/models.py:535``. Used by
-    :func:`_update_from_object` to sync columns and metrics from
+    Used by :func:`_update_from_object` to sync columns and metrics from
     the legacy editor payload.
     """
     object_dict = {o.get(key_attr): o for o in object_list}
@@ -119,9 +112,7 @@ def _get_fk_many_from_list(
 def _update_from_object(orm_datasource: Any, obj: dict[str, Any]) -> None:
     """Update an ORM datasource instance from the legacy editor payload.
 
-    1:1 port of ``BaseDatasource.update_from_object`` from
-    ``superset_old/connectors/sqla/models.py:574``. Called by the
-    ``POST /datasource/save/`` route.
+    Called by the ``POST /datasource/save/`` route.
     """
     from superset.models.connectors import SqlMetric, TableColumn
 
@@ -160,9 +151,7 @@ async def _get_datasource_by_name(
 ) -> Any | None:
     """Look up a ``SqlaTable`` by database/catalog/schema/table names.
 
-    1:1 port of ``SqlaTable.get_datasource_by_name`` from
-    ``superset_old/connectors/sqla/models.py:1218``. Used by
-    ``GET /datasource/external_metadata_by_name/``.
+    Used by ``GET /datasource/external_metadata_by_name/``.
     """
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
@@ -198,19 +187,12 @@ async def _get_physical_table_metadata_async(
 ) -> list[dict[str, Any]]:
     """Return column metadata for a physical table using the async engine.
 
-    Mirrors ``superset_old/connectors/sqla/utils.py:get_physical_table_metadata``
-    which uses SQLAlchemy Inspector via a sync connection. Here we run
-    the inspector inside ``async_conn.run_sync``.
+    Runs the SQLAlchemy Inspector inside ``async_conn.run_sync``.
 
     Raises ``sqlalchemy.exc.NoSuchTableError`` when the table (and view)
-    do not exist — exactly as the original does at
-    ``superset_old/connectors/sqla/utils.py:60-61``::
-
-        if not (database.has_table(table) or database.has_view(table)):
-            raise NoSuchTableError(table)
-
-    Used when ``SqlaTable.get_datasource_by_name`` returns ``None`` (i.e.
-    the table is not tracked in Superset) in ``external_metadata_by_name``.
+    do not exist. Used when ``SqlaTable.get_datasource_by_name`` returns
+    ``None`` (table is not tracked in Superset) in
+    ``external_metadata_by_name``.
     """
     from sqlalchemy.exc import NoSuchTableError
 
@@ -222,8 +204,8 @@ async def _get_physical_table_metadata_async(
 
         inspector = sa_inspect(sync_conn)
 
-        # Mirror original: raise NoSuchTableError when the table / view is not
-        # visible to the connection (superset_old/connectors/sqla/utils.py:59-61).
+        # Raise NoSuchTableError when the table / view is not visible to the
+        # connection (mirrors ``has_table`` + ``has_view`` check in the original).
         table_exists = inspector.has_table(table.table, schema=table.schema or None)
         if not table_exists:
             # Also check views (mirrors database.has_view in the original).
@@ -271,11 +253,8 @@ def _replace_verbose_with_column(
 ) -> None:
     """Rewrite filter ``col`` values from verbose name → physical column name.
 
-    1:1 port of ``superset_old/views/datasource/utils.py::replace_verbose_with_column``.
-    Always uses ``verbose_name`` / ``column_name`` attributes regardless
-    of whether the datasource is virtual. The frontend may send either the
-    physical column name or the verbose label; the query builder only
-    understands the physical name.
+    The frontend may send either the physical column name or the verbose label;
+    the query builder only understands the physical name.
     """
     columns = getattr(datasource, "columns", None) or []
     if not columns:
@@ -410,12 +389,9 @@ async def _parse_samples_payload(
 ) -> dict[str, Any]:
     """Parse the optional JSON body (drill-detail filters, time_range, extras).
 
-    Always returns a dict (possibly empty) — mirrors SamplesPayloadSchema's
-    @pre_load handler that converts None→{} so the caller always sees a dict
-    and therefore always uses DRILL_DETAIL result_type (superset_old/
-    views/datasource/schemas.py:87-92, views/datasource/utils.py:107-133).
-
-    Unknown keys are silently ignored, matching SamplesPayloadSchema semantics.
+    Always returns a dict (possibly empty) — an absent body converts to {}
+    so the caller always sees a dict and therefore always uses the
+    DRILL_DETAIL result_type. Unknown keys are silently ignored.
     """
     try:
         raw = await request.json()
@@ -436,7 +412,7 @@ async def _parse_samples_payload(
 
 
 class LegacyDatasourceController(Controller):
-    """Legacy ``/datasource`` routes ported from the original upstream view."""
+    """Legacy ``/datasource`` routes."""
 
     path = "/datasource"
     tags = ["Legacy", "Datasource"]
@@ -523,8 +499,7 @@ class LegacyDatasourceController(Controller):
             )
 
         if is_guest:
-            # Embedded dashboard drill-to-detail permission check.
-            # Mirrors the original ``Datasource.samples`` guest branch:
+            # Embedded dashboard drill-to-detail permission check:
             # a dashboard_id is required, the dashboard must exist (404 if not),
             # and the guest must be allowed to drill the dataset via that
             # dashboard. Fails CLOSED (403) on any denial.
@@ -558,11 +533,9 @@ class LegacyDatasourceController(Controller):
             )
             if not allowed:
                 return Response(content={"message": "Forbidden"}, status_code=403)
-        # Non-guest path: NO datasource-level raise_for_access — the original
-        # ``Datasource.samples`` gates non-guest access solely on the
-        # ("can_samples", "Datasource") role permission and calls
-        # ``get_samples()`` directly (superset_old/views/datasource/views.py:
-        # 194-230); ``get_payload()`` performs no security check either.
+        # Non-guest path: NO datasource-level raise_for_access — access is gated
+        # solely on the ("can_samples", "Datasource") role permission; the
+        # underlying get_payload() performs no additional security check.
 
         # Replace verbose column names in filters with physical ones,
         # matching the original ``replace_verbose_with_column`` helper.
@@ -577,10 +550,8 @@ class LegacyDatasourceController(Controller):
         per_page: int = params["per_page"]
         force: bool = params["force"]
 
-        # Apply SAMPLES_ROW_LIMIT cap — 1:1 with original
-        # ``get_limit_clause`` which caps the effective row_limit at
-        # SAMPLES_ROW_LIMIT (default 1000) even if per_page passes
-        # schema validation.
+        # Cap the effective row_limit at SAMPLES_ROW_LIMIT (default 1000)
+        # even if per_page passes schema validation.
         samples_row_limit: int = int(getattr(settings_obj, "samples_row_limit", 1000))
         row_limit = per_page
         if row_limit < 0 or row_limit > samples_row_limit:
@@ -621,9 +592,8 @@ class LegacyDatasourceController(Controller):
             query_context=samples_context,
         )
 
-        # --- Run the count(*) query FIRST, matching original get_samples order
-        # (superset_old/views/datasource/utils.py:155-172: count_star runs first,
-        # raises DatasetSamplesFailedError on failure before sample is ever run).
+        # Run the count(*) query FIRST: if it fails we raise immediately before
+        # running the sample query (DatasetSamplesFailedError on failure).
         count_qo = copy.deepcopy(samples_qo)
         count_qo.metrics = [
             {
@@ -651,21 +621,16 @@ class LegacyDatasourceController(Controller):
             user=user,
             query_context=count_context,
         )
-        # NO broad try/except here — 1:1 with the original
-        # (superset_old/views/datasource/utils.py:155 catches only
-        # IndexError/KeyError): exceptions from get_payload propagate to the
-        # app-level handlers (@handle_api_exception semantics — a
-        # SupersetException keeps its own status, anything else → 500).
+        # NO broad try/except here — exceptions from get_payload propagate to
+        # the app-level handlers (SupersetException keeps its own status,
+        # anything else → 500).
         count_result = await count_processor.get_payload(
             query_objects=[count_qo], force=force
         )
         count_star_data: dict[str, Any] = (count_result.get("queries") or [{}])[0]
 
-        # Mirror original: if count_star itself reports failure, raise immediately
-        # before running the sample query (superset_old utils.py:158-159).
-        # DatasetSamplesFailedError IS-A CommandInvalidError → HTTP 422
-        # (superset_old/commands/dataset/exceptions.py:181,
-        # superset_old/commands/exceptions.py:54-57).
+        # If count_star itself reports failure, raise immediately before running
+        # the sample query (DatasetSamplesFailedError IS-A CommandInvalidError → 422).
         if count_star_data.get("status") == "failed":
             return Response(
                 content={
@@ -683,20 +648,13 @@ class LegacyDatasourceController(Controller):
                 status_code=422,
             )
 
-        # Extract total_count from count_star result.
-        # 1:1 with superset_old/views/datasource/utils.py:169:
-        #   sample_data["total_count"] = count_star_data["data"][0]["COUNT(*)"]
-        # The original wraps this in except (IndexError, KeyError)
-        # → DatasetSamplesFailedError.  In liteset, get_df_payload returns
+        # Extract total_count from count_star result. get_df_payload returns
         # "df" (DataFrame) rather than "data" (list of dicts), so we read
-        # from the DataFrame instead; strict access mirrors the original's
-        # failure mode.
+        # from the DataFrame. (IndexError, KeyError) → HTTP 422.
         try:
             _count_df = count_star_data["df"]
             total_count = int(_count_df.iloc[0]["COUNT(*)"])
         except (IndexError, KeyError):
-            # 1:1 original: ``raise DatasetSamplesFailedError from exc``
-            # (utils.py:171-172) → CommandInvalidError → HTTP 422.
             return Response(
                 content={
                     "errors": [
@@ -713,8 +671,8 @@ class LegacyDatasourceController(Controller):
                 status_code=422,
             )
 
-        # --- Now run the sample query (original order: count first, then samples)
-        # As above: no broad catch — exceptions propagate 1:1 with the original.
+        # Run the sample query. No broad catch — exceptions propagate to the
+        # app-level handler.
         sample_result = await processor.get_payload(
             query_objects=[samples_qo], force=force
         )
@@ -727,8 +685,7 @@ class LegacyDatasourceController(Controller):
             sample_data.setdefault("coltypes", [])
             sample_data["rowcount"] = len(sample_data["data"])
 
-        # Mirror original: if sample query fails, delete the count_star cache
-        # key (superset_old utils.py:163-165) and return an error.
+        # If sample query fails, delete the count_star cache key and return an error.
         if sample_data.get("status") == "failed":
             _cache_key = count_star_data.get("cache_key")
             if _cache_key:
@@ -742,8 +699,6 @@ class LegacyDatasourceController(Controller):
                         _cache_key,
                         exc_info=True,
                     )
-            # 1:1 original: ``raise DatasetSamplesFailedError(sample_data.get
-            # ("error"))`` (utils.py:163-165) → CommandInvalidError → HTTP 422.
             return Response(
                 content={
                     "errors": [
@@ -785,8 +740,6 @@ class LegacyDatasourceController(Controller):
         Reads ``data`` from the request form (a JSON string), validates
         ownership, checks for duplicate column names, then calls
         ``_update_from_object`` to sync the ORM instance.
-
-        Mirrors ``superset_old/views/datasource/views.py:Datasource.save``.
         """
         try:
             form = await request.form()
@@ -826,18 +779,10 @@ class LegacyDatasourceController(Controller):
                 status_code=404,
             )
 
-        # Datasource-access gate on this WRITE endpoint. Upstream guards the
-        # legacy ``Datasource.save`` view with ``@has_access_api`` (the ``can_save
-        # Datasource`` write perm, which gamma lacks — ``Datasource`` is a
-        # READ-ONLY model view for gamma). The port's route is only
-        # ``require_authentication``, and the conditional ``raise_for_ownership``
-        # below fires ONLY when the payload carries ``owners`` — so a user with no
-        # datasource access (e.g. gamma) could otherwise POST here and rewrite a
-        # datasource's metrics/columns. Gate on datasource access (admin /
-        # all_datasource_access pass, gamma → 403) before any mutation. We can't
-        # use the upstream ``can_save Datasource`` perm directly because the port
-        # doesn't seed it (a broader role-tuple sweep); ``raise_for_access`` is
-        # the equivalent data-access gate already used on the v1 datasource GET.
+        # Datasource-access gate on this WRITE endpoint before any mutation.
+        # ``raise_for_access`` acts as the data-access gate: admin /
+        # all_datasource_access pass, gamma → 403. Without this a user with no
+        # datasource access could rewrite a datasource's metrics/columns.
         from superset.dependencies import provide_security_manager
         from superset.exceptions import SupersetSecurityException
 
@@ -856,18 +801,15 @@ class LegacyDatasourceController(Controller):
                     status_code=403,
                 )
 
-        # Always assign database_id — mirrors original (views/datasource/views.py:91):
-        # ``orm_datasource.database_id = database_id`` with no None guard.
-        # Explicit null ({database: {id: null}}) intentionally dissociates the
-        # datasource from its database, matching the original unconditional write.
+        # Always assign database_id with no None guard — explicit null
+        # ({database: {id: null}}) intentionally dissociates the datasource
+        # from its database.
         orm_datasource.database_id = database_id
 
         # Check ownership when the payload includes owners, then populate the
-        # owner list UNCONDITIONALLY — 1:1 with the original
-        # (superset_old/views/datasource/views.py:93-102) where
-        # ``populate_owner_list(datasource_dict["owners"], ...)`` sits OUTSIDE
-        # the ``if`` and raises KeyError (→ 500) for an owners-less payload
-        # BEFORE ``update_from_object`` could silently wipe the owners.
+        # owner list UNCONDITIONALLY. ``populate_owner_list`` sits outside the
+        # ``if`` and raises KeyError (→ 500) for an owners-less payload before
+        # ``update_from_object`` could silently wipe the owners.
         from superset.commands.utils import populate_owner_list
         from superset.dependencies import provide_security_manager
 
@@ -880,13 +822,8 @@ class LegacyDatasourceController(Controller):
             "owners" in datasource_dict
             and getattr(orm_datasource, "owner_class", None) is not None
         ):
-            # Raise for ownership — 1:1 with views.py:93-98: pass the
-            # current user id (a REQUIRED positional arg) and catch only the
-            # security exception. The previous bare ``raise_for_ownership(
-            # orm_datasource)`` raised ``TypeError`` (missing ``user_id``) that
-            # the over-broad ``except Exception`` masked as a 403 for everyone —
-            # owners and admins included — so saving a datasource with owners
-            # always failed.
+            # Raise for ownership — pass the current user id (a REQUIRED
+            # positional arg) and catch only the security exception.
             from superset.exceptions import SupersetSecurityException
 
             try:
@@ -904,8 +841,7 @@ class LegacyDatasourceController(Controller):
                     status_code=403,
                 )
 
-        # KeyError ("owners" absent) propagates → 500, no commit — matches
-        # the original's unconditional ``datasource_dict["owners"]`` access.
+        # KeyError ("owners" absent) propagates → 500, no commit.
         owner_ids = [
             o if isinstance(o, int) else o.get("id", o)
             for o in (datasource_dict["owners"] or [])
@@ -917,7 +853,7 @@ class LegacyDatasourceController(Controller):
             default_to_user=False,
         )
 
-        # Duplicate column name detection — mirrors original Counter check
+        # Duplicate column name detection
         columns_payload: list[dict[str, Any]] = datasource_dict.get("columns") or []
         duplicates = [
             name
@@ -936,13 +872,11 @@ class LegacyDatasourceController(Controller):
                 status_code=409,
             )
 
-        # Sync ORM instance from the editor payload.  Runs INLINE on the
-        # event loop: the mutation is pure Python over a fully eager-loaded
-        # graph (``get_datasource`` selectinload's database/columns/metrics/
-        # owners), so there is no blocking IO to offload — and running it in
-        # a thread against AsyncSession-attached instances was unsafe (the
-        # Session is not thread-safe; any stray lazy load from a foreign
-        # thread raises MissingGreenlet).
+        # Sync ORM instance from the editor payload. Runs inline on the event
+        # loop: the mutation is pure Python over a fully eager-loaded graph, so
+        # there is no blocking IO to offload. Running in a thread against
+        # AsyncSession-attached instances would be unsafe (not thread-safe;
+        # stray lazy loads raise MissingGreenlet).
         try:
             _update_from_object(orm_datasource, datasource_dict)
         except Exception as exc:  # noqa: BLE001
@@ -973,10 +907,7 @@ class LegacyDatasourceController(Controller):
         datasource_id: int,
         ds_dao: DatasourceDAOProtocol,
     ) -> Response[dict[str, Any]]:
-        """GET /datasource/get/<type>/<id>/ — return raw datasource data.
-
-        Mirrors ``superset_old/views/datasource/views.py:Datasource.get``.
-        """
+        """GET /datasource/get/<type>/<id>/ — return raw datasource data."""
         orm_datasource = await ds_dao.get_datasource(datasource_type, datasource_id)
         if orm_datasource is None:
             return Response(
@@ -1003,7 +934,6 @@ class LegacyDatasourceController(Controller):
         """GET /datasource/external_metadata/<type>/<id>/
 
         Retrieves column information from the source system.
-        Mirrors ``superset_old/views/datasource/views.py:Datasource.external_metadata``.
         """
         orm_datasource = await ds_dao.get_datasource(datasource_type, datasource_id)
         if orm_datasource is None:
@@ -1011,10 +941,8 @@ class LegacyDatasourceController(Controller):
                 content={"message": f'Datasource "{datasource_id}" not found.'},
                 status_code=404,
             )
-        # Only SupersetException → 400 (1:1 with the original's
-        # ``except SupersetException as ex: json_error_response(status=400)``);
-        # other exceptions propagate to the global handler (500/422), like
-        # upstream's @handle_api_exception.
+        # Only SupersetException → 400; other exceptions propagate to the
+        # global handler (500/422).
         try:
             ext_meta = await asyncio.to_thread(orm_datasource.external_metadata)
         except SupersetException as exc:
@@ -1047,9 +975,6 @@ class LegacyDatasourceController(Controller):
           - ``table_name`` (required)
           - ``normalize_columns`` (optional bool)
           - ``always_filter_main_dttm`` (optional bool)
-
-        Mirrors ``superset_old/views/datasource/views.py``
-        ``Datasource.external_metadata_by_name``.
         """
         # The port uses ``prison`` (a maintained fork) for Rison decoding;
         # the unmaintained ``rison`` pypi package is not installed, so
@@ -1065,8 +990,6 @@ class LegacyDatasourceController(Controller):
             except Exception:  # noqa: BLE001
                 params = {}
 
-        # ``datasource_type`` is required — 1:1 with the original
-        # ``ExternalMetadataSchema.datasource_type = fields.Str(required=True)``.
         if not params.get("datasource_type"):
             return Response(
                 content={"message": "datasource_type is required"},
@@ -1100,8 +1023,8 @@ class LegacyDatasourceController(Controller):
         )
 
         if orm_datasource is not None:
-            # Return column info from Superset metadata.  Only
-            # SupersetException → 400 (see external_metadata above).
+            # Return column info from Superset metadata. Only
+            # SupersetException → 400.
             try:
                 ext_meta = await asyncio.to_thread(orm_datasource.external_metadata)
                 return Response(content=ext_meta, status_code=200)
@@ -1109,7 +1032,7 @@ class LegacyDatasourceController(Controller):
                 return Response(content={"message": str(exc)}, status_code=400)
 
         # Fallback: use the SQLAlchemy inspector via the async connection
-        # Mirrors original get_physical_table_metadata call when datasource is None.
+        # when the datasource is not tracked in Superset.
         from sqlalchemy import select as sa_select
 
         from superset.models.core import Database
@@ -1131,8 +1054,7 @@ class LegacyDatasourceController(Controller):
                 normalize_columns=normalize_columns,
             )
         except Exception as exc:  # noqa: BLE001
-            # Mirrors original: (NoResultFound, NoSuchTableError) → 404
-            # (superset_old/views/datasource/views.py:190-191).
+            # (NoResultFound, NoSuchTableError) → 404
             return Response(
                 content={"message": f"Table metadata error: {exc}"},
                 status_code=404,

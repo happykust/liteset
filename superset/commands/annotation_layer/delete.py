@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/annotation_layer/delete.py``."""
+"""Commands for deleting annotation layers."""
 
 from __future__ import annotations
 

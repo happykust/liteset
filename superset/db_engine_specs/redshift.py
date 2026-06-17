@@ -14,12 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Amazon Redshift engine spec -- synchronous.
-
-Ported 1:1 from ``superset_old/db_engine_specs/redshift.py`` with the legacy
-WSGI-stack imports removed.  Only overridden methods and attributes are
-included.
-"""
+"""Amazon Redshift database engine spec."""
 
 from __future__ import annotations
 
@@ -40,10 +35,6 @@ if TYPE_CHECKING:
     from superset.sql.parse import Table
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Regular expressions to catch custom errors
-# ---------------------------------------------------------------------------
 
 CONNECTION_ACCESS_DENIED_REGEX = re.compile(
     'password authentication failed for user "(?P<username>.*?)"'
@@ -117,25 +108,10 @@ class RedshiftEngineSpec(BasicParametersMixin, PostgresBaseEngineSpec):
         df: pd.DataFrame,
         to_sql_kwargs: dict[str, Any],
     ) -> None:
-        """
-        Upload data from a Pandas DataFrame to a database.
-
-        For regular engines this calls the `pandas.DataFrame.to_sql` method.
-        Overrides the base class to allow for pandas string types to be
-        used as nvarchar(max) columns, as redshift does not support
-        text data types.
-
-        Note this method does not create metadata for the table.
-
-        :param database: The database to upload the data to
-        :param table: The table to upload the data to
-        :param df: The dataframe with data to be uploaded
-        :param to_sql_kwargs: The kwargs to be passed to pandas.DataFrame.to_sql` method
-        """
+        """Redshift has no TEXT type; map pandas StringDtype to
+        NVARCHAR(65535) (max)."""
         to_sql_kwargs = to_sql_kwargs or {}
         to_sql_kwargs["dtype"] = {
-            # uses the max size for redshift nvarchar(65335)
-            # the default object and string types create a varchar(256)
             col_name: NVARCHAR(length=65535)
             for col_name, type in zip(df.columns, df.dtypes, strict=False)
             if isinstance(type, pd.StringDtype)

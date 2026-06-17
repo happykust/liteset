@@ -14,14 +14,12 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Flask-free port of ``tests/integration_tests/tagging_tests.py``.
-
-Exercises the implicit-tag SQLAlchemy event listeners
+"""Integration tests for the implicit-tag SQLAlchemy event listeners
 (``superset.models._listeners``) which create / delete ``owner:`` /
 ``type:`` / ``favorited_by:`` ``TaggedObject`` rows when a Chart / Dashboard /
 Dataset / SavedQuery / FavStar is committed.
 
-Behaviour-preserving adaptations:
+Notes:
 
 * The tag listeners fire on the **synchronous** ORM ``Session`` (they open a
   nested ``Session(bind=connection)`` inside ``after_insert`` /
@@ -29,14 +27,12 @@ Behaviour-preserving adaptations:
   (``get_sync_session``) rather than the async ``db_session``.
 * The ``TAGGING_SYSTEM`` feature flag (off by default in the test env) is
   enabled and the tag listeners are registered for the duration of the test
-  via the ``tagging_system`` fixture, mirroring the upstream
-  ``with_tagging_system_feature`` fixture (which calls
+  via the ``tagging_system`` fixture (which calls
   ``register_sqla_event_listeners`` / ``clear_sqla_event_listeners``).  The
   listeners are removed at teardown so the global mapper events do not leak
   into other tests.
 * ``FavStar.user_id`` carries a real FK to ``ab_user``, which is empty in the
-  seeded fixture DB, so a real ``User`` is created for the favorite test
-  (upstream relied on the seeded admin id=1).
+  seeded fixture DB, so a real ``User`` is created for the favorite test.
 """
 
 from __future__ import annotations
@@ -91,11 +87,6 @@ def sync_session() -> Iterator[Session]:
 
 @pytest.fixture
 def with_tagging_system_feature() -> Iterator[None]:
-    """Enable ``TAGGING_SYSTEM`` and register the implicit-tag listeners.
-
-    Mirrors upstream ``with_tagging_system_feature``; registers the listeners
-    only if not already wired and removes them at teardown.
-    """
     saved = dict(feature_flag_manager._feature_flags)
     feature_flag_manager._feature_flags["TAGGING_SYSTEM"] = True
     registered: list[tuple[object, str, object]] = []
@@ -122,7 +113,6 @@ def _clear_tagged_object_table(session: Session) -> None:
 
 @pytest.mark.usefixtures("with_tagging_system_feature")
 def test_dataset_tagging(sync_session: Session):
-    """Creating a dataset creates a corresponding tagged_object row."""
     _clear_tagged_object_table(sync_session)
     assert [] == _query_tagged_object_table(sync_session)
 
@@ -150,7 +140,6 @@ def test_dataset_tagging(sync_session: Session):
 
 @pytest.mark.usefixtures("with_tagging_system_feature")
 def test_chart_tagging(sync_session: Session):
-    """Creating a chart creates a corresponding tagged_object row."""
     _clear_tagged_object_table(sync_session)
     assert [] == _query_tagged_object_table(sync_session)
 
@@ -176,7 +165,6 @@ def test_chart_tagging(sync_session: Session):
 
 @pytest.mark.usefixtures("with_tagging_system_feature")
 def test_dashboard_tagging(sync_session: Session):
-    """Creating a dashboard creates a corresponding tagged_object row."""
     _clear_tagged_object_table(sync_session)
     assert [] == _query_tagged_object_table(sync_session)
 
@@ -201,9 +189,7 @@ def test_dashboard_tagging(sync_session: Session):
 
 @pytest.mark.usefixtures("with_tagging_system_feature")
 def test_saved_query_tagging(sync_session: Session):
-    """Creating a saved query creates the type: tagged_object row.
-
-    Upstream additionally emits an ``owner:None`` tag because
+    """Upstream additionally emits an ``owner:None`` tag because
     ``QueryUpdater.get_owners_ids`` returns ``[target.user_id]`` unconditionally
     (i.e. ``[None]`` when ``user_id`` is unset), yielding 2 tags.  The Liteset
     port's ``_query_owners_ids`` returns ``[]`` when ``user_id is None`` and so
@@ -241,7 +227,6 @@ def test_saved_query_tagging(sync_session: Session):
 
 @pytest.mark.usefixtures("with_tagging_system_feature")
 def test_favorite_tagging(sync_session: Session):
-    """Favoriting an object creates a corresponding tagged_object row."""
     _clear_tagged_object_table(sync_session)
     assert [] == _query_tagged_object_table(sync_session)
 
@@ -273,11 +258,9 @@ def test_favorite_tagging(sync_session: Session):
 
 
 def test_tagging_system(sync_session: Session):
-    """No tags are created when the TAGGING_SYSTEM feature flag is false.
-
-    The listeners are not registered (the ``with_tagging_system_feature``
-    fixture is intentionally NOT applied here), exactly mirroring upstream's
-    ``@with_feature_flags(TAGGING_SYSTEM=False)``.
+    """Listeners are not registered (the ``with_tagging_system_feature``
+    fixture is intentionally NOT applied here) — equivalent to running with
+    ``TAGGING_SYSTEM=False``.
     """
     _clear_tagged_object_table(sync_session)
     assert [] == _query_tagged_object_table(sync_session)

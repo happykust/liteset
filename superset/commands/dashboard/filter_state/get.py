@@ -14,10 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/dashboard/filter_state/get.py``.
+"""Get command for dashboard filter state entries.
 
 Reads via ``cache_manager.filter_state_cache`` (CACHE_TYPE-honouring slot);
-see create.py for the storage-format notes.
+see create.py for storage-format notes.
 """
 
 from __future__ import annotations
@@ -56,9 +56,7 @@ class GetFilterStateCommand(AsyncBaseCommand[str | None]):
         self._user = user
         self._cache = cache if cache is not None else _default_cache()
 
-        # 1:1 with original: read REFRESH_TIMEOUT_ON_RETRIEVAL from
-        # FILTER_STATE_CACHE_CONFIG (superset_old/commands/dashboard/
-        # filter_state/get.py:31-33).
+        # Read REFRESH_TIMEOUT_ON_RETRIEVAL from FILTER_STATE_CACHE_CONFIG.
         from superset.config import SupersetSettings
 
         settings = SupersetSettings()  # type: ignore[call-arg]
@@ -67,8 +65,7 @@ class GetFilterStateCommand(AsyncBaseCommand[str | None]):
         )
 
     async def validate(self) -> None:
-        # Pass the Dashboard DAO (which has get_by_id_or_slug) — NOT the KV DAO.
-        # The real user is required so the can_access_dashboard gate is enforced.
+        # Pass Dashboard DAO (has get_by_id_or_slug), not the KV DAO.
         await check_access(
             self._dashboard_dao,
             self._dashboard_id,
@@ -82,17 +79,13 @@ class GetFilterStateCommand(AsyncBaseCommand[str | None]):
         if entry is None:
             raise ObjectNotFoundError("FilterState", self._key)
 
-        # 1:1 with original (superset_old/commands/dashboard/filter_state/
-        # get.py:40-41): if the entry exists and REFRESH_TIMEOUT_ON_RETRIEVAL
-        # is truthy, re-store the entry — the slot's ``set`` stamps a fresh
-        # TTL window from *now* (CACHE_DEFAULT_TIMEOUT), refreshing the
-        # entry's expiry on both the metastore and Redis backends.
+        # Re-storing stamps a fresh TTL window (CACHE_DEFAULT_TIMEOUT) on both
+        # metastore and Redis backends when REFRESH_TIMEOUT_ON_RETRIEVAL is set.
         if entry and self._refresh_timeout:
             await self._cache.set(ck, entry)
 
         if isinstance(entry, dict) and "value" in entry:
             return entry["value"]
-        # Original: entry.get("value") → None when "value" key absent (including
-        # malformed / non-dict entries).  Returning None lets the controller surface
-        # a 404 rather than leaking raw cache bytes to the caller.
+        # Return None on absent/malformed entries so the controller surfaces 404,
+        # not raw cache bytes.
         return None

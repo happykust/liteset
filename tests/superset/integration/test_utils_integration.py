@@ -83,11 +83,6 @@ XeA3AKTX/OdYWJvr5YIgeQ==
 -----END CERTIFICATE-----"""
 
 
-# ---------------------------------------------------------------------------
-# Pure helpers — no DB required.
-# ---------------------------------------------------------------------------
-
-
 def test_convert_legacy_filters_into_adhoc_where() -> None:
     form_data = {"where": "a = 1"}
     expected = {
@@ -193,7 +188,6 @@ def test_merge_extra_filters_with_no_extras() -> None:
 
 
 def test_merge_extra_filters_with_unset_legacy_time_range() -> None:
-    """Make sure native filter is applied if filter time range is unset."""
     form_data = {
         "time_range": "Last 10 days",
         "extra_filters": [
@@ -323,37 +317,26 @@ def test_normalize_dttm_col() -> None:
     ts = pd.Timestamp(2021, 2, 15, 19, 0, 0, 0)
     df = pd.DataFrame([{"__timestamp": ts, "a": 1}])
 
-    # test regular (non-numeric) format
     assert normalize_col(df, None, 0, None)[DTTM_ALIAS][0] == ts
     assert normalize_col(df, "epoch_ms", 0, None)[DTTM_ALIAS][0] == ts
     assert normalize_col(df, "epoch_s", 0, None)[DTTM_ALIAS][0] == ts
 
-    # test offset
     assert normalize_col(df, None, 1, None)[DTTM_ALIAS][0] == pd.Timestamp(
         2021, 2, 15, 20, 0, 0, 0
     )
 
-    # test offset and timedelta
     assert normalize_col(df, None, 1, "30 minutes")[DTTM_ALIAS][0] == pd.Timestamp(
         2021, 2, 15, 20, 30, 0, 0
     )
 
-    # test numeric epoch_s format
     df = pd.DataFrame([{"__timestamp": ts.timestamp(), "a": 1}])
     assert normalize_col(df, "epoch_s", 0, None)[DTTM_ALIAS][0] == ts
 
-    # test numeric epoch_ms format
     df = pd.DataFrame([{"__timestamp": ts.timestamp() * 1000, "a": 1}])
     assert normalize_col(df, "epoch_ms", 0, None)[DTTM_ALIAS][0] == ts
 
 
-# ---------------------------------------------------------------------------
-# DB-backed cases (real seeded Postgres).
-# ---------------------------------------------------------------------------
-
-
 def test_get_or_create_db() -> None:
-    """``get_or_create_db`` persists via the sync session and updates URI."""
     from sqlalchemy import text
 
     from superset.db.session import get_sync_session
@@ -387,7 +370,6 @@ def test_get_or_create_db() -> None:
         ).first()
         assert pvm is not None
 
-        # Test change URI
         get_or_create_db("test_db", "sqlite:///changed.db")
         session.commit()
         database = session.query(Database).filter_by(database_name="test_db").one()
@@ -448,7 +430,6 @@ async def test_extract_dataframe_dtypes(db_session: Any) -> None:
             .options(selectinload(SqlaTable.columns))
         )
     ).scalar_one()
-    # Mirror the upstream slice's datasource by exercising the dataset directly.
     cols: tuple[tuple[str, GenericDataType, list[Any]], ...] = (
         ("dt", GenericDataType.TEMPORAL, [date(2021, 2, 4), date(2021, 2, 4)]),
         (

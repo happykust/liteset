@@ -14,18 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Shared fixtures for integration tests of core API controllers.
-
-Creates minimal Litestar apps with fully mocked dependencies so tests
-can exercise the HTTP pipeline (request -> controller -> response) without
-a real database connection.
-
-Strategy: Temporarily replace each controller's ``dependencies`` dict with
-one that provides mock DAOs. This avoids triggering the real DAO constructors
-(and their Flask import chain) while preserving the controller's route
-registration.
-"""
-
 from __future__ import annotations
 
 import os
@@ -130,8 +118,6 @@ def _skip_di_validation():
 
 @dataclass
 class MockUser:
-    """Authenticated mock user with all core-API permissions."""
-
     id: int = 1
     username: str = "admin"
     email: str = "admin@test.com"
@@ -172,7 +158,7 @@ class MockUser:
 
 @dataclass
 class MockLimitedUser:
-    """User with read-only Chart permission -- no write, no other resources."""
+    """Read-only Chart permission only — drives the negative-path 403 tests."""
 
     id: int = 2
     username: str = "viewer"
@@ -310,7 +296,6 @@ class MockDAO:
 
 
 def make_mock_dao() -> MockDAO:
-    """Create a fully-stubbed DAO mock that satisfies CRUDDAOProtocol."""
     return MockDAO()
 
 
@@ -344,7 +329,6 @@ _MOCK_DEP_NAMES = [
 
 
 def _make_mock_deps(mock_dao: MockDAO) -> dict[str, Provide]:
-    """Build the standard set of mock DI dependencies for test apps."""
     mock_security_manager = MagicMock()
     mock_security_manager.raise_for_access = AsyncMock()
     mock_security_manager.is_admin = MagicMock(return_value=True)
@@ -636,7 +620,6 @@ def mock_user() -> MockUser:
 
 
 # ---------------------------------------------------------------------------
-# Real integration backend (1:1 with the upstream integration config).
 #
 # These tests run against a REAL database brought up exactly like production:
 # the schema is built by the Alembic migrations (``superset db upgrade``) and
@@ -755,7 +738,6 @@ async def db_session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
 
 
 # ---------------------------------------------------------------------------
-# Named example-data fixtures (1:1 names with the upstream integration suite).
 #
 # The session bootstrap already seeds birth_names / world_bank / energy /
 # tabbed via the real programmatic loaders, which create the datasets AND the

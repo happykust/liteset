@@ -54,23 +54,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Regex patterns to extract integer IDs from permission strings
-# ---------------------------------------------------------------------------
 _DATASOURCE_PERM_RE = re.compile(r"^\[.+\]\.\[.+\]\(id:(?P<id>\d+)\)$")
 _DATABASE_PERM_RE = re.compile(r"^\[.+\]\.\(id:(?P<id>\d+)\)$")
 
 
-# ---------------------------------------------------------------------------
-# Query-context modification check (guest user safety)
-# ---------------------------------------------------------------------------
-
-
 def _freeze_value(value: Any) -> str:
-    """Deterministic JSON serialization for comparing column/metric sets.
-
-    1:1 with ``freeze_value`` in ``superset_old/security/manager.py:182``.
-    """
+    """Deterministic JSON serialization for comparing column/metric sets."""
     return json.dumps(value, sort_keys=True)
 
 
@@ -193,8 +182,7 @@ class AsyncSecurityManager:
     ) -> None:
         self.dao = dao
         # Store settings reference so that config-derived values are read
-        # at call time (mirrors original get_conf() semantics) rather than
-        # being snapshotted at construction time.
+        # at call time rather than being snapshotted at construction time.
         self._settings = settings
         self._admin_role_name = admin_role_name
         self._public_role_name = public_role_name
@@ -217,8 +205,7 @@ class AsyncSecurityManager:
         """Override to dynamically identify usernames to exclude from
         all UI dropdown lists (owners, created_by filters, etc.).
 
-        Mirrors the original ``SupersetSecurityManager.get_exclude_users_from_lists``
-        which is called as a fallback when ``EXCLUDE_USERS_FROM_LISTS`` config is None.
+        Called as a fallback when ``EXCLUDE_USERS_FROM_LISTS`` config is None.
 
         :return: A list of usernames to exclude
         """
@@ -239,24 +226,16 @@ class AsyncSecurityManager:
     # LDAP authentication
     # ------------------------------------------------------------------
     #
-    # Ported 1:1 from the upstream
-    # ``security/manager.py::auth_user_ldap`` and surrounding helpers
-    # (``_search_ldap``, ``_bind_ldap``, ``_ldap_bind_indirect``,
-    # ``_ldap_calculate_user_roles``, ``ldap_extract``, ``ldap_extract_list``).
+    # Uses the pure-Python ``ldap3`` package (rather than the C-extension
+    # ``python-ldap``) so the call-graph stays free of build-time native
+    # dependencies.  ``ldap3`` is itself synchronous; blocking calls are
+    # wrapped with :func:`asyncio.to_thread` to keep the controller coroutine-safe.
     #
-    # Implementation differences with the upstream code:
+    # Accepts ``settings`` (a :class:`SupersetSettings` instance) as an explicit
+    # parameter rather than reading ``current_app.config[...]``.
     #
-    # * We use the pure-Python ``ldap3`` package (rather than the C-extension
-    #   ``python-ldap``) so the call-graph stays free of build-time native
-    #   dependencies.  ``ldap3`` is itself synchronous; we wrap blocking
-    #   calls with :func:`asyncio.to_thread` to keep the controller
-    #   coroutine-safe.
-    # * Upstream reads ``current_app.config[...]``; we accept ``settings``
-    #   (a :class:`SupersetSettings` instance) as an explicit parameter.
-    # * Upstream calls ``self.add_user`` which lives on the upstream sqla
-    #   manager; we inline the equivalent insert via :class:`AsyncSecurityDAO`.
-    # * Role syncing follows ``AUTH_ROLES_SYNC_AT_LOGIN`` (default False)
-    #   and ``AUTH_ROLES_MAPPING`` exactly as upstream.
+    # Role syncing follows ``AUTH_ROLES_SYNC_AT_LOGIN`` (default False)
+    # and ``AUTH_ROLES_MAPPING`` exactly as upstream.
 
     async def auth_user_ldap(  # noqa: C901
         self,
@@ -266,9 +245,6 @@ class AsyncSecurityManager:
         settings: Any,
     ) -> Any | None:
         """Authenticate a user via LDAP.
-
-        1:1 port of the upstream
-        ``BaseSecurityManager.auth_user_ldap``.
 
         :param username: The username to authenticate
         :param password: The plaintext password to validate
@@ -292,12 +268,11 @@ class AsyncSecurityManager:
         # Search the metadata DB for the user.
         user = await self.dao.get_user_by_username(username)
 
-        # If user exists but is inactive, deny silently — mirrors upstream.
+        # If user exists but is inactive, deny silently.
         if user is not None and not getattr(user, "active", True):
             return None
 
         # If user is unknown and self-registration is disabled, deny.
-        # Mirrors upstream: ``if (not user) and (not self.auth_user_registration)``.
         auth_user_registration = bool(
             getattr(settings, "auth_user_registration", False)
         )
@@ -325,8 +300,8 @@ class AsyncSecurityManager:
             return None
 
         if ldap_result is None:
-            # Bind failed or search came up empty — auth failure.
-            # Mirror upstream by recording a failed-login stat for known users.
+            # Bind failed or search came up empty — record a failed-login stat for
+            # known users.
             if user is not None:
                 await self._update_user_auth_stat(user, success=False)
             return None
@@ -392,12 +367,7 @@ class AsyncSecurityManager:
         *,
         settings: Any,
     ) -> Any | None:
-        """Authenticate a user resolved from the ``REMOTE_USER`` variable.
-
-        1:1 port of the upstream
-        ``BaseSecurityManager.auth_user_remote_user``
-        (upstream security/manager.py:1407-1435).
-        """
+        """Authenticate a user resolved from the ``REMOTE_USER`` variable."""
         user = await self.dao.get_user_by_username(username)
 
         # User does not exist, create one if auto user registration.
@@ -436,15 +406,10 @@ class AsyncSecurityManager:
     ) -> list[Any]:
         """Map OAuth userinfo to a list of :class:`Role` objects.
 
-        1:1 port of the upstream
-        ``BaseSecurityManager._oauth_calculate_user_roles``
-        (upstream security/manager.py:1437-1467):
-
-        * ``AUTH_ROLES_MAPPING`` translates the IdP's ``role_keys`` claim
-          into one or more Superset role names (``get_roles_from_keys``).
-        * When ``AUTH_USER_REGISTRATION`` is on, the configured
-          ``AUTH_USER_REGISTRATION_ROLE`` is appended — optionally resolved
-          dynamically via ``AUTH_USER_REGISTRATION_ROLE_JMESPATH``.
+        ``AUTH_ROLES_MAPPING`` translates the IdP's ``role_keys`` claim into one or
+        more Superset role names.  When ``AUTH_USER_REGISTRATION`` is on, the
+        configured ``AUTH_USER_REGISTRATION_ROLE`` is appended — optionally resolved
+        dynamically via ``AUTH_USER_REGISTRATION_ROLE_JMESPATH``.
         """
         user_role_objects: dict[int, Any] = {}
 
@@ -505,10 +470,6 @@ class AsyncSecurityManager:
         settings: Any,
     ) -> Any | None:
         """Authenticate a user via an OAuth userinfo document.
-
-        1:1 port of the upstream
-        ``BaseSecurityManager.auth_user_oauth``
-        (upstream security/manager.py:1469-1526).
 
         :param userinfo: dict with user information
             (keys are the same as User model columns)
@@ -593,8 +554,7 @@ class AsyncSecurityManager:
         Returns ``None`` on authentication failure (bind failed, search
         miss, etc.), or a ``(user_dn, user_attributes)`` tuple on success.
         ``user_dn`` may legitimately be ``None`` in the direct-bind flow
-        when ``AUTH_LDAP_SEARCH`` is not configured — mirrors upstream which
-        leaves ``user_dn = None`` in that path.
+        when ``AUTH_LDAP_SEARCH`` is not configured.
         """
 
         bind_user: str = getattr(settings, "auth_ldap_bind_user", "") or ""
@@ -603,7 +563,6 @@ class AsyncSecurityManager:
         def _do_ldap_flow() -> (  # noqa: C901
             tuple[str | None, dict[str, list[bytes]] | None] | None
         ):
-            # Build a TLS context that mirrors the upstream knobs.
             tls = self._build_ldap_tls(ldap_module, settings)
 
             server = ldap_module.Server(
@@ -620,8 +579,7 @@ class AsyncSecurityManager:
                 client_strategy=ldap_module.SYNC,
                 raise_exceptions=False,
             )
-            # ``referrals`` is set to False (mirrors upstream's
-            # ``set_option(OPT_REFERRALS, 0)``).
+            # ``referrals`` set to False matches ``set_option(OPT_REFERRALS, 0)``.
             con.referrals = False
 
             # ``open()`` initialises the socket.  ``start_tls()`` is only
@@ -637,8 +595,6 @@ class AsyncSecurityManager:
                     return None
 
             try:
-                # Define defaults — mirror upstream lines 1275-1276
-                # (``user_dn = None``; ``user_attributes = {}``).
                 user_dn: str | None = None
                 user_attributes: dict[str, list[bytes]] | None = {}
 
@@ -685,11 +641,8 @@ class AsyncSecurityManager:
                     )
                     return None
 
-                # Mirror upstream: in the direct-bind flow ``user_dn`` stays
-                # ``None`` unless ``AUTH_LDAP_SEARCH`` is configured —
-                # ``bind_username`` is NOT a DN and must not be returned
-                # as one (upstream code: ``security/manager.py``
-                # lines 1275, 1313-1356).
+                # In the direct-bind flow ``user_dn`` stays ``None`` unless
+                # ``AUTH_LDAP_SEARCH`` is configured — ``bind_username`` is NOT a DN.
                 if ldap_search:
                     user_dn, user_attributes = self._search_ldap_sync(
                         con, username, settings
@@ -708,10 +661,8 @@ class AsyncSecurityManager:
 
     @staticmethod
     def _build_ldap_tls(ldap_module: Any, settings: Any) -> Any | None:
-        """Construct a ``ldap3.Tls`` instance from upstream-style TLS knobs.
-
-        Mirrors the ``ldap.set_option(OPT_X_TLS_*)`` calls in
-        ``BaseSecurityManager.auth_user_ldap``.  Returns ``None`` when no
+        """Construct a ``ldap3.Tls`` instance from TLS knobs (mirrors
+        ``ldap.set_option(OPT_X_TLS_*)`` semantics).  Returns ``None`` when no
         TLS configuration is in effect.
         """
         cacertdir = getattr(settings, "auth_ldap_tls_cacertdir", "") or ""
@@ -940,10 +891,7 @@ class AsyncSecurityManager:
         field_name: str,
         fallback: str,
     ) -> str:
-        """Extract the first value of an LDAP attribute as ``str``.
-
-        Mirrors the upstream :pymeth:`BaseSecurityManager.ldap_extract`.
-        """
+        """Extract the first value of an LDAP attribute as ``str``."""
         raw_value = ldap_dict.get(field_name) or [b""]
         first = raw_value[0]
         if isinstance(first, bytes):
@@ -962,8 +910,7 @@ class AsyncSecurityManager:
     ) -> list[str]:
         """Extract a multi-valued LDAP attribute as ``list[str]``.
 
-        Mirrors the upstream :pymeth:`BaseSecurityManager.ldap_extract_list`.
-        Empty strings are filtered out, exactly as in the original.
+        Empty strings are filtered out.
         """
         raw_list = attributes.get(name) or []
         result: list[str] = []
@@ -1041,21 +988,16 @@ class AsyncSecurityManager:
     ) -> Any | None:
         """Insert a new ``ab_user`` row for an externally authenticated user.
 
-        Mirrors the upstream :pymeth:`SecurityManager.add_user` but skips the
-        password hashing step — LDAP/OAuth users authenticate against the
-        external IdP, not the local password column.  ``ab_user.password``
+        Skips the password hashing step — LDAP/OAuth users authenticate against
+        the external IdP, not the local password column.  ``ab_user.password``
         is left ``NULL`` so the row cannot be used for DB-auth login.
         """
         user_model: Any = self.dao.user_model
         session = self.dao.session
 
-        # Mirror upstream AuditMixin defaults: created/changed timestamps are
-        # naive local time (``datetime.now()`` — see the upstream
-        # ``security/sqla/models.py`` lines 177-181).
-        # ``created_by_fk``/``changed_by_fk`` default to
-        # ``cls.get_user_id`` which returns the current user's id if available,
-        # else ``None`` — for self-registration there is no admin user
-        # so both are ``None`` (the columns are nullable).
+        # AuditMixin defaults: created/changed timestamps are naive local time.
+        # ``created_by_fk``/``changed_by_fk`` are ``None`` during self-registration
+        # because there is no admin user in scope (the columns are nullable).
         now = dt.datetime.now()
         new_user = user_model(
             first_name=first_name,
@@ -1147,10 +1089,9 @@ class AsyncSecurityManager:
         if isinstance(user_perms, (set, frozenset)):
             return (permission_name, view_name) in user_perms
         # Slow path: DAO query for ORM users. Resolve permissions across both
-        # the user's direct roles AND group-inherited roles — 1:1 with upstream's
-        # ``_has_view_access`` which walks ``ab_user_role`` + ``ab_user_group``
-        # → ``ab_group_role``. Without the group roles a user whose access is
-        # granted solely via a group would get a spurious 403.
+        # the user's direct roles AND group-inherited roles (ab_user_role +
+        # ab_user_group → ab_group_role). Without the group roles a user whose
+        # access is granted solely via a group would get a spurious 403.
         role_ids: set[int] = {r.id for r in getattr(user, "roles", [])}
         user_id = getattr(user, "id", None)
         if user_id is not None:
@@ -1196,8 +1137,7 @@ class AsyncSecurityManager:
     ) -> None:
         """Raise SupersetSecurityException if user lacks access.
 
-        Mirrors the original ``SupersetSecurityManager.raise_for_access``
-        with the same ordering:
+        Checks in order:
         1. sql + database -> synthetic Query creation
         2. table/query path (database -> catalog -> schema -> datasource)
         3. Guest query_context modification check
@@ -1246,10 +1186,7 @@ class AsyncSecurityManager:
             except Exception:  # noqa: BLE001, S110
                 pass  # Query may not be in a session — safe to ignore
 
-        # ------------------------------------------------------------------
         # Path 1: database + table  OR  query
-        # Mirrors original lines 2326-2397
-        # ------------------------------------------------------------------
         if (database and table) or query:
             if query:
                 database = getattr(query, "database", database)
@@ -1268,7 +1205,6 @@ class AsyncSecurityManager:
             if query:
                 # Extract all referenced tables from the SQL via Jinja
                 # rendering + SQLGlot parsing.
-                # Mirrors original lines 2336-2355.
                 # IMPORTANT: no try/except -- if parsing fails, the exception
                 # propagates out of raise_for_access (fail-CLOSED), matching
                 # the original's behaviour.  Silently swallowing the error
@@ -1336,11 +1272,8 @@ class AsyncSecurityManager:
                     self.get_table_access_error_object(denied)
                 )
 
-        # ------------------------------------------------------------------
-        # Path 2: Guest user query_context modification check
-        # Mirrors original lines 2399-2412.
+        # Path 2: Guest user query_context modification check.
         # MUST come between table/query and datasource/query_context/viz.
-        # ------------------------------------------------------------------
         if (
             query_context
             and self.is_guest_user(user)
@@ -1354,10 +1287,7 @@ class AsyncSecurityManager:
                 )
             )
 
-        # ------------------------------------------------------------------
-        # Path 3: datasource / query_context / viz
-        # Mirrors original lines 2414-2485 — includes dashboard RBAC fallback.
-        # ------------------------------------------------------------------
+        # Path 3: datasource / query_context / viz — includes dashboard RBAC fallback.
         if datasource or query_context or viz:
             form_data: dict[str, Any] | None = None
 
@@ -1391,7 +1321,6 @@ class AsyncSecurityManager:
                 # Dashboard RBAC fallback: when user lacks direct datasource
                 # access but has access to a dashboard using it (via
                 # form_data.dashboardId), access is granted.
-                # Mirrors original lines 2435-2481.
                 dashboard_fallback = False
                 if form_data and (dashboard_id := form_data.get("dashboardId")):
                     dashboard_ = await self._get_dashboard_by_id(dashboard_id)
@@ -1458,10 +1387,7 @@ class AsyncSecurityManager:
                         self.get_datasource_access_error_object(datasource)
                     )
 
-        # ------------------------------------------------------------------
         # Path 4: dashboard
-        # Mirrors original lines 2487-2527.
-        # ------------------------------------------------------------------
         if dashboard:
             if self.is_guest_user(user):
                 # Guest user is currently used for embedded dashboards only.
@@ -1493,8 +1419,6 @@ class AsyncSecurityManager:
             # User can only access the dashboard in case:
             #    It doesn't have any datasets; OR
             #    They have access to at least one dataset used.
-            # Mirrors original lines 2519-2523 ``not dashboard.datasources or any(
-            # can_access_datasource(...) for ... in dashboard.datasources)``.
             else:
                 # ``Dashboard.datasources`` returns ``None`` (not an empty set)
                 # when the instance is bound to an ``AsyncSession`` — synchronous
@@ -1532,10 +1456,7 @@ class AsyncSecurityManager:
                 self.get_dashboard_access_error_object(dashboard)
             )
 
-        # ------------------------------------------------------------------
         # Path 5: chart
-        # Mirrors original lines 2529-2536.
-        # ------------------------------------------------------------------
         if chart:
             if self.is_admin(user) or self.is_owner(chart, user):
                 return
@@ -1604,9 +1525,8 @@ class AsyncSecurityManager:
     ) -> bool:
         """Check schema-level access for a datasource.
 
-        Mirrors the original ``can_access_schema(datasource)`` which takes
-        a datasource and checks all_datasource_access, database, catalog,
-        and schema_perm.
+        Checks all_datasource_access, database_access, catalog_access, and
+        schema_perm in order.
         """
         if await self.has_access(
             ALL_DATASOURCE_ACCESS, ALL_DATASOURCE_ACCESS, user=user
@@ -1626,9 +1546,6 @@ class AsyncSecurityManager:
 
     async def _get_dashboard_by_id(self, dashboard_id: Any) -> Any | None:
         """Load a Dashboard by ID for dashboard RBAC fallback.
-
-        Mirrors the original ``self.session.query(Dashboard)
-        .filter(Dashboard.id == dashboard_id).one_or_none()``.
 
         Eager-loads the relationships the fallback then reads synchronously
         (``roles``/``slices`` in ``raise_for_access``, ``owners``/``roles``/
@@ -1671,7 +1588,7 @@ class AsyncSecurityManager:
     ) -> bool:
         """Check if form_data is performing a supported drill-by operation.
 
-        Mirrors the original ``has_drill_by_access`` exactly:
+        Requires:
         - type != NATIVE_FILTER
         - slice_id == 0
         - chart_id must reference a chart in the dashboard
@@ -1744,13 +1661,10 @@ class AsyncSecurityManager:
     ) -> bool:
         """Check if user can access a specific schema.
 
-        Mirrors the original ``can_access_schema(datasource)`` hierarchy:
-        all_datasource_access -> database_access -> catalog_access -> schema_access.
-
-        For catalog-aware databases (e.g. ClickHouse, Trino), pass the
-        ``catalog`` parameter to build the 3-part permission string
-        ``[db].[catalog].[schema]``.  Without a catalog the traditional
-        2-part ``[db].[schema]`` is used.
+        Hierarchy: all_datasource_access -> database_access -> catalog_access ->
+        schema_access.  For catalog-aware databases (e.g. ClickHouse, Trino), pass
+        ``catalog`` to build the 3-part permission string ``[db].[catalog].[schema]``.
+        Without a catalog the traditional 2-part ``[db].[schema]`` is used.
         """
         if await self.has_access(
             ALL_DATASOURCE_ACCESS, ALL_DATASOURCE_ACCESS, user=user
@@ -1758,7 +1672,6 @@ class AsyncSecurityManager:
             return True
         if await self.can_access_database(database, user=user):
             return True
-        # Catalog-level check — mirrors original line 555-557
         if catalog:
             if await self.can_access_catalog(database, catalog, user=user):
                 return True
@@ -1777,9 +1690,6 @@ class AsyncSecurityManager:
         user: Any,
     ) -> bool:
         """Check if user can access a specific table.
-
-        Mirrors ``SupersetSecurityManager.can_access_table`` from the
-        original security manager.
 
         :param database: The Database model instance
         :param table: A ``Table`` instance with ``.table``, ``.schema``,
@@ -1806,8 +1716,7 @@ class AsyncSecurityManager:
 
         Looks up SqlaTable rows matching the given table name and checks
         if the user has ``datasource_access`` or is owner of any matching
-        datasource.  Mirrors the original table-level access check
-        where individual datasource permissions are checked after
+        datasource.  Individual datasource permissions are checked after
         database/catalog/schema checks fail.
         """
         try:
@@ -1863,7 +1772,7 @@ class AsyncSecurityManager:
         # doesn't trip a MissingGreenlet on the AsyncSession.
         await self._ensure_relationship_loaded(datasource, "owners")
         await self._ensure_relationship_loaded(datasource, "database")
-        # Ownership check — mirrors original raise_for_access line 2429
+        # Ownership check (checked after schema-level perms).
         if self.is_owner(datasource, user):
             return True
         # Schema-level check (includes database, catalog, schema_perm)
@@ -1989,9 +1898,6 @@ class AsyncSecurityManager:
     ) -> list[str]:
         """Filter schemas to only those accessible by the user.
 
-        Mirrors original ``get_schemas_accessible_by_user``
-        (superset_old/security/manager.py:895-964).
-
         If no catalog is specified, the default catalog is used.
 
         :param database: The SQL database
@@ -2012,9 +1918,7 @@ class AsyncSecurityManager:
 
         # Hierarchical shortcut: database-level or catalog-level access
         # grants access to all schemas within.  The admin check is folded
-        # into can_access_database / can_access_catalog, so it is only
-        # applied when hierarchical=True — matching the original
-        # superset_old/security/manager.py:920-924 behaviour.
+        # into can_access_database / can_access_catalog.
         if hierarchical:
             if await self.can_access_database(database, user=user):
                 return schemas
@@ -2105,10 +2009,7 @@ class AsyncSecurityManager:
     ) -> list[Any]:
         """Filter ``DatasourceName`` tuples to those accessible by the user.
 
-        Async port of
-        ``superset_old/security/manager.py::SupersetSecurityManager
-        .get_datasources_accessible_by_user`` (line 1026). When ``catalog``
-        and/or ``schema`` are specified, every datasource in
+        When ``catalog`` and/or ``schema`` are specified, every datasource in
         ``datasource_names`` is assumed to live in that catalog/schema.
 
         Access short-circuits (return ALL) on, in order:
@@ -2121,9 +2022,7 @@ class AsyncSecurityManager:
         ``catalog_access`` / ``schema_access`` view-menus are resolved and the
         physical ``SqlaTable`` rows whose ``perm`` / ``schema_perm`` /
         ``catalog_perm`` match are loaded; the input list is intersected with
-        those names — exactly mirroring the original's
-        ``SqlaTable.query_datasources_by_permissions`` branch (which the
-        previous port deliberately under-exposed).
+        those names.
         """
         if await self.can_access_database(database, user=user):
             return datasource_names
@@ -2194,14 +2093,10 @@ class AsyncSecurityManager:
     async def _resolve_user_roles_for_rls(self, user: Any) -> list[Any] | None:
         """Resolve the list of role objects to use for RLS filtering.
 
-        Mirrors the original ``SupersetSecurityManager.get_user_roles``
-        contract used inside ``get_rls_filters``:
-
         * Authenticated user → their assigned roles.
-        * Anonymous / missing user → ``[Public role]`` if
-          ``AUTH_ROLE_PUBLIC`` is configured *and* the role exists in
-          the metadata DB; otherwise ``None`` to signal "no roles, no
-          filtering — return [] from ``get_rls_filters``".
+        * Anonymous / missing user → ``[Public role]`` if ``AUTH_ROLE_PUBLIC`` is
+          configured *and* the role exists in the metadata DB; otherwise ``None``
+          to signal "no roles — return [] from ``get_rls_filters``".
         """
         # ``user is None`` → skip RLS entirely (upstream returns [] before
         # touching roles). Distinct from an *anonymous* user, which proceeds
@@ -2214,11 +2109,9 @@ class AsyncSecurityManager:
         )
         if not is_anonymous:
             # Include group-inherited roles (dao.get_user_roles expands
-            # ab_user_group -> ab_group_role) — 1:1 with upstream
-            # ``get_rls_filters`` which uses upstream ``get_user_roles`` (direct +
-            # group roles).  Without the group roles, a REGULAR RLS filter
-            # scoped to a group-assigned role never matches and the row
-            # restriction is silently skipped (data exposure).
+            # ab_user_group -> ab_group_role). Without the group roles, a REGULAR
+            # RLS filter scoped to a group-assigned role never matches and the
+            # row restriction is silently skipped (data exposure).
             return await self.dao.get_user_roles(user)
 
         public_role_name = self._public_role_name
@@ -2232,20 +2125,14 @@ class AsyncSecurityManager:
     async def get_rls_filters(self, table: Any, *, user: Any) -> list[Any]:
         """Retrieve RLS filters for the current user and table.
 
-        Ported 1:1 from
-        ``superset_old/security/manager.py::SupersetSecurityManager.get_rls_filters``.
-
         Two filter types:
         - **Regular**: applies if the user holds one of the listed roles.
         - **Base**: applies if the user does *not* hold one of the listed
-          roles (Admin is exempted by listing the Admin role on the
-          BASE filter, exactly as in the original — there is no
-          special-cased ``is_admin`` branch).
+          roles (Admin is exempted by listing the Admin role on the BASE filter —
+          there is no special-cased ``is_admin`` branch).
 
         Anonymous users get the Public role (if ``AUTH_ROLE_PUBLIC`` is
-        configured), exactly mirroring the original
-        ``SupersetSecurityManager.get_user_roles`` fallback. If no Public
-        role can be resolved, returns ``[]``.
+        configured).  If no Public role can be resolved, returns ``[]``.
         """
         from superset.models.connectors import (
             RLSFilterRoles,
@@ -2310,10 +2197,7 @@ class AsyncSecurityManager:
             )
         )
 
-        # Mirror the original which returns ``[(id, group_key, clause), ...]``
-        # via ``self.session.query(RLSF.id, RLSF.group_key, RLSF.clause)``.
-        # Row objects support ``.id``/``.group_key``/``.clause`` attribute
-        # access exactly like ORM instances.
+        # Row objects support ``.id``/``.group_key``/``.clause`` attribute access.
         result = await self.dao.session.execute(stmt)
         return list(result.all())
 
@@ -2405,22 +2289,20 @@ class AsyncSecurityManager:
         schema: str | None = None,
         catalog: str | None = None,
     ) -> str | None:
-        """Format schema permission string.
+        """Format schema permission string: ``[db].[catalog].[schema]``
+        or ``[db].[schema]``.
 
-        Returns ``None`` when ``schema`` is ``None`` (1:1 with original
-        ``superset_old/security/manager.py:431``), otherwise
-        ``[db].[catalog].[schema]`` or ``[db].[schema]``.
+        Returns ``None`` when ``schema`` is ``None``.
         """
         if schema is None:
             return None
 
-        # 1:1 with the original: ``raise_for_access`` passes the Database
-        # OBJECT here, so ``str(database)`` resolves to
-        # ``Database.__repr__`` → ``name`` (``verbose_name or database_name``),
+        # ``raise_for_access`` passes the Database OBJECT here, so ``str(database)``
+        # resolves to ``Database.__repr__`` → ``name``
+        # (``verbose_name or database_name``),
         # while the PVM-creation callers (sync_permissions / permission_manager)
-        # pass a ``database_name`` *string* — ``str`` of which is the string
-        # itself. This split exactly mirrors upstream (object on the access
-        # check, name string on creation).
+        # pass a ``database_name`` *string* — ``str`` of which is the string itself.
+        # Object on the access check, name string on creation.
         db_name = str(database)
         if catalog:
             return f"[{db_name}].[{catalog}].[{schema}]"
@@ -2436,10 +2318,9 @@ class AsyncSecurityManager:
         database_name: str,
         catalog: str | None = None,
     ) -> str | None:
-        """Format catalog permission string: [db_name].[catalog].
+        """Format catalog permission string: ``[db_name].[catalog]``.
 
-        Returns ``None`` when ``catalog`` is ``None`` (1:1 with original
-        ``superset_old/security/manager.py:414``).
+        Returns ``None`` when ``catalog`` is ``None``.
         """
         if catalog is None:
             return None
@@ -2578,14 +2459,13 @@ class AsyncSecurityManager:
         )
 
     async def can_access_all_datasources(self, *, user: Any) -> bool:
-        """Check if user can access all datasources.
+        """Check if user can access all datasources
+        (all_database_access OR all_datasource_access).
 
-        1:1 with ``superset_old/security/manager.py::can_access_all_datasources``
-        (line 498): ``all_database_access OR all_datasource_access``. The port
-        previously only checked ``all_datasource_access``, so a user granted
-        the broader ``all_database_access`` (e.g. the stock Alpha role, which
-        has BOTH but the dataset-list filter keyed off this method) was wrongly
-        treated as having no global access.
+        Previously only checked ``all_datasource_access``, so a user granted the broader
+        ``all_database_access`` (e.g. the stock Alpha role) was
+        wrongly treated as having
+        no global access.
         """
         if await self.can_access_all_databases(user=user):
             return True
@@ -2688,9 +2568,6 @@ class AsyncSecurityManager:
     ) -> list[str]:
         """Filter catalogs to only those accessible by the user.
 
-        Mirrors original ``get_catalogs_accessible_by_user``
-        (superset_old/security/manager.py:966-1024).
-
         :param database: The SQL database
         :param catalogs: Candidate catalogs
         :param hierarchical: Whether to check using hierarchical permission logic
@@ -2768,13 +2645,10 @@ class AsyncSecurityManager:
     ) -> set[str]:
         """Get all view_menu names a user has for a given permission.
 
-        1:1 with ``superset_old/security/manager.py:841``: queries
-        view-menu names for the user's roles (and groups). Does NOT
-        short-circuit for admins — the original returns the Admin role's
-        actual view-menu names, callers decide how to use them.
+        Does NOT short-circuit for admins — returns the Admin role's actual
+        view-menu names; callers decide how to use them.
         """
-        # Anonymous user → use the Public role's view-menus, 1:1 with upstream
-        # ``if public_role := self.get_public_role(): ...``. The per-user query
+        # Anonymous user → use the Public role's view-menus. The per-user query
         # would key on ``user.id`` (0 for ``UnauthenticatedUser``) and return
         # nothing, silently dropping Public-role schema/datasource access.
         if getattr(user, "is_anonymous", False) or not getattr(user, "id", 0):
@@ -2814,10 +2688,7 @@ class AsyncSecurityManager:
         """Return the link for the denied datasource.
 
         Reads ``PERMISSION_INSTRUCTIONS_LINK`` (``permission_instructions_link``
-        in settings) at call time — mirrors the original
-        ``SupersetSecurityManager.get_datasource_access_link`` which calls
-        ``get_conf().get("PERMISSION_INSTRUCTIONS_LINK")`` on every invocation
-        rather than caching the value at construction time.
+        in settings) at call time rather than caching it at construction time.
         """
         link = getattr(self._settings, "permission_instructions_link", "") or ""
         return link or None
@@ -2905,12 +2776,10 @@ class AsyncSecurityManager:
         Admin users bypass the ownership check entirely, mirroring
         Superset's ``raise_for_ownership()`` behaviour.
         """
-        # 1:1 with the original ``raise_for_ownership``: a missing-ownership
-        # denial carries a ``SupersetError(MISSING_OWNERSHIP_ERROR)`` payload.
+        # A missing-ownership denial carries a
+        # ``SupersetError(MISSING_OWNERSHIP_ERROR)`` payload.
         # ``SupersetSecurityException`` takes that error object positionally —
-        # the previous ``message=`` kwarg raised ``TypeError`` (→ HTTP 500)
-        # whenever the check actually denied; it was masked only because the
-        # ``is_owner`` lazy-load of ``owners`` crashed first.
+        # passing ``message=`` as a kwarg raises ``TypeError`` (→ HTTP 500).
         if user_id is None:
             raise SupersetSecurityException(
                 SupersetError(
@@ -2953,8 +2822,7 @@ class AsyncSecurityManager:
     def is_guest_user(self, user: Any | None = None) -> bool:
         """Check if the given user is a guest user (JWT-authenticated).
 
-        Mirrors the original ``SupersetSecurityManager.is_guest_user``:
-        returns False unless the EMBEDDED_SUPERSET feature flag is enabled.
+        Returns False unless the EMBEDDED_SUPERSET feature flag is enabled.
         """
         if not self._embedded_superset_enabled:
             return False
@@ -2989,12 +2857,10 @@ class AsyncSecurityManager:
     ) -> bool:
         """Return True if an embedded/DASHBOARD_RBAC user can drill a dataset.
 
-        Mirrors the original ``SupersetSecurityManager
-        .can_drill_dataset_via_dashboard_access`` exactly: a guest user (with
-        EMBEDDED_SUPERSET enabled) who has guest access to the dashboard, *or* a
-        DASHBOARD_RBAC user whose roles intersect a published dashboard's roles,
-        may drill — but only if ``dataset`` is one of the dashboard's
-        datasources. Fails closed (returns False) otherwise.
+        A guest user (with EMBEDDED_SUPERSET enabled) who has guest access to the
+        dashboard, *or* a DASHBOARD_RBAC user whose roles intersect a published
+        dashboard's roles, may drill — but only if ``dataset`` is one of the
+        dashboard's datasources. Fails closed (returns False) otherwise.
         """
         # First branch: embedded guest access.
         access_via_dashboard = (
@@ -3120,10 +2986,6 @@ class AsyncSecurityManager:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Sync proxy
-# ---------------------------------------------------------------------------
-#
 # ``SQL_QUERY_MUTATOR`` is a user-supplied callable (configured in
 # ``superset_config.py``) that the original Superset invokes inside the
 # *synchronous* ``Database.mutate_sql_based_on_config`` code path.  It

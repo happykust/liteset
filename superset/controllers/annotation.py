@@ -57,9 +57,6 @@ class AnnotationController(Controller):
         "rison_params": Provide(provide_rison_query),
     }
 
-    # ------------------------------------------------------------------
-    # GET — list annotations for a layer
-    # ------------------------------------------------------------------
     @get(
         "/",
         guards=[require_permission("can_read", "Annotation")],
@@ -79,8 +76,7 @@ class AnnotationController(Controller):
         from superset.models.annotations import Annotation
 
         def _annotation_all_text(model: Any, value: Any) -> Any:
-            """``AnnotationAllTextFilter`` — free-text search over short_descr
-            and long_descr (1:1 with superset_old/.../annotations/filters.py)."""
+            """Free-text search over short_descr and long_descr."""
             if not value:
                 return None
             ilike = f"%{value}%"
@@ -127,8 +123,6 @@ class AnnotationController(Controller):
         )
         total = await ann_dao.count(filters=all_filters)
         await event_logger.alog_with_context("annotation.list", extra={"layer_id": pk})
-        # Mirror upstream ``AnnotationRestApi.list_columns``
-        # (superset_old/annotation_layers/annotations/api.py:78-89).
         _list_columns = [
             "id",
             "changed_by.first_name",
@@ -141,8 +135,6 @@ class AnnotationController(Controller):
             "short_descr",
             "start_dttm",
         ]
-        # Mirror upstream ``AnnotationRestApi.order_columns``
-        # (superset_old/annotation_layers/annotations/api.py:100-108).
         _order_columns = [
             "changed_by.first_name",
             "changed_on_delta_humanized",
@@ -160,9 +152,6 @@ class AnnotationController(Controller):
             order_columns=_order_columns,
         )
 
-    # ------------------------------------------------------------------
-    # GET — single annotation
-    # ------------------------------------------------------------------
     @get(
         "/{annotation_id:int}",
         guards=[require_permission("can_read", "Annotation")],
@@ -179,12 +168,9 @@ class AnnotationController(Controller):
 
         from superset.models.annotations import Annotation
 
-        # Eager-load the ``layer`` relationship so we can return the nested
-        # ``layer: {id, name}`` shape that the original show_columns specify
-        # (superset_old/annotation_layers/annotations/api.py:68-77).
-        # Scope by layer pk: the original appends a ``layer == pk`` rison
-        # filter via ``_apply_layered_relation_to_rison`` (api.py:241), so an
-        # annotation requested under the wrong layer is a 404.
+        # Eager-load the ``layer`` relationship to return the nested
+        # ``layer: {id, name}`` shape. Scoped by layer pk: an annotation
+        # requested under the wrong layer is a 404.
         items = await ann_dao.find_all(
             filters=[
                 Annotation.id == annotation_id,
@@ -205,8 +191,7 @@ class AnnotationController(Controller):
             "result": {
                 "id": annotation.id,
                 "short_descr": getattr(annotation, "short_descr", ""),
-                # Nullable column — the original serializes None as JSON null
-                # (no "" coercion).
+                # Nullable column — serializes None as JSON null (no "" coercion).
                 "long_descr": getattr(annotation, "long_descr", None),
                 "start_dttm": (
                     annotation.start_dttm.isoformat()
@@ -230,9 +215,6 @@ class AnnotationController(Controller):
             },
         }
 
-    # ------------------------------------------------------------------
-    # POST — create annotation
-    # ------------------------------------------------------------------
     @post(
         "/",
         guards=[require_permission("can_write", "Annotation")],
@@ -277,11 +259,8 @@ class AnnotationController(Controller):
             object_ref=f"annotation:{annotation.id}",
             extra={"layer_id": pk},
         )
-        # Echo exactly the submitted keys — 1:1 with the original
-        # ``result=item`` (the Marshmallow-loaded request dict plus
-        # ``item["layer"] = pk``, superset_old/annotation_layers/annotations/
-        # api.py:289-297). Unsubmitted optional fields are ABSENT, and a
-        # submitted ``long_descr: null`` echoes as ``null`` (no "" coercion).
+        # Echo exactly the submitted keys — unsubmitted optional fields are ABSENT,
+        # and a submitted ``long_descr: null`` echoes as ``null`` (no "" coercion).
         result: dict[str, Any] = {
             "short_descr": data.short_descr,
             "start_dttm": data.start_dttm.isoformat(),
@@ -297,9 +276,6 @@ class AnnotationController(Controller):
             "result": result,
         }
 
-    # ------------------------------------------------------------------
-    # PUT — update annotation
-    # ------------------------------------------------------------------
     @put(
         "/{annotation_id:int}",
         guards=[require_permission("can_write", "Annotation")],
@@ -327,26 +303,18 @@ class AnnotationController(Controller):
                 "json_metadata": data.json_metadata,
             }
         )
-        # Save submitted fields *before* adding the FK so we can echo only
-        # what the client sent in the response (mirrors the original where
-        # ``item = edit_model_schema.load(request.json)`` contains only the
-        # keys present in the request body, then ``item["layer"] = pk`` is
-        # appended — superset_old/annotation_layers/annotations/api.py:364-371).
+        # Save submitted fields before adding the FK so the response echoes only
+        # what the client sent (only keys present in the request body, plus
+        # ``layer: pk`` appended at the end).
         submitted_data: dict[str, Any] = dict(update_data)
-        # Mirror original: item["layer"] = pk is always set before the command
-        # (superset_old/annotation_layers/annotations/api.py:365), so the
-        # annotation's layer FK is always (re-)assigned to the URL layer pk.
+        # layer_id is always (re-)assigned to the URL layer pk.
         update_data["layer_id"] = pk
         cmd = UpdateAnnotationCommand(dao=ann_dao, pk=annotation_id, data=update_data)
         annotation = await cmd.execute()
         await event_logger.alog_with_context(
             "annotation.update", object_ref=f"annotation:{annotation_id}"
         )
-        # Mirror original 200 result: only submitted fields + layer int pk.
-        # ``item`` in the original is the partial Marshmallow-loaded dict
-        # (only keys present in the request body) plus item["layer"] = pk.
-        # We replicate that from submitted_data so a client sending only
-        # short_descr does NOT see the other fields in the response.
+        # Only submitted fields + layer int pk in the 200 response.
         result: dict[str, Any] = {}
         for key in ("short_descr", "long_descr", "json_metadata"):
             if key in submitted_data:
@@ -358,9 +326,6 @@ class AnnotationController(Controller):
         result["layer"] = pk
         return {"id": annotation.id, "result": result}
 
-    # ------------------------------------------------------------------
-    # DELETE — single annotation
-    # ------------------------------------------------------------------
     @delete(
         "/{annotation_id:int}",
         guards=[require_permission("can_write", "Annotation")],
@@ -374,9 +339,8 @@ class AnnotationController(Controller):
         layer_dao: Any,
     ) -> dict[str, str]:
         """DELETE /api/v1/annotation_layer/<pk>/annotation/<annotation_id>."""
-        # No layer-existence guard: the original DeleteAnnotationCommand
-        # deletes by annotation id alone and ignores the layer pk in the URL
-        # (superset_old/commands/annotation_layer/annotation/delete.py:33-48).
+        # No layer-existence guard: DeleteAnnotationCommand deletes by annotation
+        # id alone and ignores the layer pk in the URL.
         cmd = DeleteAnnotationCommand(dao=ann_dao, pk=annotation_id)
         await cmd.execute()
         await event_logger.alog_with_context(
@@ -386,9 +350,6 @@ class AnnotationController(Controller):
         )
         return {"message": "OK"}
 
-    # ------------------------------------------------------------------
-    # DELETE — bulk delete annotations
-    # ------------------------------------------------------------------
     @delete(
         "/",
         guards=[require_permission("can_write", "Annotation")],

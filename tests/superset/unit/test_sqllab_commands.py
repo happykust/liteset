@@ -132,7 +132,7 @@ async def test_get_results_empty_key():
 
 async def test_get_results_no_cache():
     # No results backend configured (test env) -> production raises the
-    # not-configured exception, 1:1 with upstream ``results.py``.
+    # not-configured exception.
     cmd = GetSQLResultsCommand(key="test-key")
     with pytest.raises(SupersetResultsBackendNotConfigureException):
         await cmd.execute()
@@ -173,9 +173,8 @@ async def test_get_sqllab_permalink_not_found():
 async def test_format_sql_propagates_format_error():
     """FormatSQLCommand does NOT swallow parse/format errors into the original.
 
-    1:1 with upstream ``sqllab/api.py::format_sql`` which only catches schema
-    ``ValidationError`` — ``SQLScript(...).format()`` failures propagate (HTTP
-    4xx) rather than echoing the unformatted SQL with 200 (the previous
+    ``SQLScript(...).format()`` failures propagate (HTTP 4xx) rather than
+    echoing the unformatted SQL with 200 (the previous
     swallow-and-return-original behaviour was an audited bug).
     """
     from unittest.mock import MagicMock, patch
@@ -200,8 +199,7 @@ async def test_format_sql_propagates_format_error():
 
 async def test_get_results_cache_exception_falls_through():
     """A cache.get failure is swallowed; with no results backend configured
-    the command then raises ``SupersetResultsBackendNotConfigureException``
-    (1:1 with upstream ``results.py``)."""
+    the command then raises ``SupersetResultsBackendNotConfigureException``."""
     cache = MagicMock()
     cache.get = MagicMock(side_effect=RuntimeError("connection refused"))
     cmd = GetSQLResultsCommand(key="test-key", cache_manager=cache)
@@ -229,8 +227,8 @@ async def test_get_results_cache_hit_returns_data():
 
 async def test_get_sqllab_permalink_decode_error_maps_to_500():
     """A malformed (non-kv:) permalink key raises an internal error with
-    status_code=500, 1:1 with the original SqlLabPermalinkGetFailedError
-    (CommandException → SupersetException.status = 500).
+    status_code=500 (SqlLabPermalinkGetFailedError: CommandException →
+    SupersetException.status = 500).
 
     Pre-fix liteset raised ObjectNotFoundError (404) for decode errors,
     which diverged from the original. The current code is correct; this
@@ -265,8 +263,7 @@ async def test_get_sqllab_permalink_failed_error_status_code():
 async def test_get_sqllab_permalink_kv_legacy_found():
     """Legacy kv:<id> key: returns parsed JSON dict from KeyValue row.
 
-    Port of superset_old/commands/sql_lab/permalink/get.py:44-54 — when the
-    row exists, ``json.loads(row.value)`` is returned directly.
+    When the row exists, ``json.loads(row.value)`` is returned directly.
     """
     import json  # noqa: TID251
 
@@ -301,7 +298,7 @@ async def test_get_sqllab_permalink_kv_legacy_not_found():
 async def test_get_sqllab_permalink_kv_legacy_exception_maps_to_500():
     """Legacy kv:<id> key: unexpected exception raises HTTP-500 error.
 
-    1:1 with original: any non-not-found exception in the kv: branch is
+    Any non-not-found exception in the kv: branch is
     wrapped in SqlLabPermalinkGetFailedError (status=500).
     """
     from superset.commands.sqllab.permalink import _SqlLabPermalinkGetFailedError

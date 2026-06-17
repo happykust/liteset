@@ -16,8 +16,7 @@
 # under the License.
 """Pure-function unit tests for time-shift / offset join helpers.
 
-Ported from the vendored upstream ``tests/unit_tests/common/test_time_shifts.py``.
-These exercise ``add_offset_join_column`` and ``join_offset_dfs`` on the
+Exercises ``add_offset_join_column`` and ``join_offset_dfs`` on the
 processor in isolation. Liteset renamed ``QueryContextProcessor`` ->
 ``AsyncQueryContextProcessor`` and replaced the Flask request-scoped globals
 with constructor injection; the two methods under test only use ``self`` for

@@ -31,10 +31,6 @@ from sqlalchemy.orm import backref, relationship
 
 from superset.models.helpers import AuditMixinNullable, Base
 
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
-
 
 class UserAttribute(Base, AuditMixinNullable):
     """Extended user attributes (welcome dashboard, avatar, etc.)."""
@@ -48,9 +44,8 @@ class UserAttribute(Base, AuditMixinNullable):
 
     # -- relationships --------------------------------------------------------
 
-    # ``backref="extra_attributes"`` exposes ``User.extra_attributes`` —
-    # required by the avatar endpoint and matches original Superset at
-    # superset_old/models/user_attributes.py:39-41.
+    # ``backref="extra_attributes"`` exposes ``User.extra_attributes``
+    # (required by the avatar endpoint).
     user = relationship(
         "User",
         foreign_keys=[user_id],

@@ -60,12 +60,11 @@ def require_authentication(
     guard has no knowledge of *which specific* permission the endpoint
     requires.
 
-    This mirrors the original FAB behaviour: ``@protect()`` and
-    ``@has_access_api`` allow anonymous access only when the Public role
-    has the *specific* ``(action, resource)`` pair for the endpoint
-    (``is_item_public(permission_str, class_permission_name)``).  A guard
-    that cannot parameterise the required pair must therefore simply deny
-    all anonymous callers.
+    ``@protect()`` and ``@has_access_api`` allow anonymous access only when
+    the Public role has the *specific* ``(action, resource)`` pair for the
+    endpoint (``is_item_public(permission_str, class_permission_name)``).
+    A guard that cannot parameterise the required pair must therefore simply
+    deny all anonymous callers.
 
     Endpoints that legitimately allow anonymous Public-role access must use
     ``require_permission(action, resource)`` — that guard does perform the
@@ -117,13 +116,10 @@ def deny_anon_with_404(
 def require_feature_flag(feature: str) -> GuardFn:
     """Guard factory that hides a route with 404 when *feature* is disabled.
 
-    1:1 with the original FAB ``@before_request ensure_*_enabled`` hooks
-    (e.g. ``superset_old/reports/api.py:69-73`` and
-    ``superset_old/reports/logs/api.py:38-41``) which return
-    ``self.response_404()`` when ``is_feature_enabled(<feature>)`` is False.
+    Returns HTTP 404 when ``is_feature_enabled(<feature>)`` is ``False``.
 
     Applied at the controller level, it gates *every* route on the
-    controller — exactly like ``@before_request`` did.
+    controller.
     """
 
     def guard_fn(
@@ -153,15 +149,10 @@ def require_permission(action: str, resource: str) -> GuardFn:
             "auth_role_admin",
             _DEFAULT_ADMIN_ROLE_NAME,
         )
-        # Check if user is authenticated
         if not getattr(user, "is_authenticated", False):
-            # Allow anonymous users with matching Public role permission
             user_perms: set[tuple[str, str]] = getattr(user, "permissions", set())
             if permission_tuple in user_perms:
                 return
-            # Unauthenticated users without the required permission → 401.
-            # Mirrors original FAB behaviour: unauthenticated callers get
-            # redirected to login (HTTP 401), not a 403 Forbidden.
             raise NotAuthorizedException(detail="Not authenticated")
         if is_admin(user, admin_role_name=admin_role):
             return

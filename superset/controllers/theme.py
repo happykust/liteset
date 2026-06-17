@@ -63,11 +63,8 @@ from superset.utils import filter_unset
 def _guard_system_theme_admin(user: UserProtocol, state: State) -> None:
     """Enforce the system-theme admin + feature-flag gate.
 
-    Mirrors ``superset_old/themes/api.py`` system-theme handlers
-    (``set_system_default``/``set_system_dark``/``unset_system_default``/
-    ``unset_system_dark``) which first require ``security_manager.is_admin()``
-    (else 403 "Only administrators can set system themes") **and** the
-    ``ENABLE_UI_THEME_ADMINISTRATION`` config flag (else 403 "UI theme
+    Requires ``is_admin()`` (else 403 "Only administrators can set system
+    themes") **and** ``ENABLE_UI_THEME_ADMINISTRATION`` (else 403 "UI theme
     administration is not enabled").
     """
     from superset.exceptions import ForbiddenError
@@ -140,10 +137,6 @@ class ThemeController(Controller):
         )
         total = await dao.count(filters=rison_filters or None)
         await event_logger.alog_with_context("theme.list", user_id=current_user.id)
-        # 1:1 with upstream ``ThemeRestApi.list_columns`` — includes
-        # ``changed_by_name`` (AuditMixinNullable @property returning the
-        # changer's full name) and ``created_on`` (SA datetime column) which
-        # the frontend list view uses for display/sorting.
         return serialize_list_response(
             themes,
             total,
@@ -159,6 +152,8 @@ class ThemeController(Controller):
                 "changed_by.first_name",
                 "changed_by.id",
                 "changed_by.last_name",
+                # ``changed_by_name`` is an AuditMixinNullable @property
+                # returning the changer's full name (used in the list view).
                 "changed_by_name",
                 "created_on",
                 "created_by.first_name",
@@ -183,10 +178,9 @@ class ThemeController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/theme/{pk} — get a single theme.
 
-        Returns the real ``Theme`` columns 1:1 with upstream
-        ``ThemeRestApi.show_columns`` (id, theme_name, json_data, uuid,
-        is_system*, audit). There is NO css/json_metadata/description on the
-        model — those phantom keys are dropped.
+        Returns id, theme_name, json_data, uuid, is_system*, and audit fields.
+        There is NO css/json_metadata/description on the model — those phantom
+        keys are dropped.
         """
         from sqlalchemy.orm import selectinload
 
@@ -287,9 +281,7 @@ class ThemeController(Controller):
         from msgspec import structs as _structs
 
         payload = filter_unset(_structs.asdict(data))
-        # Mirror superset_old/themes/api.py ``put``:
-        # ``if not request.json: return self.response_400(...)`` — reject an
-        # empty request body (no set fields) with HTTP 400.
+        # Reject an empty request body (no set fields) with HTTP 400.
         if not payload:
             return Response(  # type: ignore[return-value]
                 content={"message": "Request body is required"},
@@ -300,11 +292,9 @@ class ThemeController(Controller):
         await event_logger.alog_with_context(
             "theme.update", object_ref=str(pk), user_id=current_user.id
         )
-        # Mirror superset_old/themes/api.py ``put``:
-        # ``self.response(200, id=changed_model.id, result=item)`` which
-        # produces ``{"id": <pk>, "result": {...}}``.  edit_columns =
-        # ["json_data", "theme_name"]; the values reflect the submitted
-        # payload (``item``), not the persisted record.
+        # Response: ``{"id": <pk>, "result": {...}}``.  edit_columns =
+        # ["json_data", "theme_name"]; values reflect the submitted payload,
+        # not the persisted record.
         return {
             "id": theme.id,
             "result": {
@@ -333,7 +323,6 @@ class ThemeController(Controller):
         await event_logger.alog_with_context(
             "theme.delete", object_ref=str(pk), user_id=current_user.id
         )
-        # Mirror superset_old/themes/api.py ``delete``: ngettext with num=1.
         return {"message": _("Deleted %(num)d theme", num=1)}
 
     # ------------------------------------------------------------------
@@ -357,7 +346,6 @@ class ThemeController(Controller):
         await event_logger.alog_with_context(
             "theme.set_system_default", object_ref=str(pk), user_id=current_user.id
         )
-        # Mirror superset_old/themes/api.py: response(200, id=..., result="success").
         return {"id": theme.id, "result": "success"}
 
     # ------------------------------------------------------------------
@@ -381,7 +369,6 @@ class ThemeController(Controller):
         await event_logger.alog_with_context(
             "theme.unset_system_default", user_id=current_user.id
         )
-        # Mirror superset_old/themes/api.py: response(200, result="success").
         return {"result": "success"}
 
     @delete(
@@ -404,8 +391,6 @@ class ThemeController(Controller):
             extra={"count": count},
             user_id=current_user.id,
         )
-        # Mirror superset_old/themes/api.py ``bulk_delete``: ngettext keyed
-        # on len(item_ids) (singular form for N == 1).
         num = len(ids)
         message = (
             _("Deleted %(num)d theme", num=num)
@@ -434,7 +419,6 @@ class ThemeController(Controller):
             object_ref=str(pk),
             user_id=current_user.id,
         )
-        # Mirror superset_old/themes/api.py: response(200, id=..., result="success").
         return {"id": theme.id, "result": "success"}
 
     @delete(
@@ -455,7 +439,6 @@ class ThemeController(Controller):
         await event_logger.alog_with_context(
             "theme.unset_system_dark", user_id=current_user.id
         )
-        # Mirror superset_old/themes/api.py: response(200, result="success").
         return {"result": "success"}
 
     @get(
@@ -516,15 +499,12 @@ class ThemeController(Controller):
     ) -> dict[str, Any]:
         """POST /api/v1/theme/import/ -- import themes from a ZIP file.
 
-        Ported from superset_old/themes/api.py ``ThemeRestApi.import_``.
-        Accepts a multipart/form-data upload containing a ZIP file with
-        YAML theme definitions.  Each YAML file under ``themes/`` in the
-        archive is parsed and imported via ``ImportThemesCommand``.
+        Accepts a multipart/form-data upload containing a ZIP file with YAML
+        theme definitions. Each YAML file under ``themes/`` in the archive is
+        parsed and imported via ``ImportThemesCommand``.
 
-        The original reads from ``request.files.get('formData')``.
-        We read the raw form and pick the first UploadFile regardless
-        of field name (matching the pattern in parse_import_request),
-        which is compatible with both 'formData' and 'data' field names.
+        Reads the first UploadFile field regardless of field name (compatible
+        with both 'formData' and 'data' field names).
         """
         from io import BytesIO
         from zipfile import ZipFile
@@ -532,8 +512,6 @@ class ThemeController(Controller):
         import yaml
         from litestar.response import Response
 
-        # Read multipart form manually to be field-name agnostic — 1:1
-        # with superset_old/themes/api.py:537 which reads 'formData'.
         form = await request.form()
         upload = next((v for v in form.values() if isinstance(v, UploadFile)), None)
         if upload is None:
@@ -565,20 +543,15 @@ class ThemeController(Controller):
         raw_metadata_contents: dict[str, str] = {}
         try:
             with ZipFile(BytesIO(file_bytes)) as bundle:
-                # Zip-bomb / path-traversal guard — mirrors the original's
-                # get_contents_from_bundle which calls check_is_safe_zip
-                # (superset_old/commands/importers/v1/utils.py:229-230).
-                # Raises SupersetException when uncompressed size exceeds
-                # ZIPPED_FILE_MAX_SIZE or compression ratio exceeds
-                # ZIP_FILE_MAX_COMPRESS_RATIO.
+                # Zip-bomb / path-traversal guard: raises SupersetException when
+                # uncompressed size exceeds ZIPPED_FILE_MAX_SIZE or the
+                # compression ratio exceeds ZIP_FILE_MAX_COMPRESS_RATIO.
                 _check_is_safe_zip(bundle)
                 for zip_entry in bundle.namelist():
                     parts = zip_entry.split("/")
                     # Capture metadata.yaml at the export-bundle root level
                     # (e.g. "theme_export_20240101T000000/metadata.yaml").
-                    # The original get_contents_from_bundle reads ALL files and
-                    # ImportModelsCommand.validate() checks metadata.yaml first
-                    # (superset_old/commands/importers/v1/__init__.py:98).
+                    # ImportModelsCommand.validate() checks metadata.yaml first.
                     if parts[-1] == "metadata.yaml":
                         raw_metadata_contents["metadata.yaml"] = bundle.read(
                             zip_entry
@@ -612,11 +585,8 @@ class ThemeController(Controller):
         except Exception:
             return {"message": "Invalid ZIP file", "errors": ["Could not read ZIP"]}
 
-        # Validate metadata.yaml version and type — mirrors the original
-        # ImportModelsCommand.validate() → load_metadata() + validate_metadata_type()
-        # flow (superset_old/commands/importers/v1/__init__.py:93-133).
-        # IncorrectVersionError → CommandInvalidError (mirrors the dispatcher
-        # which catches IncorrectVersionError and raises CommandInvalidError).
+        # Validate metadata.yaml version and type.
+        # IncorrectVersionError → CommandInvalidError.
         from superset.exceptions import CommandInvalidError
 
         try:
@@ -691,17 +661,13 @@ class ThemeController(Controller):
 
         Returns distinct values for a relationship column (e.g. created_by,
         changed_by) for use in select dropdown filters.
+        Allowed fields: ``{"created_by", "changed_by"}``.
 
-        Ported from superset_old/themes/api.py ``ThemeRestApi`` which
-        included ``RouteMethod.RELATED`` with
-        ``allowed_rel_fields = {"created_by", "changed_by"}``.
-
-        The original FAB ``related`` method returns 404 when column_name
-        is not in ``allowed_rel_fields``. The original also applies:
-        - ``related_field_filters``: combined first_name + last_name search
-          via ``FilterRelatedOwners`` on ``changed_by``
-        - ``base_related_field_filters``: excludes users in
-          ``EXCLUDE_USERS_FROM_LISTS`` via ``BaseFilterRelatedUsers``
+        Applies:
+        - Combined first_name + last_name search (``FilterRelatedOwners``)
+          on ``changed_by``
+        - Exclusion of users in ``EXCLUDE_USERS_FROM_LISTS``
+          (``BaseFilterRelatedUsers``)
         - ``EXTRA_RELATED_QUERY_FILTERS["user"]`` hook for additional filtering
         """
         allowed_rel_fields = frozenset({"created_by", "changed_by"})
@@ -710,8 +676,7 @@ class ThemeController(Controller):
         if column_name not in allowed_rel_fields:
             raise ObjectNotFoundError("related", column_name)
 
-        # Build base_filters matching the original BaseFilterRelatedUsers
-        # (superset_old/views/filters.py lines 72-87):
+        # Build base_filters (BaseFilterRelatedUsers logic):
         # 1. Apply EXTRA_RELATED_QUERY_FILTERS["user"] hook
         # 2. If EXCLUDE_USERS_FROM_LISTS is None, fall back to
         #    security_manager.get_exclude_users_from_lists()
@@ -724,17 +689,9 @@ class ThemeController(Controller):
             settings = getattr(state, "settings", None)
 
             # Step 1: Apply EXTRA_RELATED_QUERY_FILTERS["user"] hook.
-            # Original contract (superset_old/views/filters.py:72-76):
-            #   query = extra_filters(query)  — Callable[[Query], Query]
-            # We pass the hook through to get_related_payload as query_hook
-            # so it receives the real Select statement and returns the
-            # modified Select, matching the original calling convention.
-            #
-            # IMPORTANT: The original only registers BaseFilterRelatedUsers
-            # (which applies this hook) for ``changed_by`` via
-            # ``base_related_field_filters``
-            # (superset_old/themes/api.py:150-152).  ``created_by`` has NO
-            # entry there, so the hook MUST NOT be applied to created_by.
+            # Callable[[Select], Select] — hook receives the SA Select statement.
+            # Only applied to ``changed_by``; ``created_by`` has no base_related
+            # field filter, so the hook MUST NOT be applied to it.
             extra_related_filters: dict[str, Any] = (
                 getattr(settings, "extra_related_query_filters", {}) if settings else {}
             )
@@ -742,26 +699,23 @@ class ThemeController(Controller):
             if callable(user_extra_filter) and column_name == "changed_by":
                 query_hook = user_extra_filter
 
-            # Step 2: Determine exclude_users list with fallback
-            # Original: EXCLUDE_USERS_FROM_LISTS is None -> call
-            # security_manager.get_exclude_users_from_lists()
+            # Step 2: Determine exclude_users list with fallback.
+            # When EXCLUDE_USERS_FROM_LISTS is None, call
+            # security_manager.get_exclude_users_from_lists().
             exclude_users: list[str] | None = (
                 getattr(settings, "exclude_users_from_lists", None)
                 if settings
                 else None
             )
             if exclude_users is None:
-                # Fallback: security_manager.get_exclude_users_from_lists()
                 get_exclude = getattr(
                     security_manager, "get_exclude_users_from_lists", None
                 )
                 if callable(get_exclude):
                     exclude_users = get_exclude()
 
-            # Step 3: Exclude matched usernames — original
-            # ``base_related_field_filters`` maps ONLY ``changed_by`` to
-            # ``BaseFilterRelatedUsers`` (superset_old/themes/api.py:150-152);
-            # ``created_by`` has no entry so the exclusion is NOT applied for it.
+            # Step 3: Exclude matched usernames — only for ``changed_by``
+            # (``created_by`` has no base_related_field_filters entry).
             if exclude_users and column_name == "changed_by":
                 base_filters.append(User.username.not_in(exclude_users))
         except Exception:  # noqa: BLE001, S110

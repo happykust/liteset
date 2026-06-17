@@ -14,8 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Tests for ExploreFormDataController."""
-
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -36,11 +34,6 @@ async def test_resource():
     assert ExploreFormDataController.resource == "explore_form_data"
 
 
-# ---------------------------------------------------------------------------
-# check_dataset_access — eager-load guard (regression for the form_data 500)
-# ---------------------------------------------------------------------------
-
-
 async def test_check_dataset_access_eager_loads_relationships():
     """The dataset is loaded with ``owners`` + ``database`` eager-loaded so the
     downstream ``can_access_datasource`` never triggers a sync lazy-load
@@ -59,13 +52,13 @@ async def test_check_dataset_access_eager_loads_relationships():
     dao.find_by_id_with_options.assert_awaited_once()
     args, _ = dao.find_by_id_with_options.call_args
     assert args[0] == 1
-    assert len(args[1]) == 2  # selectinload(owners) + selectinload(database)
-    # The bare (lazy) find_by_id must NOT be used on this path.
+    # Exactly two eager-load options: selectinload(owners) + selectinload(database)
+    # so that can_access_datasource never triggers a sync lazy-load (MissingGreenlet).
+    assert len(args[1]) == 2
     dao.find_by_id.assert_not_called()
 
 
 async def test_check_dataset_access_denied_raises_forbidden():
-    """A user without datasource access gets ForbiddenError (→ 403), not a 500."""
     dao = AsyncMock()
     dao.find_by_id_with_options = AsyncMock(return_value=MagicMock())
     sm = AsyncMock()
@@ -76,7 +69,6 @@ async def test_check_dataset_access_denied_raises_forbidden():
 
 
 async def test_check_dataset_access_missing_raises_not_found():
-    """A missing dataset raises ObjectNotFoundError (→ 404)."""
     dao = AsyncMock()
     dao.find_by_id_with_options = AsyncMock(return_value=None)
     sm = AsyncMock()
@@ -85,18 +77,7 @@ async def test_check_dataset_access_missing_raises_not_found():
         await check_dataset_access(dao, 1, security_manager=sm, user=MagicMock())
 
 
-# ---------------------------------------------------------------------------
-# Owner check regression — None-owner entries must still be protected
-# ---------------------------------------------------------------------------
-# Original: superset_old/commands/explore/form_data/update.py:62 and
-# delete.py:54 both do ``state["owner"] != get_user_id()`` unconditionally.
-# None != 456  → True → raises TemporaryCacheAccessDeniedError (→ 403).
-# The bug: ``if owner is not None and owner != user.id`` short-circuits to
-# False when owner=None, silently granting write access to any caller.
-
-
 def _make_envelope(owner: int | None) -> str:
-    """Return a cache-slot entry dict with the given owner."""
     return {
         "owner": owner,
         "datasource_id": 1,
@@ -107,7 +88,6 @@ def _make_envelope(owner: int | None) -> str:
 
 
 def _controller_self() -> MagicMock:
-    """Return a minimal controller self-mock carrying the resource attribute."""
     self_mock = MagicMock()
     self_mock.resource = ExploreFormDataController.resource
     return self_mock
@@ -157,8 +137,6 @@ async def test_update_value_owner_none_raises_permission_denied():
 
 
 async def test_update_value_owner_mismatch_raises_permission_denied():
-    """PUT with a mismatched owner (non-None) must also raise — the normal
-    ownership enforcement path that existed before this regression."""
     cache = AsyncMock()
     cache.get = AsyncMock(return_value=_make_envelope(owner=99))
 
@@ -230,7 +208,6 @@ async def test_delete_value_owner_none_raises_permission_denied():
 
 
 async def test_delete_value_owner_mismatch_raises_permission_denied():
-    """DELETE with a mismatched non-None owner must also raise."""
     cache = AsyncMock()
     cache.get = AsyncMock(return_value=_make_envelope(owner=99))
 

@@ -16,13 +16,9 @@
 # under the License.
 """msgspec Structs for the Embedded Dashboard API.
 
-Mirrors ``superset_old/dashboards/schemas.py::EmbeddedDashboardConfigSchema``
-and ``EmbeddedDashboardResponseSchema``.
-
 The config and response types live here for import-path compatibility
 (some callers import from ``superset.schemas.embedded_dashboard``); the
-canonical definitions are re-exported from ``superset.schemas.dashboard``
-to keep the schema module co-located with the rest of the dashboard API.
+canonical definitions are re-exported from ``superset.schemas.dashboard``.
 """
 
 from __future__ import annotations

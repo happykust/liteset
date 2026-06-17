@@ -31,15 +31,8 @@ logger = logging.getLogger(__name__)
 
 @celery_app.task(name="slack.cache_channels")
 def cache_channels() -> None:
-    """Warm up the Slack channels cache.
-
-    1:1 port of ``superset_old/tasks/slack.py:cache_channels``.
-
-    Calls ``_get_slack_channels(force=True)`` which fetches all channels
-    from the Slack API (bypassing the existing cache) and writes the result
-    to the Superset cache backend under ``"slack_conversations_list"``.
-    If the Slack token is not configured the helper exits early.
-    """
+    """Fetch all Slack channels and warm the cache under
+    ``slack_conversations_list``."""
     from superset.config import SupersetSettings
 
     settings = SupersetSettings()  # type: ignore[call-arg]

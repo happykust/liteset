@@ -185,22 +185,22 @@ async def test_update_tag_success(mock_dao: AsyncMock) -> None:
     await cmd.validate()
     result = await cmd.run()
     assert result.name == "NewName"
-    # description is always passed to dao.update (None when absent), mirroring
-    # superset_old/commands/tag/update.py:48: ``self._model.description =
-    # self._properties.get('description')`` which writes NULL when absent.
+    # description is always passed to dao.update (None when absent):
+    # ``self._model.description = self._properties.get('description')``
+    # writes NULL when the key is absent.
     mock_dao.update.assert_awaited_once_with(
         item, {"name": "NewName", "description": None}
     )
 
 
 async def test_update_tag_clears_description_when_absent(mock_dao: AsyncMock) -> None:
-    """PUT body without description must clear the column to NULL (original behaviour).
+    """PUT body without description must clear the column to NULL.
 
-    superset_old/commands/tag/update.py:48 always executes:
+    The update always executes:
         self._model.description = self._properties.get('description')
-    returning None when key is absent, which writes NULL.  The liteset
-    controller strips UNSET fields via filter_unset before calling the
-    command, so the command must re-inject description=None explicitly.
+    returning None when key is absent, which writes NULL.  The controller
+    strips UNSET fields via filter_unset before calling the command, so
+    the command must re-inject description=None explicitly.
     """
     item = MagicMock()
     item.id = 5
@@ -231,8 +231,7 @@ async def test_update_tag_clears_description_when_absent(mock_dao: AsyncMock) ->
         "explicitly cleared to NULL when omitted from the PUT body"
     )
     assert passed_data["description"] is None, (
-        "description must be None (NULL) when absent from the PUT body, "
-        "matching superset_old/commands/tag/update.py:48"
+        "description must be None (NULL) when absent from the PUT body"
     )
     assert result.description is None
 
@@ -282,7 +281,6 @@ async def test_delete_tag_success(mock_dao: AsyncMock) -> None:
 
 
 async def test_bulk_delete_empty(mock_dao: AsyncMock) -> None:
-    # 1:1 with original DeleteTagsCommand: deletes by tag *name*.
     cmd = BulkDeleteTagCommand(dao=mock_dao, tag_names=[])
     with pytest.raises(CommandInvalidError, match="No tag names"):
         await cmd.validate()
@@ -341,12 +339,11 @@ async def test_bulk_create_success(mock_dao: AsyncMock) -> None:
 async def test_add_objects_zero_object_id_raises_422(mock_dao: AsyncMock) -> None:
     """POST /{object_type}/{object_id}/ with object_id==0 must return 422.
 
-    1:1 with superset_old/commands/tag/create.py:55-64:
     CreateCustomTagCommand.validate() appends TagCreateFailedError when
     object_id==0 and raises TagInvalidError → api.py:407-408 returns 422
-    "Invalid tag".  The liteset controller must reproduce this guard so that
-    a client sending e.g. POST /api/v1/tag/2/0/ is rejected rather than
-    silently persisting TaggedObject(object_id=0).
+    "Invalid tag".  This guard ensures that a client sending e.g.
+    POST /api/v1/tag/2/0/ is rejected rather than silently persisting
+    TaggedObject(object_id=0).
     """
     from superset.controllers.tag import TagController
 

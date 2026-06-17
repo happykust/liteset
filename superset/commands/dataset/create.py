@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dataset/create.py``."""
+"""Commands for creating and retrieving datasets."""
 
 from __future__ import annotations
 
@@ -49,13 +49,6 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         self._database: Any | None = None
 
     async def validate(self) -> None:  # noqa: C901
-        # ACCUMULATE all per-field validation errors (1:1 with
-        # ``superset_old/commands/dataset/create.py::validate``) and raise a
-        # single ``DatasetInvalidError`` at the end — so the controller emits a
-        # per-field ``{"message": {field: [messages]}}`` 422 body instead of a
-        # flat string. Each check guards on the prerequisites it needs, exactly
-        # like the original (e.g. uniqueness/table-exists only run once the
-        # database is resolved).
         from superset.commands.dataset.exceptions import (
             DatabaseNotFoundValidationError,
             DatasetDataAccessIsNotAllowed,
@@ -84,14 +77,12 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 DatasetValidationError("database is required", field_name="database")
             )
 
-        # Validate/populate database
         self._database = (
             await self._dao.get_database_by_id(database_id) if database_id else None
         )
         if database_id and not self._database:
             exceptions.append(DatabaseNotFoundValidationError())
 
-        # Validate uniqueness (only when the database resolved + a name exists)
         table: Table | None = None
         if self._database is not None and table_name:
             if not catalog and hasattr(self._database, "get_default_catalog"):
@@ -107,11 +98,6 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             if not is_unique:
                 exceptions.append(DatasetExistsValidationError(table))
 
-            # Validate the physical table exists when no sql is provided —
-            # 1:1 with ``DatasetDAO.validate_table_exists``: reflection runs
-            # against the live database; ``SQLAlchemyError`` (incl. connection
-            # failures) → False → per-field TableNotFoundValidationError 422,
-            # exactly like upstream (daos/dataset.py:74-83).
             if not sql:
                 import asyncio
 
@@ -127,11 +113,6 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 if not exists:
                     exceptions.append(TableNotFoundValidationError(table))
 
-        # Validate SQL access for virtual datasets — 1:1 with
-        # ``superset_old/commands/dataset/create.py``: only virtual datasets
-        # (``sql`` provided) require ``raise_for_access`` against the parsed
-        # SQL. Physical datasets are gated by ``can_write Dataset`` alone
-        # (the original performs no schema-only access check here).
         if sql and self._security_manager is not None and self._database is not None:
             from superset.exceptions import (
                 SupersetParseError,
@@ -160,10 +141,6 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                     DatasetValidationError(f"Invalid SQL: {message}", field_name="sql")
                 )
 
-        # Validate/resolve owners here (not in run()) so a bad owner id is
-        # reported as a per-field ``owners`` error in the accumulated 422 —
-        # 1:1 with upstream ``create.py::validate`` (populate_owners + append).
-        # The resolved list is stashed for run() to reuse (no double lookup).
         if self._security_manager is not None:
             from superset.commands.dataset.exceptions import (
                 OwnersNotFoundValidationError,
@@ -181,9 +158,6 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                     default_to_user=True,
                 )
             except GenericOwnersNotFoundError:
-                # ``populate_owner_list`` raises the generic
-                # ``superset.exceptions.OwnersNotFoundValidationError``; convert
-                # it to the per-field dataset error so it merges under ``owners``.
                 exceptions.append(OwnersNotFoundValidationError())
 
         if exceptions:
@@ -192,7 +166,6 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
     async def run(self) -> "SqlaTable":
         from superset.models.connectors import SqlaTable
 
-        # Resolve catalog: use provided value or fall back to database default
         catalog = self._data.get("catalog")
         if not catalog and self._database is not None:
             if hasattr(self._database, "get_default_catalog"):
@@ -208,23 +181,15 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             external_url=self._data.get("external_url"),
             normalize_columns=self._data.get("normalize_columns", False),
             always_filter_main_dttm=self._data.get("always_filter_main_dttm", False),
-            # Upstream ``DatasetDAO.create(attributes=...)`` setattr's every
-            # provided key — template_params was silently dropped here.
             template_params=self._data.get("template_params"),
         )
         if self._user_id is not None:
             dataset.created_by_fk = self._user_id
             dataset.changed_by_fk = self._user_id
 
-        # Resolve owners — defaults to the current user when none provided,
-        # 1:1 with upstream ``populate_owners(owner_ids)``. The port previously
-        # never assigned owners (only ``refresh(["owners"])`` → always empty),
-        # so a created dataset had NO owner → its creator couldn't edit/delete
-        # it (ownership checks failed) and no ``owner:`` implicit tag was made.
-        # Assign the full list (not append) before flush to avoid a sync
-        # lazy-load on a transient instance.
-        # Reuse the owners resolved during validate() (per-field validated
-        # there); fall back to populating here if validate() didn't run them.
+        # Assign the full list (not append) before flush to avoid a sync lazy-load
+        # on the transient instance (asyncpg MissingGreenlet on first attribute touch).
+        # Reuse owners resolved during validate(); fall back if validate() didn't run.
         dataset.owners = []
         if getattr(self, "_owners", None) is not None:
             dataset.owners = self._owners
@@ -237,23 +202,12 @@ class CreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
                 self._data.get("owners"),
                 default_to_user=True,
             )
-        # Persist + introspect (fetch_metadata) + tag, wrapping the whole body
-        # so any ``SQLAlchemyError`` maps to ``DatasetCreateFailedError`` → 422.
-        # 1:1 with the original ``@transaction(on_error=reraise=
-        # DatasetCreateFailedError)`` decorating ``run()`` whose default
-        # ``catches=(SQLAlchemyError,)`` — non-SQLAlchemy errors (e.g.
-        # ``SupersetGenericDBErrorException`` from a virtual-dataset probe)
-        # propagate unchanged with their own status code.
         try:
             self._dao.session.add(dataset)
             await self._dao.session.flush()
 
-            # Introspect and persist physical/virtual columns + metrics (the
-            # original calls ``dataset.fetch_metadata()`` unconditionally here).
             await self._dao.fetch_metadata(dataset)
 
-            # Add implicit type: and owner: tags (port of
-            # DatasetUpdater.after_insert).
             await self._dao.session.refresh(dataset, ["owners"])
             owner_ids = (
                 [o.id for o in dataset.owners] if hasattr(dataset, "owners") else []
@@ -286,9 +240,6 @@ class GetOrCreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         self._security_manager = security_manager
 
     async def validate(self) -> None:
-        # ACCUMULATE per-field errors → single ``DatasetInvalidError`` so the
-        # controller returns a per-field 422 body (1:1 with upstream, which
-        # routes get_or_create creation through ``CreateDatasetCommand``).
         from superset.commands.dataset.exceptions import (
             DatasetInvalidError,
             DatasetValidationError,
@@ -318,13 +269,6 @@ class GetOrCreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         if existing:
             return existing
 
-        # Route creation through the full ``CreateDatasetCommand`` — 1:1 with
-        # upstream ``get_or_create`` (``datasets/api.py``), which builds the
-        # body with ``database`` = ``database_id`` and calls
-        # ``CreateDatasetCommand(body).run()``.  This gives the new dataset the
-        # SAME side effects the bare path was missing: ``fetch_metadata()``
-        # (column/metric introspection), owner default-to-current-user, and the
-        # implicit owner:/type: tags (``after_insert`` hook).
         create_data = {
             "table_name": self._data["table_name"],
             "database": self._data["database_id"],
@@ -340,7 +284,4 @@ class GetOrCreateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
             user_id=self._user_id,
             security_manager=self._security_manager,
         )
-        # ``execute()`` runs validate() then run() — matching the upstream
-        # ``CreateDatasetCommand(body).run()`` whose ``run()`` calls
-        # ``self.validate()`` first.
         return await create_cmd.execute()

@@ -74,10 +74,8 @@ class TagController(Controller):
         from superset.models.tags import Tag, TagType
 
         def _user_created_tag_type_filter(model_cls: type[Any], value: Any) -> Any:
-            """1:1 with ``UserCreatedTagTypeFilter``
-            (superset_old/tags/filters.py:33-48): when ``value`` is truthy
-            return only custom tags; when ``False`` return only non-custom
-            (system) tags; otherwise no-op (``None``).
+            """When ``value`` is truthy return only custom tags; when ``False``
+            return only non-custom (system) tags; otherwise no-op (``None``).
             """
             if value:
                 return Tag.type == TagType.custom
@@ -126,9 +124,7 @@ class TagController(Controller):
         from superset.exceptions import ObjectNotFoundError
         from superset.models.tags import Tag
 
-        # Eager-load changed_by/created_by so ``_serialize_item`` reads them
-        # without a sync lazy-load (MissingGreenlet) — ``find_by_id`` returns a
-        # bare row (the list endpoint already eager-loads these).
+        # Eager-load changed_by/created_by to avoid sync lazy-load (MissingGreenlet).
         results = await dao.find_all(
             filters=[Tag.id == pk],
             options=[
@@ -139,8 +135,6 @@ class TagController(Controller):
         item = results[0] if results else None
         if item is None:
             raise ObjectNotFoundError("Tag", pk)
-        # FAB ``get_headless`` envelope is ``{"id": <pk>, "result": {...}}`` —
-        # the top-level ``id`` was missing.
         return {
             "id": item.id,
             "result": _serialize_item(
@@ -169,9 +163,6 @@ class TagController(Controller):
         security_manager: SecurityManagerProtocol,
     ) -> dict[str, Any]:
         raw = msgspec.structs.asdict(data)
-        # Pass security_manager + current_user so the ownership-skip check
-        # (1:1 with upstream ``CreateCustomTagWithRelationshipsCommand.validate``)
-        # runs for the single-POST path too — previously skipped.
         cmd = CreateTagCommand(
             dao=dao,
             data=raw,
@@ -198,10 +189,8 @@ class TagController(Controller):
         await event_logger.alog_with_context(
             "tag.update", object_ref=str(pk), user_id=current_user.id
         )
-        # FAB ``put_headless`` envelope: ``{"id": <pk>, "result": <edit_columns
-        # dump>}``. 1:1 with the original ``response(200, id=changed_model.id,
-        # result=item)`` — the port previously dropped ``id`` and reduced
-        # ``result`` to just ``{"name": …}``.
+        # FAB ``put_headless`` envelope:
+        # ``{"id": <pk>, "result": <edit_columns dump>}``.
         return {"id": item.id, "result": raw}
 
     @delete(
@@ -231,10 +220,7 @@ class TagController(Controller):
     ) -> dict[str, Any]:
         """DELETE /api/v1/tag?q=!(name1,name2) -- bulk delete tags by name.
 
-        Matches original Superset where ``delete_tags_schema`` is
-        ``{"type": "array", "items": {"type": "string"}}`` — the rison
-        payload is a list of *tag names*, not integer ids. See
-        superset_old/tags/api.py:486 / tags/schemas.py:22.
+        The rison payload is a list of *tag names* (not integer ids).
         """
         if rison_params is None:
             raise SupersetValidationException(
@@ -257,12 +243,9 @@ class TagController(Controller):
         return {"message": f"Deleted {count} tags"}
 
     @post(
-        # No trailing slash — 1:1 with upstream ``@expose("/bulk_create")``
-        # and the frontend POST to ``/api/v1/tag/bulk_create``; a trailing
-        # slash here would force a 307 redirect round-trip.
+        # No trailing slash — a trailing slash forces a 307 redirect round-trip.
         "/bulk_create",
         guards=[require_permission("can_write", "Tag")],
-        # 1:1 with upstream ``response(200, result=...)`` — not 201.
         status_code=200,
     )
     async def bulk_create(
@@ -314,10 +297,8 @@ class TagController(Controller):
             else None
         )
 
-        # tagIds takes priority over tag names (matches original).
-        # security_manager + current_user scope each entity load 1:1 with the
-        # upstream base_filters (DashboardAccessFilter / ChartFilter /
-        # SavedQueryFilter applied by find_by_ids in superset_old/daos/tag.py).
+        # tagIds takes priority over tag names.
+        # security_manager + current_user scope each entity load via base_filters.
         if tag_ids:
             tagged_objects = await dao.get_tagged_objects_by_tag_ids(
                 tag_ids,
@@ -333,13 +314,6 @@ class TagController(Controller):
                 user=current_user,
             )
 
-        # ``get_tagged_objects_by_tag_*`` now returns the entity-shaped dicts
-        # ``{id, type, name, url, changed_on, created_by, creator, tags,
-        # owners}`` matching upstream's ``TaggedObjectEntityResponseSchema``
-        # (superset_old/tags/schemas.py:48). Previous port shape — raw
-        # ``TaggedObject`` link rows ``{tag_id, object_id, object_type}`` —
-        # broke the Tagged Objects page which reads ``.type``/``.name``/
-        # ``.url`` from each entry. Pass-through unchanged.
         return {"result": tagged_objects}
 
     @get("/{pk:int}/favorites/", guards=[require_permission("can_read", "Tag")])
@@ -366,9 +340,8 @@ class TagController(Controller):
     ) -> dict[str, str]:
         """Add tag to favorites.
 
-        1:1 with upstream superset_old/tags/api.py:689-693 which catches
-        TagNotFoundError → 404; the DAO returns ``False`` for an
-        unknown tag id, propagate as ObjectNotFoundError (also 404).
+        The DAO returns ``False`` for an unknown tag id; propagate as
+        ObjectNotFoundError (→ 404).
         """
         ok = await dao.favorite_tag_by_id_for_current_user(pk, current_user.id)
         if not ok:
@@ -398,9 +371,6 @@ class TagController(Controller):
         )
         return {"result": "OK"}
 
-    # ------------------------------------------------------------------
-    # POST /{object_type}/{object_id}/ -- add tags to an object
-    # ------------------------------------------------------------------
     @post(
         "/{object_type:int}/{object_id:int}/",
         guards=[require_permission("can_write", "Tag")],
@@ -421,12 +391,8 @@ class TagController(Controller):
         """
         from superset.models.tags import ObjectType
 
-        # 1:1 with superset_old/tags/api.py:397-408 — the original accesses
-        # ``request.json["properties"]["tags"]`` directly and catches
-        # ``KeyError`` → 400 with ``"Missing required field 'tags' in
-        # 'properties'"``. Our msgspec schema defaults both ``properties``
-        # and ``tags`` to empty values, so an empty/missing body silently
-        # succeeds. Guard against that here.
+        # msgspec defaults ``properties``/``tags`` to empty values, so an
+        # empty/missing body would silently succeed without this guard.
         if data.properties.tags is None:
             from litestar.exceptions import HTTPException
 
@@ -435,19 +401,14 @@ class TagController(Controller):
                 status_code=400,
             )
 
-        # 1:1 with superset_old/commands/tag/create.py:55-56
-        # CreateCustomTagCommand.validate() blocks object_id==0 with
-        # TagCreateFailedError → TagInvalidError → api.py:407-408 returns 422
-        # "Invalid tag".  Missing guard caused silent TaggedObject(object_id=0)
-        # insert since the column has no FK constraint.
+        # object_id==0 must be rejected — the column has no FK constraint so a
+        # silent TaggedObject(object_id=0) insert would go undetected.
         if object_id == 0:
             raise SupersetValidationException("Invalid tag")
 
         try:
             obj_type = ObjectType(object_type)
         except ValueError as exc:
-            # 1:1 with superset_old/tags/api.py:407-408 — a TagInvalidError
-            # surfaces as 422 with the "Invalid tag" message.
             raise SupersetValidationException("Invalid tag") from exc
 
         await dao.create_custom_tagged_objects(
@@ -462,9 +423,6 @@ class TagController(Controller):
         )
         return {"message": "OK"}
 
-    # ------------------------------------------------------------------
-    # DELETE /{object_type}/{object_id}/{tag}/ -- remove tag from object
-    # ------------------------------------------------------------------
     @delete(
         "/{object_type:int}/{object_id:int}/{tag:str}/",
         guards=[require_permission("can_write", "Tag")],
@@ -486,18 +444,10 @@ class TagController(Controller):
         except ValueError as exc:
             from superset.exceptions import SupersetValidationException
 
-            # 1:1 with superset_old/tags/api.py:462-463 — an invalid tag /
-            # object type maps to TagInvalidError → 422. A missing tag or
-            # tagged-object link instead raises ObjectNotFoundError (404)
-            # from dao.delete_tagged_object below.
             raise SupersetValidationException("Invalid tag") from exc
 
-        # 1:1 with superset_old/commands/tag/delete.py:53-86 + api.py:462-463:
-        # the original command wraps both "tag not found" and "tagged-object
-        # not found" as TaggedObjectDeleteFailedError / TaggedObjectNotFoundError
-        # inside a TagInvalidError (CommandInvalidError → 422), so the API
-        # always returns 422 for those cases.  The liteset DAO raises
-        # ObjectNotFoundError (404), so re-map it here.
+        # The DAO raises ObjectNotFoundError (404) for a missing tag or link;
+        # re-map to 422 to match the API contract.
         try:
             await dao.delete_tagged_object(
                 object_type=obj_type.name,
@@ -517,9 +467,6 @@ class TagController(Controller):
         )
         return {"message": "OK"}
 
-    # ------------------------------------------------------------------
-    # GET /favorite_status/ -- batch check favorite status
-    # ------------------------------------------------------------------
     @get("/favorite_status/", guards=[require_permission("can_read", "Tag")])
     async def favorite_status(
         self,
@@ -534,9 +481,6 @@ class TagController(Controller):
             "result": [{"id": rid, "value": rid in fav_ids} for rid in requested_ids]
         }
 
-    # ------------------------------------------------------------------
-    # GET /_info -- API metadata
-    # ------------------------------------------------------------------
     @get("/_info", guards=[require_permission("can_read", "Tag")])
     async def info(
         self,
@@ -554,9 +498,6 @@ class TagController(Controller):
             class_permission_name="Tag",
         )
 
-    # ------------------------------------------------------------------
-    # GET /related/{column_name} -- related values for dropdowns
-    # ------------------------------------------------------------------
     @get(
         "/related/{column_name:str}",
         guards=[require_permission("can_read", "Tag")],

@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/chart/update.py``."""
+"""Command for updating charts."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 def is_query_context_update(properties: dict[str, Any]) -> bool:
-    """1:1 with ``superset_old/commands/chart/update.py::is_query_context_update``."""
+    """Return True when the payload contains only a query_context generation update."""
     return set(properties) == {"query_context", "query_context_generation"} and bool(
         properties.get("query_context_generation")
     )
@@ -87,26 +87,14 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
         if not self._chart:
             raise ObjectNotFoundError("Chart", self._chart_id)
 
-        # Check and update ownership; when only updating query context we
-        # ignore ownership so the update can be performed by report workers.
-        # 1:1 with ``superset_old/commands/chart/update.py`` —
-        # ``is_query_context_update(properties)`` (lines 48-51) requires the
-        # property set to be EXACTLY ``{"query_context",
-        # "query_context_generation"}`` with a truthy
-        # ``query_context_generation``. Any payload with additional fields
-        # (name, owners, dashboards, params, ...) must go through full
-        # ownership validation.
+        # Skip ownership for query-context-only updates so report workers can
+        # regenerate stored query_context without being chart owners.
         if (
             not is_query_context_update(self._data)
             and self._security_manager is not None
         ):
             await self._security_manager.raise_for_ownership(self._chart, self._user_id)
 
-        # Validate tags — 1:1 with
-        # ``superset_old/commands/chart/update.py::UpdateChartCommand.validate``
-        # (lines 130-134). Checks the caller has permission to manage tags
-        # and that every new tag id exists.  Raises ``TagForbiddenError``
-        # (403) / ``TagNotFoundValidationError`` (422).
         if self._security_manager is not None:
             user = (
                 await self._security_manager.find_user_by_id(self._user_id)
@@ -121,10 +109,6 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
                 user,
             )
 
-        # Validate/Populate datasource — 1:1 with
-        # ``superset_old/commands/chart/update.py``: ``datasource_type`` is
-        # required when ``datasource_id`` is updated, the datasource must
-        # exist, and its name is stored on the chart (``datasource_name``).
         datasource_id = self._data.get("datasource_id")
         if datasource_id is not None:
             datasource_type = self._data.get("datasource_type", "")
@@ -139,19 +123,6 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
                 raise DatasourceNotFoundValidationError()
             self._data["datasource_name"] = datasource.name
 
-        # Validate/Populate dashboards — ported 1:1 from
-        # ``superset_old/commands/chart/update.py::UpdateChartCommand.validate``
-        # (lines 144-156).
-        #
-        # Only runs when ``dashboards`` is present in the payload (``None``
-        # vs empty list matters — omitted means "don't touch", empty list
-        # means "clear").  Every requested id must resolve to a real
-        # dashboard; if any don't, we raise ``DashboardsNotFoundValidationError``
-        # just like the sync original.  For any *new* association (id not
-        # already on the chart) the user must additionally have access to
-        # the dashboard — existing associations are preserved to maintain
-        # chart ownership rights, matching ``_validate_new_dashboard_access``
-        # in the original.
         dashboard_ids = self._data.get("dashboards")
         if dashboard_ids is not None:
             dashboards = await self._dao.find_dashboards_by_ids(dashboard_ids)
@@ -167,15 +138,10 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
                 d for d in dashboards if d.id not in existing_dashboard_ids
             ]
             if new_dashboards and self._security_manager is not None:
-                # 1:1 with upstream ``_validate_new_dashboard_access``
-                # (superset_old/commands/chart/update.py:88-95) which resolves
-                # NEW dashboards via the FILTERED ``DashboardDAO.find_by_ids``
-                # (DashboardAccessFilter — published required for non-owners),
-                # NOT the laxer direct-access ``raise_for_dashboard_access``
-                # semantics (``can_access_dashboard``, no published gate). An
-                # id outside that list-filter scope is reported as "not found"
-                # rather than "forbidden" so the dashboard's existence isn't
-                # leaked.
+                # Resolve NEW dashboards via the access-filtered list
+                # (DashboardAccessFilter — published required for non-owners);
+                # an id outside that scope is reported as "not found" rather
+                # than "forbidden" to avoid leaking dashboard existence.
                 from superset.commands.utils import filter_visible_ids
                 from superset.db.filters import dashboard_access_filters
                 from superset.models.dashboard import Dashboard
@@ -191,8 +157,6 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
                 if {int(d.id) for d in new_dashboards} - visible:
                     raise DashboardsNotFoundValidationError()
 
-            # Store resolved Dashboard objects so ``run()`` can assign
-            # directly without a second DAO round-trip.
             self._data["dashboards"] = dashboards
 
     async def run(self) -> "Slice":  # noqa: C901
@@ -200,7 +164,6 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
 
         assert self._chart is not None
 
-        # Relationship fields must be resolved separately, not set via setattr
         _RELATIONSHIP_FIELDS = {"owners", "tags", "dashboards"}  # noqa: N806
         for key, value in self._data.items():
             if key in _RELATIONSHIP_FIELDS:
@@ -208,14 +171,8 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
             if hasattr(self._chart, key):
                 setattr(self._chart, key, value)
 
-        # Resolve owners — ``validate()`` already pre-loaded the
-        # collection via ``selectinload`` so the assignment below will
-        # not trigger a lazy load.  Skipped for query-context-only updates:
-        # upstream only calls ``compute_owners`` when
-        # ``not is_query_context_update(properties)``
-        # (superset_old/commands/chart/update.py:115-128) — that path runs
-        # without an ownership check, and recomputing owners there would
-        # prepend the non-admin actor (report worker / viewer) to ``owners``.
+        # Skip owner recomputation for query-context-only updates: the non-admin
+        # report worker would otherwise be prepended to ``owners``.
         if (
             not is_query_context_update(self._data)
             and self._security_manager is not None
@@ -227,9 +184,6 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
                 self._data.get("owners"),
             )
 
-        # Update tags — 1:1 with
-        # ``superset_old/commands/chart/update.py::UpdateChartCommand.run``
-        # (lines 66-67): apply the add/remove of custom tags on the chart.
         tag_ids = self._data.get("tags")
         if tag_ids is not None:
             await update_tags(
@@ -240,19 +194,12 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
                 self._dao.session,
             )
 
-        # Assign dashboards — ``validate()`` already resolved the
-        # requested ids to ``Dashboard`` instances and validated access
-        # for any new associations.
         dashboards = self._data.get("dashboards")
         if dashboards is not None:
             self._chart.dashboards = list(dashboards)
 
-        # ``changed_by_fk`` always tracks the acting user (consistent with the
-        # SA ``changed_by`` listener). ``last_saved_*`` mirrors upstream
-        # ``UpdateChartCommand.run`` (superset_old/commands/chart/update.py:69-71):
-        # bumped ONLY when ``query_context_generation`` is absent (``is None``),
-        # NOT when a background report/cache worker regenerates the stored
-        # ``query_context`` (which passes the key explicitly, truthy OR False).
+        # ``last_saved_*`` is NOT bumped when a background worker regenerates
+        # query_context (query_context_generation is set); only on real user edits.
         query_context_generation = self._data.get("query_context_generation")
         if self._user_id is not None:
             self._chart.changed_by_fk = self._user_id
@@ -262,10 +209,6 @@ class UpdateChartCommand(AsyncBaseCommand["Slice"]):
             self._chart.last_saved_at = datetime.now()
         await self._dao.session.flush()
 
-        # Sync implicit owner: tags — 1:1 with ``ChartUpdater.after_update``
-        # which only fires when the TAGGING_SYSTEM feature flag is enabled
-        # (see ``superset_old/app.py:158``). Owners are already loaded from
-        # ``validate()``.
         if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
             owner_ids = (
                 [o.id for o in self._chart.owners]

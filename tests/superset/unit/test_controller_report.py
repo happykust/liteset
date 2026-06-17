@@ -78,9 +78,6 @@ def patch_build_async_security_manager(mock_security_manager):
         yield
 
 
-# --- CreateReportScheduleCommand ---
-
-
 async def test_create_report_validates_name_required(mock_dao):
     cmd = CreateReportScheduleCommand(dao=mock_dao, data={"type": "Report"}, user_id=1)
     with pytest.raises(CommandInvalidError, match="name is required"):
@@ -91,8 +88,6 @@ async def test_create_report_validates_empty_name(mock_dao):
     cmd = CreateReportScheduleCommand(
         dao=mock_dao, data={"name": "  ", "type": "Report"}, user_id=1
     )
-    # Empty/whitespace name should fail — but our check is `not name.strip()`
-    # which means whitespace-only also fails
     with pytest.raises(CommandInvalidError, match="name is required"):
         await cmd.validate()
 
@@ -104,7 +99,6 @@ async def test_create_report_validates_type_required(mock_dao):
 
 
 async def test_create_report_validates_crontab_invalid(mock_dao):
-    """Invalid crontab expression should raise CommandInvalidError."""
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
     cmd = CreateReportScheduleCommand(
         dao=mock_dao,
@@ -121,7 +115,6 @@ async def test_create_report_validates_crontab_invalid(mock_dao):
 
 
 async def test_create_report_validates_uniqueness(mock_dao):
-    """Duplicate name+type should raise CommandInvalidError."""
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=False)
     cmd = CreateReportScheduleCommand(
         dao=mock_dao,
@@ -136,7 +129,6 @@ async def test_create_report_validates_uniqueness(mock_dao):
 
 
 async def test_create_report_success(mock_dao, mock_report):
-    """Valid data should pass validation and create the report."""
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
     mock_dao.create = AsyncMock(return_value=mock_report)
     cmd = CreateReportScheduleCommand(
@@ -145,9 +137,6 @@ async def test_create_report_success(mock_dao, mock_report):
             "name": "Test Report",
             "type": "Report",
             "crontab": "0 * * * *",
-            # A report must reference either a chart or a dashboard, else
-            # validate() raises ReportScheduleEitherChartOrDashboardError
-            # (1:1 with upstream).
             "chart": 1,
         },
         user_id=1,
@@ -160,10 +149,8 @@ async def test_create_report_success(mock_dao, mock_report):
 
 
 async def test_create_report_rejects_database_reference(mock_dao):
-    """A REPORT-type payload carrying a database must be rejected.
-
-    1:1 with upstream ``validate_report_references``
-    (superset_old/reports/schemas.py:265-275) → field-keyed
+    """A REPORT-type payload carrying a database must be rejected with a
+    field-keyed error:
     ``{"database": ["Database reference is not allowed on a report"]}``.
     """
     from superset.commands.report_exceptions import ReportScheduleInvalidError
@@ -191,9 +178,8 @@ async def test_create_report_without_database_allowed(mock_dao):
     """A REPORT-type payload with no database reference is fine.
 
     The schema omits an absent ``database`` from the loaded dict (UNSET →
-    filter_unset), so the command sees NO key — 1:1 with Marshmallow
-    ``fields.Integer(required=False)``. The rule itself is key-presence
-    based (``"database" in data``, superset_old/reports/schemas.py:272).
+    filter_unset), so the command sees NO key. The rule is key-presence
+    based (``"database" in data``).
     """
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
     mock_dao.validate_unique_creation_method = AsyncMock(return_value=True)
@@ -215,8 +201,7 @@ async def test_create_report_without_database_allowed(mock_dao):
 async def test_create_report_with_database_key_rejected(mock_dao):
     """A REPORT-type payload CONTAINING a database key is rejected.
 
-    1:1 with ``validate_report_references`` (superset_old/reports/
-    schemas.py:265-275): key presence, not value truthiness.
+    The rule checks key presence (``"database" in data``), not value truthiness.
     """
     from superset.commands.report_exceptions import ReportScheduleInvalidError
 
@@ -239,11 +224,7 @@ async def test_create_report_with_database_key_rejected(mock_dao):
 
 
 async def test_create_report_rejects_custom_width_below_min(mock_dao):
-    """custom_width below ALERT_REPORTS_MIN_CUSTOM_SCREENSHOT_WIDTH → 422.
-
-    1:1 with upstream ``@validates("custom_width")``
-    (superset_old/reports/schemas.py:246-263).
-    """
+    """custom_width below ALERT_REPORTS_MIN_CUSTOM_SCREENSHOT_WIDTH → 422."""
     from superset.commands.report_exceptions import ReportScheduleInvalidError
 
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
@@ -291,7 +272,6 @@ async def test_create_report_rejects_custom_width_above_max(mock_dao):
 
 
 async def test_create_report_allows_valid_custom_width(mock_dao):
-    """custom_width within bounds must not raise the custom_width error."""
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
     mock_dao.validate_unique_creation_method = AsyncMock(return_value=True)
     cmd = CreateReportScheduleCommand(
@@ -318,12 +298,10 @@ async def test_create_report_allows_valid_custom_width(mock_dao):
 async def test_create_report_run_strips_none_report_format(mock_dao, mock_report):
     """report_format=None must NOT be written; DB column default ("PNG") must apply.
 
-    1:1 with upstream ``dump_default=ReportDataFormat.PNG`` on the schema field
-    (superset_old/reports/schemas.py:228-230): when the field is absent from the
-    request body Marshmallow does not include it in the deserialized dict, so the
-    DB column default fires.  In the port's msgspec schema the default is now
-    "PNG" (fixes the None-override), but the command also strips it to guard
-    against direct command usage.
+    When the field is absent from the request body, the deserialized dict omits
+    it so the DB column default fires.  The msgspec schema default is "PNG"
+    (fixes the None-override), but the command also strips it to guard against
+    direct command usage.
     """
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
     mock_dao.validate_unique_creation_method = AsyncMock(return_value=True)
@@ -343,7 +321,6 @@ async def test_create_report_run_strips_none_report_format(mock_dao, mock_report
     await cmd.validate()
     await cmd.run()
 
-    # Verify that the dict passed to dao.create does NOT contain report_format=None
     call_kwargs = mock_dao.create.call_args
     passed_data: dict = (
         call_kwargs[0][0] if call_kwargs[0] else call_kwargs[1].get("data", {})
@@ -355,11 +332,7 @@ async def test_create_report_run_strips_none_report_format(mock_dao, mock_report
 
 
 async def test_update_report_rejects_custom_width_out_of_range(mock_dao, mock_report):
-    """custom_width validation runs on PUT as well.
-
-    1:1 with upstream ``@validates("custom_width")`` on
-    ``ReportSchedulePutSchema`` (superset_old/reports/schemas.py:384-401).
-    """
+    """custom_width validation runs on PUT as well."""
     from superset.commands.report_exceptions import ReportScheduleInvalidError
 
     mock_dao.find_by_id = AsyncMock(return_value=mock_report)
@@ -376,9 +349,6 @@ async def test_update_report_rejects_custom_width_out_of_range(mock_dao, mock_re
     assert "600px" in messages["custom_width"][0]
 
 
-# --- UpdateReportScheduleCommand ---
-
-
 async def test_update_report_not_found(mock_dao):
     mock_dao.find_by_id = AsyncMock(return_value=None)
     cmd = UpdateReportScheduleCommand(dao=mock_dao, pk=999, data={"name": "X"})
@@ -387,7 +357,6 @@ async def test_update_report_not_found(mock_dao):
 
 
 async def test_update_report_validates_uniqueness(mock_dao, mock_report):
-    """Changing name should validate uniqueness."""
     mock_dao.find_by_id = AsyncMock(return_value=mock_report)
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=False)
     cmd = UpdateReportScheduleCommand(
@@ -412,9 +381,6 @@ async def test_update_report_success(mock_dao, mock_report):
     mock_dao.session.flush.assert_awaited_once()
 
 
-# --- DeleteReportScheduleCommand ---
-
-
 async def test_delete_report_not_found(mock_dao):
     mock_dao.find_by_id = AsyncMock(return_value=None)
     cmd = DeleteReportScheduleCommand(dao=mock_dao, pk=999)
@@ -432,9 +398,6 @@ async def test_delete_report_success(mock_dao, mock_report):
     mock_dao.session.flush.assert_awaited_once()
 
 
-# --- BulkDeleteReportScheduleCommand ---
-
-
 async def test_bulk_delete_empty_ids(mock_dao):
     cmd = BulkDeleteReportScheduleCommand(dao=mock_dao, ids=[])
     with pytest.raises(CommandInvalidError, match="No report schedule IDs"):
@@ -442,7 +405,6 @@ async def test_bulk_delete_empty_ids(mock_dao):
 
 
 async def test_bulk_delete_missing_ids(mock_dao, mock_report):
-    """IDs not found in the database should raise ObjectNotFoundError."""
     mock_dao.find_by_ids = AsyncMock(return_value=[mock_report])
     cmd = BulkDeleteReportScheduleCommand(dao=mock_dao, ids=[1, 2, 3])
     with pytest.raises(ObjectNotFoundError):
@@ -465,13 +427,9 @@ async def test_bulk_delete_db_error_raises_delete_failed_error(mock_dao, mock_re
     """A SQLAlchemy error during bulk-delete must surface as
     ReportScheduleDeleteFailedError, not a raw SQLAlchemyError.
 
-    1:1 with superset_old/reports/api.py:505-521:
-    ``DeleteReportScheduleCommand`` is decorated with
-    ``@transaction(on_error=…, reraise=ReportScheduleDeleteFailedError)``
-    so DB failures are wrapped before the API handler catches them as HTTP 422.
-    The liteset BulkDeleteReportScheduleCommand.run() must mirror that
-    behaviour — if it propagated raw SQLAlchemyError the global handler
-    would return 500 instead of 422.
+    ``BulkDeleteReportScheduleCommand.run()`` must wrap DB failures in
+    ``ReportScheduleDeleteFailedError`` so the API handler returns 422
+    instead of 500.
     """
     from sqlalchemy.exc import SQLAlchemyError
 
@@ -485,16 +443,12 @@ async def test_bulk_delete_db_error_raises_delete_failed_error(mock_dao, mock_re
         await cmd.run()
 
 
-# --- Owner validation error shape (regression for 1:1 parity) ---
-
-
 async def test_create_report_invalid_owner_produces_field_keyed_error(mock_dao):
     """Invalid owner IDs on POST must raise ReportScheduleInvalidError with
     normalized_messages() == {"owners": ["Owners are invalid"]}.
 
-    1:1 with create.py:125-131: owner errors are collected into
-    ReportScheduleInvalidError (field-keyed dict message) rather than
-    escaping as a flat-string OwnersNotFoundValidationError.
+    Owner errors are collected into ReportScheduleInvalidError (field-keyed
+    dict message) rather than escaping as OwnersNotFoundValidationError.
     """
     from superset.commands.report_exceptions import ReportScheduleInvalidError
 
@@ -505,7 +459,6 @@ async def test_create_report_invalid_owner_produces_field_keyed_error(mock_dao):
     current_user.id = 1
 
     sm = MagicMock()
-    # current_user_id=1 → valid; any other id (e.g. 999) → None → OwnersNotFound
     sm.find_user_by_id = AsyncMock(
         side_effect=lambda uid: current_user if uid == 1 else None
     )
@@ -535,15 +488,14 @@ async def test_update_report_invalid_owner_produces_field_keyed_error(
     """Invalid owner IDs on PUT must raise ReportScheduleInvalidError with
     normalized_messages() == {"owners": ["Owners are invalid"]}.
 
-    1:1 with update.py:130-139: owner errors are collected into
-    ReportScheduleInvalidError (field-keyed dict message) rather than
-    escaping as a flat-string OwnersNotFoundValidationError.
+    Owner errors are collected into ReportScheduleInvalidError (field-keyed
+    dict message) rather than escaping as OwnersNotFoundValidationError.
     """
     from superset.commands.report_exceptions import ReportScheduleInvalidError
 
     mock_dao.find_by_id = AsyncMock(return_value=mock_report)
     mock_dao.validate_update_uniqueness = AsyncMock(return_value=True)
-    mock_report.owners = []  # ensure list(self._report.owners) works
+    mock_report.owners = []
 
     current_user = MagicMock()
     current_user.id = 1
@@ -553,7 +505,7 @@ async def test_update_report_invalid_owner_produces_field_keyed_error(
         side_effect=lambda uid: current_user if uid == 1 else None
     )
     sm.is_admin = MagicMock(return_value=True)
-    sm.raise_for_ownership = AsyncMock()  # ownership check passes
+    sm.raise_for_ownership = AsyncMock()
 
     cmd = UpdateReportScheduleCommand(
         dao=mock_dao,
@@ -568,19 +520,13 @@ async def test_update_report_invalid_owner_produces_field_keyed_error(
     assert messages == {"owners": ["Owners are invalid"]}
 
 
-# ---------------------------------------------------------------------------
-# Slack cache helpers — _slack_cache_get / _slack_cache_set
-#
-# Regression: the original implementation used asyncio.get_event_loop() +
-# loop.run_until_complete() / asyncio.run() which both raise RuntimeError
-# when called from a sync function running on the async event loop thread.
-# The fix uses cache_manager.sync_cache (synchronous Redis/null/memory
-# backend), mirroring the original Flask @cache_util.memoized_func decorator.
-# ---------------------------------------------------------------------------
+# Regression: asyncio.get_event_loop() + loop.run_until_complete() / asyncio.run()
+# both raise RuntimeError when called from a sync function running on the async
+# event loop thread. Use cache_manager.sync_cache (synchronous Redis/null/memory
+# backend) instead.
 
 
 def _make_sync_cache_mock(get_return: object = None) -> MagicMock:
-    """Return a mock that behaves like SyncCacheProtocol."""
     m = MagicMock()
     m.get = MagicMock(return_value=get_return)
     m.set = MagicMock(return_value=None)
@@ -593,11 +539,7 @@ def _make_cm_mock(sync_cache_mock: MagicMock) -> MagicMock:
     return cm
 
 
-# --- _slack_cache_get ---
-
-
 def test_slack_cache_get_returns_list_from_sync_cache():
-    """cache hit → list returned directly without any asyncio gymnastics."""
     from superset.controllers.report import _slack_cache_get
 
     channels = [{"id": "C1", "name": "general"}]
@@ -612,7 +554,6 @@ def test_slack_cache_get_returns_list_from_sync_cache():
 
 
 def test_slack_cache_get_returns_none_on_cache_miss():
-    """cache miss (None) → None returned."""
     from superset.controllers.report import _slack_cache_get
 
     sync_cache = _make_sync_cache_mock(get_return=None)
@@ -653,7 +594,6 @@ def test_slack_cache_get_handles_bytes_payload():
 
 
 def test_slack_cache_get_swallows_exception():
-    """Any exception from sync_cache.get is swallowed and None returned."""
     from superset.controllers.report import _slack_cache_get
 
     sync_cache = MagicMock()
@@ -695,11 +635,7 @@ def test_slack_cache_get_does_not_use_asyncio_run():
     assert result == channels
 
 
-# --- _slack_cache_set ---
-
-
 def test_slack_cache_set_calls_sync_cache_set():
-    """cache write uses sync_cache.set with the correct key, value and TTL."""
     from superset.controllers.report import _slack_cache_set
 
     channels = [{"id": "C5", "name": "devops"}]
@@ -716,14 +652,12 @@ def test_slack_cache_set_calls_sync_cache_set():
 
 
 def test_slack_cache_set_swallows_exception():
-    """Any exception from sync_cache.set is swallowed — never propagated."""
     from superset.controllers.report import _slack_cache_set
 
     sync_cache = MagicMock()
     sync_cache.set = MagicMock(side_effect=RuntimeError("redis down"))
     cm = _make_cm_mock(sync_cache)
 
-    # Must not raise
     with patch("superset.extensions.cache_manager", cm):
         _slack_cache_set([{"id": "C6", "name": "test"}], 600)
 
@@ -750,11 +684,7 @@ def test_slack_cache_set_does_not_use_asyncio_run():
     sync_cache.set.assert_called_once()
 
 
-# --- _get_slack_channels integration ---
-
-
 def test_get_slack_channels_uses_cache_hit_and_skips_api():
-    """On a cache hit _get_slack_channels must NOT call the Slack API."""
     from superset.controllers.report import _get_slack_channels
 
     cached = [{"id": "C8", "name": "cached-channel", "is_private": False}]
@@ -782,11 +712,10 @@ def test_get_slack_channels_uses_cache_hit_and_skips_api():
 
 
 def test_get_slack_channels_stores_result_in_cache_on_miss():
-    """On a cache miss, the Slack API result must be written to sync_cache."""
     from superset.controllers.report import _get_slack_channels
 
     fetched = [{"id": "C9", "name": "fresh", "is_private": False}]
-    sync_cache = _make_sync_cache_mock(get_return=None)  # cache miss
+    sync_cache = _make_sync_cache_mock(get_return=None)
     cm = _make_cm_mock(sync_cache)
 
     mock_settings = MagicMock()
@@ -816,10 +745,9 @@ def test_get_slack_channels_stores_result_in_cache_on_miss():
 
 
 def test_slack_channels_requires_can_write() -> None:
-    """GET /report/slack_channels/ must require ``can_write ReportSchedule``,
-    1:1 with upstream ``MODEL_API_RW_METHOD_PERMISSION_MAP["slack_channels"] =
-    "write"`` (constants.py:173). A ``can_read`` gate would let view-only users
-    enumerate the workspace's Slack channels (and trigger Slack API calls)."""
+    """GET /report/slack_channels/ must require ``can_write ReportSchedule``.
+    A ``can_read`` gate would let view-only users enumerate the workspace's
+    Slack channels (and trigger Slack API calls)."""
     from superset.controllers.report import ReportScheduleController
 
     handler = ReportScheduleController.slack_channels
@@ -834,9 +762,7 @@ def test_slack_channels_requires_can_write() -> None:
 
 def test_report_schedule_invalid_error_uses_field_keyed_handler():
     """ReportScheduleInvalidError must be routed to the per-field 422 handler so
-    the response carries {field: [messages]} — 1:1 with upstream reports/api.py
-    ``response_422(message=ex.normalized_messages())`` — instead of a flat
-    string message."""
+    the response carries {field: [messages]} instead of a flat string message."""
     from superset.app import _build_exception_handlers
     from superset.commands.dataset.exceptions import dataset_invalid_error_handler
     from superset.commands.report_exceptions import ReportScheduleInvalidError

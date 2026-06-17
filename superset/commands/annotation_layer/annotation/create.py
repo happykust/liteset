@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/annotation_layer/annotation/create.py``."""
+"""Command for creating annotations within an annotation layer."""
 
 from __future__ import annotations
 
@@ -50,10 +50,9 @@ class CreateAnnotationCommand(AsyncBaseCommand["Annotation"]):
         if not short_descr or not short_descr.strip():
             raise CommandInvalidError("short_descr is required")
 
-        # Short-descr uniqueness within the layer — 1:1 with upstream
-        # create.py:63-65. The model has only a NON-unique index (matching
-        # upstream), so there is no IntegrityError to lean on; the check must be
-        # explicit or duplicates are silently accepted.
+        # Short description uniqueness within the layer. The model has only a
+        # non-unique index, so the check must be explicit or duplicates are
+        # silently accepted.
         from superset.commands.annotation_layer.annotation.exceptions import (
             AnnotationUniquenessValidationError,
         )
@@ -61,19 +60,13 @@ class CreateAnnotationCommand(AsyncBaseCommand["Annotation"]):
         if not await self._dao.validate_update_uniqueness(self._layer_pk, short_descr):
             raise AnnotationUniquenessValidationError()
 
-        # Mirror upstream validations (superset_old/commands/annotation_layer/
-        # annotation/create.py:67-72) — `end_dttm < start_dttm` → 422
-        # AnnotationDatesValidationError.
         start_dttm = self._data.get("start_dttm")
         end_dttm = self._data.get("end_dttm")
         if start_dttm and end_dttm and end_dttm < start_dttm:
             raise CommandInvalidError("end_dttm must be greater or equal to start_dttm")
 
-        # Validate json_metadata is valid JSON — 1:1 with upstream
-        # ``AnnotationPostSchema.json_metadata`` which carries
-        # ``validate=validate_json`` (superset_old/annotation_layers/
-        # annotations/schemas.py:76-80). The port's msgspec struct has no
-        # inline validator, so we check here instead.
+        # Validate json_metadata is valid JSON; the msgspec struct has no
+        # inline validator so we check here instead.
         json_metadata = self._data.get("json_metadata")
         if json_metadata not in (None, ""):
             import json as _json

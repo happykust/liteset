@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Engine-spec user impersonation (ported 1:1 from upstream).
+"""Engine-spec user impersonation.
 
 Covers the base ``impersonate_user`` (URL username) + the Trino override
 (``connect_args["user"]``) + the ``get_sync_engine`` / ``get_async_connection``
@@ -39,10 +39,10 @@ def _spec(name: str) -> Any:
 @pytest.fixture(autouse=True)
 def _stub_trino_uri_validation(monkeypatch: Any) -> None:
     """``get_sync_engine`` validates the URI via
-    ``db_engine_spec.validate_database_uri`` (1:1 with the original), which
-    calls ``url.get_driver_name()`` and would load the trino dialect — not
-    installed in the test env.  Stub it so these impersonation tests exercise
-    only the impersonation path, not real dialect loading.
+    ``db_engine_spec.validate_database_uri``, which calls
+    ``url.get_driver_name()`` and would load the trino dialect — not installed
+    in the test env.  Stub it so these impersonation tests exercise only the
+    impersonation path, not real dialect loading.
     """
     monkeypatch.setattr(_spec("trino"), "validate_database_uri", lambda *a, **k: None)
 
@@ -217,7 +217,7 @@ def test_get_sync_engine_preserves_password_when_impersonating(
 
 def test_impersonate_with_email_prefix(monkeypatch: Any) -> None:
     """IMPERSONATE_WITH_EMAIL_PREFIX rewrites the effective user to the email
-    local-part (1:1 upstream get_sqla_engine)."""
+    local-part."""
     import superset.utils.database as ud
     from superset.utils.core import get_username, set_current_user
     from superset.utils.feature_flags import feature_flag_manager

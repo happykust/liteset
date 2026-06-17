@@ -16,8 +16,7 @@
 # under the License.
 """``internet_address`` advanced data type plugin.
 
-Direct port of ``superset_old/advanced_data_type/plugins/internet_address.py``
-— represents both an IP address and a CIDR range, parsing the user's
+Represents both an IP address and a CIDR range, parsing the user's
 input via :mod:`ipaddress` and translating filter expressions on the
 underlying integer-typed column into SQLAlchemy clauses (single value
 or ``[start, end]`` range comparisons).
@@ -89,7 +88,6 @@ def cidr_func(req: AdvancedDataTypeRequest) -> AdvancedDataTypeResponse:
     return resp
 
 
-# Make this return a single clause
 def cidr_translate_filter_func(  # noqa: C901
     col: Column[Any], operator: FilterOperator, values: list[Any]
 ) -> Any:

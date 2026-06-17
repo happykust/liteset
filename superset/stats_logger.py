@@ -14,11 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Stats logger primitives — ported 1:1 from ``superset_old/stats_logger.py``.
+"""Stats logger primitives.
 
 Provides ``BaseStatsLogger`` (interface), ``DummyStatsLogger`` (no-op
-default) and a best-effort ``StatsdStatsLogger`` that mirrors the original
-behaviour but degrades gracefully when the ``statsd`` package is missing.
+default) and a best-effort ``StatsdStatsLogger`` that degrades gracefully
+when the ``statsd`` package is missing.
 
 Used by:
 - :mod:`superset.utils.decorators` (``@statsd_gauge``)
@@ -54,11 +54,7 @@ except ImportError:  # pragma: no cover
 
 
 class BaseStatsLogger:
-    """Base class for logging realtime events.
-
-    Concrete implementations override :meth:`incr`, :meth:`decr`,
-    :meth:`timing` and :meth:`gauge`.
-    """
+    """Base class for realtime stats logging."""
 
     def __init__(self, prefix: str = "superset") -> None:
         self.prefix = prefix
@@ -69,29 +65,24 @@ class BaseStatsLogger:
         return key
 
     def incr(self, key: str) -> None:
-        """Increment a counter."""
         raise NotImplementedError()
 
     def decr(self, key: str) -> None:
-        """Decrement a counter."""
         raise NotImplementedError()
 
     def timing(self, key: str, value: float) -> None:
-        """Record a timing in milliseconds."""
         raise NotImplementedError()
 
     def gauge(self, key: str, value: float) -> None:
-        """Setup a gauge."""
         raise NotImplementedError()
 
 
 class DummyStatsLogger(BaseStatsLogger):
     """No-op default — emits cyan-coloured debug log lines.
 
-    1:1 port of :class:`superset_old.stats_logger.DummyStatsLogger`: every
-    call concatenates the cyan ANSI escape (``Fore.CYAN``), the message,
-    and ``Style.RESET_ALL`` so the lines stand out in stdout.  When
-    ``colorama`` is missing the escapes degrade to empty strings (see
+    Every call concatenates the cyan ANSI escape (``Fore.CYAN``), the
+    message, and ``Style.RESET_ALL`` so the lines stand out in stdout.
+    When ``colorama`` is missing the escapes degrade to empty strings (see
     module-level fallback).
     """
 
@@ -120,8 +111,6 @@ try:  # pragma: no cover - optional dependency
     from statsd import StatsClient
 
     class StatsdStatsLogger(BaseStatsLogger):
-        """Statsd-backed implementation — port of the original class."""
-
         def __init__(  # pylint: disable=super-init-not-called
             self,
             host: str = "localhost",
@@ -147,9 +136,7 @@ try:  # pragma: no cover - optional dependency
             self.client.gauge(key, value)
 
 except Exception as _ex:  # pragma: no cover - reraised on instantiation only
-    # Mirrors original behaviour: defer the import error until the user
-    # actually instantiates ``StatsdStatsLogger``.  Storing the exception in
-    # a closure-local keeps the original traceback intact.
+    # Defer the import error to instantiation time; keep the original traceback.
     _saved_exception = _ex
 
     class StatsdStatsLogger(BaseStatsLogger):  # type: ignore[no-redef]
@@ -165,11 +152,6 @@ except Exception as _ex:  # pragma: no cover - reraised on instantiation only
             raise _saved_exception
 
 
-# ---------------------------------------------------------------------------
-# StatsLoggerManager  (mirrors ``superset_old/extensions/stats_logger.py``)
-# ---------------------------------------------------------------------------
-
-
 class StatsLoggerManager:
     """Process-wide stats-logger holder.
 
@@ -182,7 +164,7 @@ class StatsLoggerManager:
         self._stats_logger: BaseStatsLogger = DummyStatsLogger()
 
     def configure(self, stats_logger: BaseStatsLogger | None) -> None:
-        """Replace the active logger.  ``None`` resets to ``DummyStatsLogger``."""
+        """Replace the active logger; ``None`` resets to ``DummyStatsLogger``."""
         if stats_logger is None:
             self._stats_logger = DummyStatsLogger()
         else:
@@ -192,8 +174,6 @@ class StatsLoggerManager:
     def instance(self) -> BaseStatsLogger:
         return self._stats_logger
 
-    # Convenience pass-through methods so callers can write
-    # ``stats_logger_manager.incr("foo")`` directly.
     def incr(self, key: str) -> None:
         self._stats_logger.incr(key)
 

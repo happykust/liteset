@@ -27,9 +27,8 @@ import pandas as pd
 import pytest
 from pandas.api.types import is_datetime64_dtype
 
-# In the Litestar port the helpers ported from the upstream Flask
-# ``superset.utils.core`` are spread across several modules instead of one;
-# we import each from its actual home (adapting call sites 1:1 in intent).
+# Helpers from ``superset.utils.core`` are spread across several modules;
+# each import targets its canonical module directly.
 from superset.commands.importers.v1.utils import (
     _check_is_safe_zip as check_is_safe_zip,
 )
@@ -101,14 +100,12 @@ def test_split_adhoc_filters_sanitizes_having_clause():
         ]
     }
     split_adhoc_filters_into_base_filters(form_data, "postgresql")
-    # sanitize_clause strips the comment and normalises via sqlglot
-    # (function names upper-cased) — the comment must be gone.
+    # sanitize_clause normalises via sqlglot (function names upper-cased).
     assert form_data["having"] == "(COUNT(*) > 1)"
     assert "--" not in form_data["having"]
 
 
 def test_split_adhoc_filters_simple_where_unchanged():
-    """SIMPLE filters are restructured into the structured ``filters`` list."""
     form_data = {
         "adhoc_filters": [
             {
@@ -126,7 +123,6 @@ def test_split_adhoc_filters_simple_where_unchanged():
 
 
 def test_split_adhoc_filters_invalid_sql_raises():
-    """Malformed SQL in an adhoc filter is rejected by sanitize_clause."""
     from superset.exceptions import QueryClauseValidationException
 
     form_data = {
@@ -140,11 +136,6 @@ def test_split_adhoc_filters_invalid_sql_raises():
     }
     with pytest.raises(QueryClauseValidationException):
         split_adhoc_filters_into_base_filters(form_data, "postgresql")
-
-
-# ---------------------------------------------------------------------------
-# Ported from tests/unit_tests/utils/test_core.py
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.skip(
@@ -319,7 +310,6 @@ def test_normalize_dttm_col() -> None:
 
 
 def test_normalize_dttm_col_epoch_seconds() -> None:
-    """Test conversion of epoch seconds."""
     df = pd.DataFrame(
         {
             "epoch_col": [
@@ -340,7 +330,6 @@ def test_normalize_dttm_col_epoch_seconds() -> None:
 
 
 def test_normalize_dttm_col_epoch_milliseconds() -> None:
-    """Test conversion of epoch milliseconds."""
     df = pd.DataFrame(
         {
             "epoch_ms_col": [
@@ -361,7 +350,6 @@ def test_normalize_dttm_col_epoch_milliseconds() -> None:
 
 
 def test_normalize_dttm_col_formatted_date() -> None:
-    """Test conversion of formatted date strings."""
     df = pd.DataFrame({"date_col": ["2020-01-01", "2021-01-01", "2022-01-01"]})
     dttm_cols = (DateColumn(col_label="date_col", timestamp_format="%Y-%m-%d"),)
 
@@ -374,7 +362,6 @@ def test_normalize_dttm_col_formatted_date() -> None:
 
 
 def test_normalize_dttm_col_with_offset() -> None:
-    """Test with hour offset."""
     df = pd.DataFrame({"date_col": ["2020-01-01", "2021-01-01", "2022-01-01"]})
     dttm_cols = (
         DateColumn(col_label="date_col", timestamp_format="%Y-%m-%d", offset=3),
@@ -389,7 +376,6 @@ def test_normalize_dttm_col_with_offset() -> None:
 
 
 def test_normalize_dttm_col_with_time_shift() -> None:
-    """Test with time shift."""
     df = pd.DataFrame({"date_col": ["2020-01-01", "2021-01-01", "2022-01-01"]})
     dttm_cols = (
         DateColumn(
@@ -406,7 +392,6 @@ def test_normalize_dttm_col_with_time_shift() -> None:
 
 
 def test_normalize_dttm_col_with_offset_and_time_shift() -> None:
-    """Test with both offset and time shift."""
     df = pd.DataFrame({"date_col": ["2020-01-01", "2021-01-01", "2022-01-01"]})
     dttm_cols = (
         DateColumn(
@@ -426,7 +411,6 @@ def test_normalize_dttm_col_with_offset_and_time_shift() -> None:
 
 
 def test_normalize_dttm_col_invalid_date_coerced() -> None:
-    """Test that invalid dates are coerced to NaT."""
     df = pd.DataFrame({"date_col": ["2020-01-01", "invalid_date", "2022-01-01"]})
     dttm_cols = (DateColumn(col_label="date_col", timestamp_format="%Y-%m-%d"),)
 
@@ -439,7 +423,6 @@ def test_normalize_dttm_col_invalid_date_coerced() -> None:
 
 
 def test_normalize_dttm_col_invalid_epoch_coerced() -> None:
-    """Test that invalid epoch values are coerced to NaT."""
     df = pd.DataFrame(
         {"epoch_col": [1577836800, np.nan, 1640995200]}  # 2020-01-01, NaN, 2022-01-01
     )
@@ -454,20 +437,16 @@ def test_normalize_dttm_col_invalid_epoch_coerced() -> None:
 
 
 def test_normalize_dttm_col_non_existing_column() -> None:
-    """Test handling of non-existing columns."""
     df = pd.DataFrame({"existing_col": [1, 2, 3]})
     dttm_cols = (DateColumn(col_label="non_existing_col", timestamp_format="%Y-%m-%d"),)
 
-    # Should not raise any exception
     normalize_dttm_col(df, dttm_cols)
 
-    # DataFrame should remain unchanged
     assert list(df.columns) == ["existing_col"]
     assert df["existing_col"].tolist() == [1, 2, 3]
 
 
 def test_normalize_dttm_col_multiple_columns() -> None:
-    """Test normalizing multiple datetime columns."""
     df = pd.DataFrame(
         {
             "date_col1": ["2020-01-01", "2021-01-01", "2022-01-01"],
@@ -488,8 +467,6 @@ def test_normalize_dttm_col_multiple_columns() -> None:
 
 
 def test_normalize_dttm_col_already_datetime_series() -> None:
-    """Test handling of already datetime series with epoch format."""
-    # Create a DataFrame with timestamp strings
     df = pd.DataFrame(
         {
             "ts_col": [
@@ -510,9 +487,6 @@ def test_normalize_dttm_col_already_datetime_series() -> None:
 
 
 def test_check_if_safe_zip_success() -> None:
-    """
-    Test if ZIP files are safe
-    """
     ZipFile = MagicMock()  # noqa: N806
     ZipFile.namelist.return_value = []
     ZipFile.infolist.return_value = [
@@ -526,9 +500,6 @@ def test_check_if_safe_zip_success() -> None:
 
 
 def test_check_if_safe_zip_high_rate() -> None:
-    """
-    Test if ZIP files is not highly compressed
-    """
     ZipFile = MagicMock()  # noqa: N806
     ZipFile.namelist.return_value = []
     ZipFile.infolist.return_value = [
@@ -543,9 +514,6 @@ def test_check_if_safe_zip_high_rate() -> None:
 
 
 def test_check_if_safe_zip_hidden_bomb() -> None:
-    """
-    Test if ZIP file does not contain a big file highly compressed
-    """
     ZipFile = MagicMock()  # noqa: N806
     ZipFile.namelist.return_value = []
     ZipFile.infolist.return_value = [
@@ -560,38 +528,30 @@ def test_check_if_safe_zip_hidden_bomb() -> None:
 
 
 def test_generic_constraint_name_exists():
-    # Create a mock SQLAlchemy database object
     database_mock = MagicMock()
 
-    # Define the table name and constraint details
     table_name = "my_table"
     columns = {"column1", "column2"}
     referenced_table_name = "other_table"
     constraint_name = "my_constraint"
 
-    # Create a mock table object with the same structure
     table_mock = MagicMock()
     table_mock.name = table_name
     table_mock.columns = [MagicMock(name=col) for col in columns]
 
-    # Create a mock for the referred_table with a name attribute
     referred_table_mock = MagicMock()
     referred_table_mock.name = referenced_table_name
 
-    # Create a mock for the foreign key constraint with a name attribute
     foreign_key_constraint_mock = MagicMock()
     foreign_key_constraint_mock.name = constraint_name
     foreign_key_constraint_mock.referred_table = referred_table_mock
     foreign_key_constraint_mock.column_keys = list(columns)
 
-    # Set the foreign key constraint mock as part of the table's constraints
     table_mock.foreign_key_constraints = [foreign_key_constraint_mock]
 
-    # Configure the autoload behavior for the database mock
     database_mock.metadata = MagicMock()
     database_mock.metadata.tables = {table_name: table_mock}
 
-    # Mock the sa.Table creation with autoload
     with patch("superset.utils.core.sa.Table") as table_creation_mock:
         table_creation_mock.return_value = table_mock
 
@@ -603,21 +563,17 @@ def test_generic_constraint_name_exists():
 
 
 def test_generic_constraint_name_not_found():
-    # Create a mock SQLAlchemy database object
     database_mock = MagicMock()
 
-    # Define the table name and constraint details
     table_name = "my_table"
     columns = {"column1", "column2"}
     referenced_table_name = "other_table"
 
-    # Create a mock table object with the same structure but no matching constraint
     table_mock = MagicMock()
     table_mock.name = table_name
     table_mock.columns = [MagicMock(name=col) for col in columns]
     table_mock.foreign_key_constraints = []
 
-    # Configure the autoload behavior for the database mock
     database_mock.metadata = MagicMock()
     database_mock.metadata.tables = {table_name: table_mock}
 
@@ -638,14 +594,12 @@ def test_generic_find_fk_constraint_exists():
     referenced_table_name = "other_table"
     constraint_name = "my_constraint"
 
-    # Create a mock for the foreign key constraint as a dictionary
     constraint_mock = {
         "name": constraint_name,
         "referred_table": referenced_table_name,
         "referred_columns": list(columns),
     }
 
-    # Configure the Inspector mock to return the list of foreign key constraints
     insp_mock.get_foreign_keys.return_value = [constraint_mock]
 
     result = generic_find_fk_constraint_name(
@@ -661,7 +615,6 @@ def test_generic_find_fk_constraint_none_exist():
     columns = {"column1", "column2"}
     referenced_table_name = "other_table"
 
-    # Configure the Inspector mock to return the list of foreign key constraints
     insp_mock.get_foreign_keys.return_value = []
 
     result = generic_find_fk_constraint_name(
@@ -756,12 +709,10 @@ def test_get_user_agent_custom(monkeypatch) -> None:
 
 
 def test_merge_extra_filters():
-    # does nothing if no extra filters
     form_data = {"A": 1, "B": 2, "c": "test"}
     expected = {**form_data, "adhoc_filters": [], "applied_time_extras": {}}
     merge_extra_filters(form_data)
     assert form_data == expected
-    # empty extra_filters
     form_data = {"A": 1, "B": 2, "c": "test", "extra_filters": []}
     expected = {
         "A": 1,
@@ -772,7 +723,6 @@ def test_merge_extra_filters():
     }
     merge_extra_filters(form_data)
     assert form_data == expected
-    # copy over extra filters into empty filters
     form_data = {
         "extra_filters": [
             {"col": "a", "op": "in", "val": "someval"},
@@ -804,7 +754,6 @@ def test_merge_extra_filters():
     }
     merge_extra_filters(form_data)
     assert form_data == expected
-    # adds extra filters to existing filters
     form_data = {
         "extra_filters": [
             {"col": "a", "op": "in", "val": "someval"},
@@ -852,7 +801,6 @@ def test_merge_extra_filters():
     }
     merge_extra_filters(form_data)
     assert form_data == expected
-    # adds extra filters to existing filters and sets time options
     form_data = {
         "extra_filters": [
             {"col": "__time_range", "op": "in", "val": "1 year ago :"},

@@ -17,10 +17,8 @@
 # mypy: ignore-errors
 """Celery task that triggers a database permissions sync.
 
-Direct port of
-``superset_old/commands/database/sync_permissions.py::sync_database_permissions_task``.
-The new ``SyncPermissionsCommand`` is async, so we run it inside an
-event loop spawned in the worker thread (matching the pattern used by
+``SyncPermissionsCommand`` is async, so we run it inside an event loop
+spawned in the worker thread (matching the pattern used by
 :mod:`superset.tasks.async_queries`).
 """
 
@@ -38,13 +36,7 @@ logger = logging.getLogger(__name__)
 def sync_database_permissions_task(
     database_id: int, username: str, old_db_connection_name: str
 ) -> None:
-    """Trigger ``SyncPermissionsCommand.sync_database_permissions``.
-
-    1:1 with the original task except for the auth/session bootstrap
-    which now uses :func:`superset.db.session.get_sync_session` and
-    :func:`superset.utils.core.set_current_user` rather than the
-    request-scoped current user.
-    """
+    """Trigger SyncPermissionsCommand.sync_database_permissions."""
     try:
         asyncio.run(
             _run(
@@ -86,7 +78,6 @@ async def _run(
             )
             return
 
-        # Impersonate the requesting user (for OAuth2 connections, RLS, etc.).
         set_current_user(user)
         logger.info(
             "Syncing permissions for DB connection %s while impersonating user %s",
@@ -103,10 +94,6 @@ async def _run(
             )
             return
 
-        # 1:1 with the original task (superset_old/commands/database/
-        # sync_permissions.py:338): load the SSH tunnel so that
-        # ``_get_catalog_names`` / ``_get_schema_names`` can reach
-        # databases behind SSH tunnels.
         ssh_tunnel = await dao.get_ssh_tunnel(database_id)
 
         security_manager = build_async_security_manager(session, SupersetSettings())
@@ -119,12 +106,9 @@ async def _run(
             db_connection=database,
             ssh_tunnel=ssh_tunnel,
         )
-        # We are already inside the Celery task, so call the inline sync
-        # directly rather than ``run()`` (which would re-dispatch the task in
-        # async mode) — and without ``validate()`` (no pre-flight ping), exactly
-        # like the original task's
-        # ``SyncPermissionsCommand(...).sync_database_permissions()``.
+        # Call sync_database_permissions directly — not run() (which would re-dispatch)
+        # and not validate() (no pre-flight ping), matching the original task.
         await cmd.sync_database_permissions()
-        # No request middleware here to commit the AsyncSession, so commit
-        # explicitly — otherwise the new/renamed permission rows are lost.
+        # No request middleware to commit the AsyncSession — commit explicitly
+        # or the new/renamed permission rows are lost.
         await session.commit()

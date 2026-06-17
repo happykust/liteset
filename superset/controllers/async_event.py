@@ -23,8 +23,8 @@ equivalent of the original ``AsyncEventsRestApi``.
 
 Channel id is read from the ``async-token`` JWT cookie (minted by
 :class:`superset.middleware.async_token.AsyncTokenMiddleware`) — this
-mirrors the original implementation exactly and ensures the polling
-endpoint reads from the same Redis Stream that the Celery task wrote to.
+ensures the polling endpoint reads from the same Redis Stream that the
+Celery task wrote to.
 
 The WebSocket endpoint (superset/websocket/events.py) provides real-time
 delivery as an alternative, but this polling endpoint is preserved for
@@ -82,11 +82,6 @@ class AsyncEventController(Controller):
           200:
             description: List of events
         """
-        # ---------------------------------------------------------------------------
-        # Resolve channel_id from the JWT cookie — 1:1 with the original path:
-        #   AsyncQueryManager.parse_channel_id_from_request(request)
-        #   → jwt.decode(cookie["async-token"])["channel"]
-        # ---------------------------------------------------------------------------
         app = getattr(request, "app", None)
         app_state = getattr(app, "state", None)
         settings = getattr(app_state, "settings", None) if app_state else None
@@ -96,13 +91,8 @@ class AsyncEventController(Controller):
         )
 
         if not channel_id:
-            # 1:1 with the original path
-            # (``superset_old/async_events/api.py:91-101``): a missing or
-            # unparseable ``async-token`` cookie raises
-            # ``AsyncQueryTokenException`` → ``self.response_401()``.  Mirror
-            # the submit paths (``chart.py``/``explore_json.py``) which raise
-            # ``NotAuthorizedException`` on the same condition rather than
-            # silently returning an empty list from an unwritten channel.
+            # A missing or unparseable ``async-token`` cookie raises 401 rather
+            # than silently returning an empty list from an unwritten channel.
             logger.debug("async-token cookie missing or invalid; returning 401")
             raise NotAuthorizedException(
                 detail="Failed to parse async query channel token"

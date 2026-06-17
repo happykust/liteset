@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/security/update.py``."""
+"""Command for updating Row Level Security filters."""
 
 from __future__ import annotations
 
@@ -34,20 +34,14 @@ logger = logging.getLogger(__name__)
 
 
 class UpdateRLSRuleCommand(AsyncBaseCommand[Any]):
-    """Update an existing Row Level Security filter.
-
-    Async port of
-    ``superset_old.commands.security.update.UpdateRLSRuleCommand``.
-    """
+    """Update an existing Row Level Security filter."""
 
     def __init__(self, dao: Any, model_id: int, data: dict[str, Any]) -> None:
         self._dao = dao
         self._model_id = model_id
         self._properties = dict(data)
-        # 1:1 with the original: default to [] when the key is absent, so that
-        # an omitted field clears the collection (full-replace semantics, not
-        # partial-patch). The original uses ``self._properties.get("tables", [])``
-        # and ``self._properties.get("roles", [])`` unconditionally.
+        # Omitted field clears the collection (full-replace semantics,
+        # not partial-patch).
         self._tables: list[Any] = list(self._properties.get("tables") or [])
         self._roles: list[Any] = list(self._properties.get("roles") or [])
         self._model: Any = None
@@ -64,14 +58,8 @@ class UpdateRLSRuleCommand(AsyncBaseCommand[Any]):
         # See [[sa-lazy-load-on-transient-asyncpg]].
         await self._dao.session.refresh(self._model, ["roles", "tables"])
 
-        # Resolve role names/ids to Role ORM objects — 1:1 with the original
-        # ``populate_roles(self._roles)`` call in validate().
         self._properties["roles"] = await populate_roles(self._dao.session, self._roles)
 
-        # Resolve dataset ids to ``SqlaTable`` objects — inlined from the
-        # legacy sync ``UpdateRLSRuleCommand.validate``.  Raises
-        # :class:`DatasourceNotFoundValidationError` if any of the
-        # requested ids does not exist.
         from superset.models.connectors import SqlaTable
 
         tables: list[Any] = []

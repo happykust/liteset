@@ -134,11 +134,10 @@ def _dataset_custom_filters() -> dict[str, Any]:
 def _parse_import_upload(filename: str, contents: bytes) -> tuple[dict[str, str], bool]:
     """Split an uploaded import payload into ``({filename: text}, is_zip)``.
 
-    Mirrors ``superset_old/datasets/api.py:919-927``: ZIP bundles are decoded
-    with ``get_contents_from_bundle`` (``remove_root`` + YAML-only filtering),
-    while a non-ZIP upload is treated as a single legacy (v0) JSON document
-    keyed by its filename. Empty contents raise
-    :class:`NoValidFilesFoundError`, matching the original.
+    ZIP bundles are decoded with ``get_contents_from_bundle``
+    (``remove_root`` + YAML-only filtering), while a non-ZIP upload is treated
+    as a single legacy (v0) JSON document keyed by its filename. Empty contents
+    raise :class:`NoValidFilesFoundError`.
     """
     import zipfile
 
@@ -159,14 +158,11 @@ def _parse_import_upload(filename: str, contents: bytes) -> tuple[dict[str, str]
     return parsed, is_zip
 
 
-# ``DatasetDetailResult.from_model(dataset)`` (see
-# ``superset/schemas/dataset.py:270``) is used directly for create /
-# update response payloads — it mirrors the original
-# ``DatasetRestApi`` Marshmallow schema via ``ModelStruct`` auto-mapping
-# plus ``_resolve_owners`` / ``_resolve_database`` custom resolvers for
-# the relationship fields.  The caller must eager-load ``columns``,
-# ``metrics``, ``owners``, ``database`` so the resolvers don't trigger
-# lazy loads (which crash with ``MissingGreenlet`` under asyncpg).
+# ``DatasetDetailResult.from_model(dataset)`` (``superset/schemas/dataset.py``)
+# is used directly for create / update response payloads. The caller must
+# eager-load ``columns``, ``metrics``, ``owners``, ``database`` so the
+# resolvers don't trigger lazy loads (which crash with ``MissingGreenlet``
+# under asyncpg).
 
 
 class DatasetController(Controller):
@@ -248,10 +244,9 @@ class DatasetController(Controller):
         for item in payload["result"]:
             item["datasource_type"] = "table"
             item["kind"] = "physical" if not item.get("sql") else "virtual"
-            # ``explore_url`` is *derived* from ``default_endpoint`` (1:1 with
-            # the ``SqlaTable.explore_url`` property), but ``default_endpoint``
-            # itself stays in the row — upstream's ``list_columns`` returns both
-            # (and the dataset edit modal's ``default_endpoint`` field reads it).
+            # ``explore_url`` is derived from ``default_endpoint``, but
+            # ``default_endpoint`` itself stays in the row — the dataset edit
+            # modal's ``default_endpoint`` field reads it directly.
             # Use ``get`` not ``pop`` so the field is not dropped from the list.
             item["explore_url"] = (
                 item.get("default_endpoint")
@@ -402,9 +397,9 @@ class DatasetController(Controller):
 
         detail = DatasetDetailResult.from_model(dataset)
         # Strip 'folders' from the response when the DATASET_FOLDERS feature
-        # flag is disabled — 1:1 with superset_old/datasets/api.py:1173-1179.
-        # The frontend inspects this key's presence as a feature-detection
-        # signal; omitting it tells the UI not to render folder controls.
+        # flag is disabled. The frontend inspects this key's presence as a
+        # feature-detection signal; omitting it tells the UI not to render
+        # folder controls.
         from superset.utils.feature_flags import feature_flag_manager
 
         if not feature_flag_manager.is_feature_enabled("DATASET_FOLDERS"):
@@ -564,14 +559,10 @@ class DatasetController(Controller):
 
         # Always run UpdateDatasetCommand (saves metrics/owners/description/etc.).
         # When override_columns=true, ALSO run RefreshDatasetCommand afterwards.
-        # Mirrors superset_old/datasets/api.py:441-443:
-        #     changed_model = UpdateDatasetCommand(pk, item, override_columns).run()
-        #     if override_columns:
-        #         RefreshDatasetCommand(pk).run()
-        # The body ``columns`` are passed THROUGH — the original applies them
-        # first (delete-all + reinsert in the DAO override path) and the
-        # subsequent refresh only updates types, preserving user-provided
-        # metadata and virtual (expression) columns.
+        # The body ``columns`` are passed THROUGH — Update applies them first
+        # (delete-all + reinsert in the DAO override path) and the subsequent
+        # Refresh only updates types, preserving user-provided metadata and
+        # virtual (expression) columns.
         cmd = UpdateDatasetCommand(
             dao=cast("AsyncDatasetDAO", dao),
             dataset_id=pk,
@@ -705,10 +696,6 @@ class DatasetController(Controller):
             object_ref=f"dataset:{dataset.id}",
             user_id=current_user.id,
         )
-        # Mirrors ``superset_old/datasets/api.py:635``:
-        # ``self.response(201, id=new_model.id, result=item)`` where ``item``
-        # is the loaded ``DatasetDuplicateSchema`` (``base_model_id`` +
-        # ``table_name``).
         return DatasetGetResponse(
             id=int(dataset.id),
             result={
@@ -773,10 +760,8 @@ class DatasetController(Controller):
             user_id=current_user.id,
         )
         dataset_id = int(dataset.id)
-        # Mirrors ``superset_old/datasets/api.py:1016/1021``:
-        # ``self.response(200, result={"table_id": table.id})`` — no top-level
-        # ``id``. ``ApiResponse`` has ``omit_defaults=True`` so leaving ``id``
-        # unset omits it from the payload.
+        # Response has no top-level ``id`` — ``ApiResponse`` has
+        # ``omit_defaults=True`` so leaving ``id`` unset omits it from the payload.
         return DatasetGetResponse(
             result={"table_id": dataset_id},
         )
@@ -797,12 +782,9 @@ class DatasetController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             raise CommandInvalidError("At least one ID is required for export")
-        # 1:1 with ``superset_old/datasets/api.py:553-579``: build
-        # ``root = f"dataset_export_{timestamp}"`` (timestamp =
-        # ``datetime.now().strftime("%Y%m%dT%H%M%S")``), nest every ZIP entry
-        # under ``f"{root}/{file_name}"``, and name the download
-        # ``f"{root}.zip"``. The importer strips the root back off via
-        # ``remove_root`` (``parts[1:]``) so re-import still works.
+        # ZIP entries are nested under ``f"{root}/{file_name}"`` and the
+        # download is named ``f"{root}.zip"``. The importer strips the root
+        # back off via ``remove_root`` (``parts[1:]``) so re-import works.
         from datetime import datetime as _datetime
 
         timestamp = _datetime.now().strftime("%Y%m%dT%H%M%S")
@@ -829,7 +811,6 @@ class DatasetController(Controller):
         "/import/",
         guards=[require_permission("can_write", "Dataset")],
         media_type="application/json",
-        # Upstream returns 200 "OK" (datasets/api.py import_); align.
         status_code=200,
     )
     async def import_dataset(
@@ -864,13 +845,10 @@ class DatasetController(Controller):
         sync_columns = _form_bool("sync_columns")
         sync_metrics = _form_bool("sync_metrics")
 
-        # Mirror ``superset_old/datasets/api.py:919-963``: a ZIP bundle is
-        # parsed (remove_root + YAML filter) and dispatched v1-then-v0; a
-        # non-ZIP upload is a single legacy (v0) JSON document. The dispatcher
-        # (``superset/importexport/legacy/dispatcher.py``) tries the async v1
-        # command first and falls back to the sync v0 command on
-        # ``IncorrectVersionError`` — matching the original
-        # ``commands/dataset/importers/dispatcher.py``.
+        # A ZIP bundle is parsed (remove_root + YAML filter) and dispatched
+        # v1-then-v0; a non-ZIP upload is a single legacy (v0) JSON document.
+        # The dispatcher tries the async v1 command first and falls back to the
+        # sync v0 command on ``IncorrectVersionError``.
         parsed, is_zip = _parse_import_upload(filename, contents)
         if is_zip:
             dispatcher = LegacyImportDatasetsDispatcher(
@@ -997,9 +975,6 @@ class DatasetController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/dataset/{pk}/drill_info/ — drill-down column info.
 
-        Direct port of ``superset_old/datasets/api.py:1191-1287`` +
-        ``DatasetDrillInfoSchema`` (``schemas.py:399-441``).
-
         The RISON ``q`` parameter carries an optional ``dashboard_id`` that
         enables the embedded (guest) / DASHBOARD_RBAC drill-through fallback.
         The response shape is ``{"result": DatasetDrillInfoSchema}`` —
@@ -1023,8 +998,7 @@ class DatasetController(Controller):
             selectinload(SqlaTable.changed_by),
         ]
 
-        # First try with regular access (apply the dataset access base
-        # filter, mirroring ``self.datamodel.get(pk, self._base_filters, ...)``).
+        # First try with regular access (apply the dataset access base filter).
         base_filters = await dataset_access_filters(security_manager, current_user)
         results = await dao.find_all(
             filters=[SqlaTable.id == pk] + (base_filters or []),
@@ -1081,10 +1055,8 @@ class DatasetController(Controller):
     def _apply_rendered_sql(dataset: Any, detail: Any) -> None:
         """Render Jinja in ``sql`` and each metric/column ``expression``.
 
-        Populates ``detail.rendered_sql`` and per-item
-        ``rendered_expression`` fields — 1:1 with upstream
-        ``render_dataset_fields`` (``superset_old/datasets/api.py``).
-        A template error propagates as a 422
+        Populates ``detail.rendered_sql`` and per-item ``rendered_expression``
+        fields. A template error propagates as a 422
         ``SupersetTemplateException``.
         """
         from jinja2.exceptions import TemplateSyntaxError
@@ -1148,11 +1120,10 @@ class DatasetController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> dict[str, Any]:
-        """Serialize a dataset into the ``DatasetDrillInfoSchema`` shape.
+        """Serialize a dataset into the drill-info shape.
 
-        Port of ``DatasetDrillInfoSchema`` (``superset_old/datasets/schemas.py``
-        :399-441): ``columns`` are filtered to ``groupby=True`` dimensions and
-        carry ``{column_name, verbose_name}``; a guest user only ever receives
+        ``columns`` are filtered to ``groupby=True`` dimensions and carry
+        ``{column_name, verbose_name}``; a guest user only ever receives
         ``{"id", "columns"}``.
         """
 
@@ -1198,9 +1169,7 @@ class DatasetController(Controller):
         security_manager: SecurityManagerProtocol,
         current_user: UserProtocol,
     ) -> bool:
-        """Async port of
-        ``SupersetSecurityManager.can_drill_dataset_via_dashboard_access``
-        (``superset_old/security/manager.py:576-600``).
+        """Check drill-through access via dashboard membership.
 
         True when an embedded guest with guest-access to the dashboard, or a
         DASHBOARD_RBAC user whose roles intersect a published dashboard's

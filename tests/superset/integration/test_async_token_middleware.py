@@ -14,13 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Integration tests for AsyncTokenMiddleware.
-
-Verifies the middleware mints / refreshes the ``async-token`` JWT cookie on
-authenticated responses — 1:1 with the original Flask
-``register_request_handlers`` after-request hook.
-"""
-
 from __future__ import annotations
 
 from http.cookies import SimpleCookie
@@ -85,7 +78,6 @@ def _make_app(user: _User) -> Litestar:
 
 
 def _async_token(resp: Any) -> str | None:
-    """Pull the async-token value out of any Set-Cookie header on the response."""
     for name, value in resp.headers.multi_items():
         if name.lower() == "set-cookie" and value.startswith("async-token="):
             c: SimpleCookie = SimpleCookie()

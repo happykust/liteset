@@ -44,10 +44,8 @@ logger = logging.getLogger(__name__)
 class UnsupportedCacheBackendError(Exception):  # noqa: N818
     """Raised when GLOBAL_ASYNC_QUERIES_CACHE_BACKEND uses an unsupported CACHE_TYPE.
 
-    1:1 port of
-    ``superset_old/async_events/async_query_manager.py::UnsupportedCacheBackendError``.
-    The original raises this in ``get_cache_backend()`` for any CACHE_TYPE that is
-    not ``'RedisCache'`` or ``'RedisSentinelCache'``, causing the app to refuse to
+    Raised in ``get_cache_backend()`` for any CACHE_TYPE that is not
+    ``'RedisCache'`` or ``'RedisSentinelCache'``, causing the app to refuse to
     start.
     """
 
@@ -103,8 +101,7 @@ async def maybe_forward_guest_token(
     The worker decodes it back into the same ``GuestUser`` so it computes a
     matching RLS cache key — otherwise the worker (anonymous) and the read path
     (real ``GuestUser``) produce different keys and the cache round-trip breaks.
-    No-op for non-guest users. 1:1 with the original ``submit_*_job`` which
-    dispatched ``{**job_metadata, "guest_token": guest_user.guest_token}``.
+    No-op for non-guest users.
     (``build_job_metadata`` drops unknown kwargs, so the token is merged into
     the returned dict; the worker reads ``job_metadata["guest_token"]``.)
     """
@@ -179,9 +176,7 @@ class AsyncEventManager:
         payload: dict[FieldT, EncodableT] = {"data": json.dumps(metadata)}
 
         # Write to channel-specific stream.  ``maxlen`` trims the stream
-        # synchronously on every write (1:1 with the original
-        # ``async_query_manager.update_job`` which passed ``self._stream_limit``
-        # / ``self._stream_limit_firehose`` to ``xadd``).  ``approximate=True``
+        # synchronously on every write.  ``approximate=True``
         # maps to Redis ``XADD ... MAXLEN ~ N`` so trimming stays cheap.
         await self.redis.xadd(
             self._channel_key(channel_id),
@@ -225,8 +220,7 @@ class AsyncEventManager:
         )
         payload: dict[FieldT, EncodableT] = {"data": json.dumps(metadata)}
 
-        # Write to channel stream — trim synchronously via ``maxlen`` (1:1 with
-        # the original ``xadd(..., self._stream_limit)``).
+        # Write to channel stream — trim synchronously via ``maxlen``.
         await self.redis.xadd(
             self._channel_key(channel_id),
             payload,
@@ -258,8 +252,7 @@ class AsyncEventManager:
 
         :param channel_id: Redis Stream key suffix for the channel.
         :param last_id: Exclusive lower bound — only events *after* this ID
-            are returned.  Mirrors the original ``increment_id(last_id)``
-            call in ``AsyncQueryManager.read_events``.
+            are returned.
         :param count: Maximum number of events to return.  Defaults to
             ``None`` (all events since ``last_id``).  The polling endpoint
             passes ``MAX_EVENT_COUNT=100`` matching the original cap.

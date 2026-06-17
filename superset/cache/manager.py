@@ -33,9 +33,8 @@ Provides:
   and Celery workers; we mirror that here by giving every async slot a
   matching sync sibling slot, both pointing at the *same* Redis
   cluster.
-* :class:`CacheManager` – the multi-cache holder that mirrors the
-  original ``superset_old.utils.cache_manager.CacheManager``
-  extension.  Exposes ``cache``, ``data_cache``, ``thumbnail_cache``,
+* :class:`CacheManager` – the multi-cache holder. Exposes
+  ``cache``, ``data_cache``, ``thumbnail_cache``,
   ``filter_state_cache`` and ``explore_form_data_cache`` properties so
   legacy code paths (``utils.cache.memoized_func``, ``viz.py``,
   ``screenshots.py``) keep working unchanged, plus their sync
@@ -67,11 +66,6 @@ _LOCK_RETRY_DELAY = 0.05
 _LOCK_MAX_RETRIES = 100
 
 
-# ---------------------------------------------------------------------------
-# Interface protocol
-# ---------------------------------------------------------------------------
-
-
 class AsyncCacheProtocol(Protocol):
     """Minimal interface that all async caches expose."""
 
@@ -84,16 +78,10 @@ class AsyncCacheProtocol(Protocol):
     async def has(self, key: str) -> bool: ...
 
 
-# ---------------------------------------------------------------------------
-# Null / no-op implementation (used when ``redis_url`` is empty)
-# ---------------------------------------------------------------------------
-
-
 class NullAsyncCacheManager:
     """No-op cache used when Redis is not configured.
 
-    Mirrors the upstream ``NullCache`` semantics: every read
-    returns ``None``, writes are silently dropped.
+    Every read returns ``None``, writes are silently dropped.
     """
 
     def __init__(self, default_ttl: int = 300) -> None:
@@ -119,7 +107,6 @@ class NullAsyncCacheManager:
         factory: Callable[[], Awaitable[Any]],
         ttl: int | None = None,  # noqa: ARG002
     ) -> Any:
-        # No backing store — always recompute.
         del key
         return await factory()
 
@@ -134,11 +121,10 @@ class SimpleAsyncCacheManager:
     """In-process dict-based cache with TTL — async port of the upstream
     ``SimpleCache``.
 
-    Mirrors the original behaviour:
+    Behaviour:
 
     * threshold-bounded dict — once it overflows, the oldest entry is
-      evicted (FIFO via ``dict`` insertion order, same as the upstream
-      ``SimpleCache``).
+      evicted (FIFO via ``dict`` insertion order).
     * per-key TTL stored alongside the value; expired reads return
       ``None`` and lazily evict.
     * shared dict between async and sync siblings is **not** required —
@@ -149,7 +135,6 @@ class SimpleAsyncCacheManager:
     def __init__(self, default_ttl: int = 300, threshold: int = 500) -> None:
         self._default_ttl = default_ttl
         self._threshold = threshold
-        # Stored as ``{key: (expiry_ts | None, value)}``.
         self._store: dict[str, tuple[float | None, Any]] = {}
         self._lock = asyncio.Lock()
 
@@ -158,8 +143,6 @@ class SimpleAsyncCacheManager:
         return expiry is not None and expiry < time.time()
 
     def _prune(self) -> None:
-        # Drop expired entries first; if still over threshold, evict
-        # in insertion order (oldest first) — mirrors the upstream cache.
         if not self._store:
             return
         for key in list(self._store.keys()):
@@ -182,8 +165,6 @@ class SimpleAsyncCacheManager:
         async with self._lock:
             ttl_val = ttl if ttl is not None else self._default_ttl
             expiry = time.time() + ttl_val if ttl_val else None
-            # Re-insert so insertion order reflects most-recent write
-            # (matches the upstream cache's overwrite behaviour).
             self._store.pop(key, None)
             self._store[key] = (expiry, value)
             self._prune()
@@ -225,24 +206,6 @@ class SimpleAsyncCacheManager:
     async def close(self) -> None:
         async with self._lock:
             self._store.clear()
-
-
-# ---------------------------------------------------------------------------
-# Sync cache adapters (used by Celery / Selenium / Playwright pipelines)
-# ---------------------------------------------------------------------------
-#
-# These mirror :class:`AsyncCacheManager` / :class:`NullAsyncCacheManager`
-# but expose a *synchronous* ``get`` / ``set`` / ``delete`` shape and own
-# their own (sync) Redis client.  Sharing a Redis client between
-# async callers running on the ASGI loop and sync callers running on a
-# Celery worker thread would create cross-event-loop awaits that
-# ``redis.asyncio`` does not support — every Redis client (sync or
-# async) is bound to whatever loop / thread first opened it.  Building
-# distinct sync clients keeps the loop topology clean while still
-# pointing both clients at the same Redis cluster (operator-configured
-# via ``CACHE_REDIS_URL`` / ``CACHE_REDIS_HOST`` etc.) so the keyspace
-# stays unified — exactly the behaviour the original Superset
-# code relied on.
 
 
 class SyncCacheProtocol(Protocol):
@@ -395,8 +358,7 @@ class SyncRedisCacheAdapter:
             try:
                 raw = raw.decode("utf-8")
             except UnicodeDecodeError:
-                # Legacy binary payload — surface it raw so callers
-                # that historically wrote bytes still work.
+                # Legacy binary blob from older deployments — surface raw.
                 return bytes(raw)
         if isinstance(raw, str):
             try:
@@ -505,10 +467,6 @@ class MetastoreSyncCacheManager:
                     exc_info=True,
                 )
                 return None
-            # No TTL refresh — mirror the async slot (see
-            # MetastoreAsyncCacheManager.get): the original
-            # SupersetMetastoreCache never refreshes on read; the
-            # temporary-cache GET commands re-set the entry instead.
             return value
         finally:
             session.close()
@@ -725,11 +683,6 @@ def _build_sync_cache_for_slot(
     )
 
 
-# ---------------------------------------------------------------------------
-# AsyncCacheManager (single Redis-backed cache)
-# ---------------------------------------------------------------------------
-
-
 class AsyncCacheManager:
     """Async cache manager wrapping a redis.asyncio client."""
 
@@ -801,14 +754,12 @@ class AsyncCacheManager:
                         "Lock release failed for key=%s", lock_key, exc_info=True
                     )
         else:
-            # Another caller is computing the value; wait and retry.
             for _ in range(_LOCK_MAX_RETRIES):
                 await asyncio.sleep(_LOCK_RETRY_DELAY)
                 cached = await self.get(key)
                 if cached is not None:
                     return cached
 
-            # Lock holder may have failed; final cache check before fallback.
             cached = await self.get(key)
             if cached is not None:
                 return cached
@@ -817,10 +768,7 @@ class AsyncCacheManager:
             return value
 
     async def clear_prefix(self, prefix: str) -> int:
-        """Delete all keys matching prefix*. Returns count deleted.
-
-        Uses pipeline to batch deletes for efficiency.
-        """
+        """Delete all keys matching prefix*. Returns count deleted."""
         count = 0
         batch: list[Any] = []
         async for key in self._redis.scan_iter(match=f"{prefix}*"):
@@ -848,11 +796,6 @@ class AsyncCacheManager:
         raises ``AttributeError`` and leaks the slot's connection on shutdown.
         """
         await _close_async_redis(self._redis)
-
-
-# ---------------------------------------------------------------------------
-# ExploreFormDataCache  (ports the legacy key-rewrite logic)
-# ---------------------------------------------------------------------------
 
 
 class MetastoreAsyncCacheManager:
@@ -892,10 +835,6 @@ class MetastoreAsyncCacheManager:
         self._refresh_timeout_on_retrieval = refresh_timeout_on_retrieval
 
     def _key_uuid(self, key: str) -> UUID:
-        """Derive the deterministic UUID used in the DB row.
-
-        Mirrors ``SupersetMetastoreCache.get_key`` (uuid3(namespace, key)).
-        """
         return uuid3(self._namespace, key)
 
     def _expiry(self, ttl: int | None) -> datetime | None:
@@ -927,12 +866,6 @@ class MetastoreAsyncCacheManager:
                     exc_info=True,
                 )
                 return None
-            # NB: no TTL refresh here — the original
-            # ``SupersetMetastoreCache`` has no refresh-on-read behaviour;
-            # ``REFRESH_TIMEOUT_ON_RETRIEVAL`` is implemented by the
-            # temporary-cache GET commands re-``set``-ting the entry
-            # (superset_old/commands/dashboard/filter_state/get.py:40-41),
-            # which works uniformly for Redis-backed slots too.
             return value
 
     async def set(self, key: str, value: Any, ttl: int | None = None) -> None:
@@ -1011,8 +944,7 @@ class JsonValueCacheAdapter:
 class ExploreFormDataCache:
     """Wrapper that rewrites legacy explore-form-data cache entries.
 
-    Mirrors :class:`superset_old.utils.cache_manager.ExploreFormDataCache`:
-    when an older payload uses ``dataset_id`` / lacks ``datasource_type``,
+    When an older payload uses ``dataset_id`` / lacks ``datasource_type``,
     it is upgraded to the new ``datasource_id`` / ``datasource_type``
     schema before being returned to callers.
     """
@@ -1046,12 +978,7 @@ class ExploreFormDataCache:
 # CacheManager (multi-cache extension-style holder)
 # ---------------------------------------------------------------------------
 
-# Recognised ``CACHE_TYPE`` values that map to ``NullCache`` semantics
-# (writes no-op, reads always miss).  Mirrors the operator-friendly
-# aliases accepted by the upstream cache.
 _NULL_CACHE_TYPES = frozenset({None, "NullCache", "null", "NoneType", "none"})
-
-# Recognised ``CACHE_TYPE`` values that map to a Redis backend.
 _REDIS_CACHE_TYPES = frozenset(
     {
         "RedisCache",
@@ -1061,9 +988,6 @@ _REDIS_CACHE_TYPES = frozenset(
         "flask_caching.RedisCache",
     }
 )
-
-# Recognised ``CACHE_TYPE`` values that map to an in-process dict-based
-# cache (the upstream ``SimpleCache``).
 _SIMPLE_CACHE_TYPES = frozenset(
     {
         "SimpleCache",
@@ -1074,10 +998,6 @@ _SIMPLE_CACHE_TYPES = frozenset(
     }
 )
 
-# Recognised ``CACHE_TYPE`` values that map to the metadata-DB-backed
-# cache used by ``FILTER_STATE_CACHE_CONFIG`` /
-# ``EXPLORE_FORM_DATA_CACHE_CONFIG``.  Mirrors the original
-# ``superset.extensions.metastore_cache.SupersetMetastoreCache``.
 _METASTORE_CACHE_TYPES = frozenset(
     {
         "SupersetMetastoreCache",
@@ -1093,7 +1013,7 @@ def _build_async_redis_from_config(
 ) -> Any | None:
     """Build (or reuse) an ``redis.asyncio.Redis`` client per cache slot.
 
-    Decision tree mirrors the upstream cache:
+    Decision tree:
 
     * ``CACHE_REDIS_URL`` → connect via ``redis.asyncio.Redis.from_url``.
     * ``CACHE_REDIS_HOST``/``CACHE_REDIS_PORT``/``CACHE_REDIS_DB``/
@@ -1112,11 +1032,9 @@ def _build_async_redis_from_config(
                 "to NullAsyncCacheManager."
             )
             return None
-        # decode_responses MUST be False: these cache slots store binary
-        # values (serialized chart-data DataFrames / query-context forms and
-        # thumbnail image bytes). AsyncCacheManager.get returns the raw value
-        # verbatim, so a decoding client raises UnicodeDecodeError on binary
-        # payloads (which start with byte 0x80) and the read silently None-s.
+        # decode_responses=False: cache slots store binary values
+        # (DataFrames, image bytes). A decoding client raises
+        # UnicodeDecodeError on byte-0x80 payloads and silently None-s.
         return AsyncRedis.from_url(redis_url, decode_responses=False)
 
     if "CACHE_REDIS_HOST" in cache_config:
@@ -1132,21 +1050,16 @@ def _build_async_redis_from_config(
             "host": cache_config.get("CACHE_REDIS_HOST", "localhost"),
             "port": cache_config.get("CACHE_REDIS_PORT", 6379),
             "db": cache_config.get("CACHE_REDIS_DB", 0),
-            # See the from_url branch above: binary cache values require a
-            # non-decoding client.
             "decode_responses": False,
         }
         if cache_config.get("CACHE_REDIS_PASSWORD"):
             kwargs["password"] = cache_config["CACHE_REDIS_PASSWORD"]
         return AsyncRedis(**kwargs)
 
-    # NOTE: ``default_redis`` is the process-wide auth-cache client built in
-    # ``superset.app.on_startup`` with ``decode_responses=True`` (it stores
-    # string user records).  Reusing it here is only safe for slots that store
-    # text; the binary cache slots (chart-data / qc-form / thumbnails) would
-    # re-trigger the 0x80 UnicodeDecodeError on read.  Today every Redis cache
-    # slot sets CACHE_REDIS_HOST so this fallback is not reached for them — if
-    # that changes, build a dedicated ``decode_responses=False`` client instead.
+    # WARNING: default_redis is the auth-cache client (decode_responses=True).
+    # Reusing it for binary slots (chart-data, thumbnails) causes UnicodeDecodeError
+    # on 0x80 payloads. Today every binary slot sets CACHE_REDIS_HOST so this branch
+    # is not reached — if that changes, build a decode_responses=False client instead.
     return default_redis
 
 
@@ -1161,8 +1074,8 @@ def _build_metastore_cache_from_config(
     Falls back to :class:`NullAsyncCacheManager` (with a warning) when
     ``session_factory`` is not yet wired — e.g. an ``alembic`` invocation
     that imports the cache manager before the Litestar app has run its
-    startup hook.  Mirrors the original behaviour where the metastore
-    cache is unusable without a metadata DB session.
+    startup hook.  The metastore cache is unusable without a metadata DB
+    session.
     """
     if session_factory is None:
         logger.warning(
@@ -1350,13 +1263,13 @@ async def _close_async_redis(client: Any | None) -> None:
 
 
 class CacheManager:
-    """Multi-cache holder mirroring the original CacheManager.
+    """Multi-cache holder for Superset's named caches.
 
     Holds five named caches: ``cache`` (default), ``data_cache``,
     ``thumbnail_cache``, ``filter_state_cache`` and
     ``explore_form_data_cache``.  Each cache is a separate
     :class:`AsyncCacheManager` so they can be configured (and cleared)
-    independently — exactly like the original.
+    independently.
 
     By default every cache is a :class:`NullAsyncCacheManager`.  Call
     :meth:`init_app` from :func:`superset.app.on_startup` to wire the
@@ -1428,22 +1341,12 @@ class CacheManager:
         Pass ``redis=None``, ``sync_redis=None`` and no per-slot
         configs to disable caching entirely.
         """
-        # Stash the metadata-DB session factory so any slot using
-        # ``CACHE_TYPE='SupersetMetastoreCache'`` can open per-call
-        # AsyncSessions on demand.  Held on the manager so reset via a
-        # second ``init_app`` call (e.g. tests) updates downstream slots
-        # next time they are rebuilt.
         self._session_factory = session_factory
 
-        # The binary cache slots (chart-data DataFrames, qc- query-context
-        # forms, thumbnail image bytes) store raw bytes, so their *default*
-        # async client MUST NOT decode responses.  The caller's ``redis``
-        # handle is the auth-cache client (decode_responses=True, it stores
-        # string user records); reusing it as a slot fallback would corrupt
-        # binary reads with UnicodeDecodeError on byte 0x80.  Build a dedicated
-        # non-decoding client from ``redis_url`` when available; otherwise fall
-        # back to ``redis`` (the Celery worker already passes a non-decoding
-        # client and no ``redis_url``).
+        # Binary cache slots (chart-data DataFrames, thumbnail bytes) require
+        # decode_responses=False. The caller's ``redis`` is the auth-cache client
+        # (decode_responses=True); reusing it corrupts binary reads. Build a
+        # dedicated non-decoding client from redis_url when available.
         default_async = redis
         self._default_async_redis = None
         if redis_url:
@@ -1499,11 +1402,6 @@ class CacheManager:
             config_key="EXPLORE_FORM_DATA_CACHE_CONFIG",
         )
 
-        # ---- Sync siblings ----
-        # Build (or reuse) the process-wide sync Redis client.  We
-        # prefer the caller-provided handle; otherwise we synthesize
-        # one from ``redis_url`` so operators don't have to thread two
-        # configs through.
         default_sync = sync_redis
         if default_sync is None and redis_url:
             try:
@@ -1552,8 +1450,6 @@ class CacheManager:
             config_key="EXPLORE_FORM_DATA_CACHE_CONFIG",
         )
 
-    # ---- pass-through to the default cache (so callers can write
-    # ``cache_manager.get(...)`` directly, just like the original) ---------
     async def get(self, key: str) -> Any:
         return await self._cache.get(key)
 
@@ -1566,7 +1462,6 @@ class CacheManager:
     async def has(self, key: str) -> bool:
         return await self._cache.has(key)
 
-    # ---- properties (parity with original CacheManager) -----------
     @property
     def cache(self) -> AsyncCacheProtocol:
         return self._cache
@@ -1587,7 +1482,6 @@ class CacheManager:
     def explore_form_data_cache(self) -> AsyncCacheProtocol:
         return self._explore_form_data_cache
 
-    # ---- sync siblings (Celery / Selenium / Playwright pipelines) -------
     @property
     def sync_cache(self) -> SyncCacheProtocol:
         return self._sync_cache
@@ -1628,14 +1522,8 @@ class CacheManager:
             except Exception:  # noqa: BLE001
                 logger.warning("Cache close failed", exc_info=True)
 
-        # Tear down the dedicated non-decoding async client we own (a slot may
-        # also hold it when it fell back to the default; closing twice is safe).
         await _close_async_redis(self._default_async_redis)
 
-        # Drop sync clients too — sync close is non-awaitable and safe
-        # to call from an ``await close()`` chain because Redis sync
-        # ``close()`` doesn't block on network I/O (it just returns
-        # connections to the pool and shuts the pool down).
         for sc in (
             self._sync_cache,
             self._sync_data_cache,
@@ -1650,7 +1538,6 @@ class CacheManager:
                 close_fn()
             except Exception:  # noqa: BLE001
                 logger.warning("Sync cache close failed", exc_info=True)
-        # Tear down the process-wide sync Redis client we own.
         if self._default_sync_redis is not None:
             try:
                 self._default_sync_redis.close()

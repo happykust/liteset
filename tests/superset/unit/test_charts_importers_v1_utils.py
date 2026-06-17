@@ -14,22 +14,15 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Ported from ``tests/unit_tests/charts/commands/importers/v1/utils_test.py``.
-
-``migrate_chart`` is a pure synchronous helper in the Liteset port
-(``superset.commands.chart.importers.v1.utils``); the port keeps the
-original signature and behaviour, so these tests are 1:1.
-"""
+"""Unit tests for superset.commands.chart.importers.v1.utils.migrate_chart."""
 
 from superset.commands.chart.importers.v1.utils import migrate_chart
 from superset.utils import json
 
 
 def test_migrate_chart_area() -> None:
-    """
-    Test the ``migrate_chart`` command when importing an area chart.
-
-    This is currently a no-op since the migration is not complete.
+    """migrate_chart for an area chart is currently a no-op
+    (migration not yet implemented).
     """
     chart_config = {
         "slice_name": "Birth names by state",
@@ -87,9 +80,6 @@ def test_migrate_chart_area() -> None:
 
 
 def test_migrate_pivot_table() -> None:
-    """
-    Test the ``migrate_chart`` command when importing an old pivot table.
-    """
     chart_config = {
         "slice_name": "Pivot Table",
         "description": None,

@@ -15,17 +15,14 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/database/uploaders/base.py``.
+"""Base classes and command for uploading files to a database as a new table.
 
 Hosts:
 
-* :class:`UploadCommand` — async port of the original ``UploadCommand``
-  (Liteset wrapped the entire file-to-table flow into a single command
-  early in the migration, before the per-format readers were ported).
+* :class:`UploadCommand` — orchestrates the file-to-table upload flow.
 * :class:`BaseDataReader`, :class:`ReaderOptions`, :class:`FileMetadata`,
-  :class:`UploadFileType` — verbatim 1:1 ports of the legacy module so
-  the per-format readers (``csv_reader.py``, ``excel_reader.py``,
-  ``columnar_reader.py``) can extend them.
+  :class:`UploadFileType` — extended by the per-format readers
+  (``csv_reader.py``, ``excel_reader.py``, ``columnar_reader.py``).
 """
 
 from __future__ import annotations
@@ -77,15 +74,7 @@ class FileMetadata(TypedDict, total=False):
 
 
 class BaseDataReader:
-    """
-    Base class for reading data from a file and uploading it to a database.
-
-    These child objects are used by the UploadCommand as a dependency
-    injection to read data from multiple file types (e.g. CSV, Excel, etc.)
-
-    Async port of
-    ``superset_old.commands.database.uploaders.base.BaseDataReader``.
-    """
+    """Base reader: subclasses implement per-format parsing for UploadCommand."""
 
     def __init__(self, options: Optional[dict[str, Any]] = None) -> None:
         self._options = options or {}
@@ -114,7 +103,6 @@ class BaseDataReader:
         table_name: str,
         schema_name: Optional[str],
     ) -> None:
-        """Upload DataFrame to database via the engine spec's ``df_to_sql``."""
         from superset.sql.parse import Table
 
         try:
@@ -153,14 +141,7 @@ class BaseDataReader:
 
 
 class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
-    """Upload a file to a database as a new table.
-
-    Liteset extension that wraps the file-to-table flow into a single
-    Command for simple call sites.  The per-format readers
-    (``csv_reader``/``excel_reader``/``columnar_reader``) provide the
-    parsing layer; this Command only orchestrates the upload + SqlaTable
-    bookkeeping.
-    """
+    """Upload a file to a database as a new table."""
 
     def __init__(
         self,
@@ -188,27 +169,19 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
         if not self._database:
             raise ObjectNotFoundError("Database", self._database_id)
 
-        # schema_allows_file_upload — 1:1 with
-        # ``superset_old/views/database/validators.py``: require
-        # ``allow_file_upload``; if the DB restricts uploads to specific schemas
-        # (``extra.schemas_allowed_for_file_upload``) the target schema must be
-        # in that list; otherwise the user must have database access. The port
-        # previously only checked the ``allow_file_upload`` bool (no
-        # schema-allowlist, no access check).
         schema = self._data.get("schema")
         allowed = bool(getattr(self._database, "allow_file_upload", False))
         if allowed:
-            # ``get_schema_access_for_file_upload`` — 1:1 with the original
-            # validator: handles legacy string-encoded allowlists via
-            # ``literal_eval`` AND the configurable
-            # ``ALLOWED_USER_CSV_SCHEMA_FUNC`` hook (the previous inline
-            # ``get_extra().get(...)`` skipped both).
+            # ``get_schema_access_for_file_upload`` handles legacy string-encoded
+            # allowlists via ``literal_eval`` AND the configurable
+            # ``ALLOWED_USER_CSV_SCHEMA_FUNC`` hook.
             try:
                 schemas_allowed = self._database.get_schema_access_for_file_upload()
             except Exception:  # noqa: BLE001
                 schemas_allowed = set()
             if schemas_allowed:
                 allowed = schema in schemas_allowed
+            # no schema restriction → check DB-level access
             elif self._security_manager is not None:
                 allowed = await self._security_manager.can_access_database(
                     self._database, user=self._current_user
@@ -216,7 +189,6 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
         if not allowed:
             raise DatabaseSchemaUploadNotAllowed()
 
-        # The engine must support file upload (1:1 supports_file_upload check).
         if not getattr(self._database.db_engine_spec, "supports_file_upload", True):
             raise DatabaseUploadNotSupported()
 
@@ -226,26 +198,14 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
         table_name = self._data["table_name"]
         schema_name = self._data.get("schema")
 
-        # Build the per-format reader and let IT parse + load — 1:1 with
-        # upstream ``UploadCommand.run`` calling ``reader.read(...)``. The reader
-        # honors ALL ``UploadPostSchema`` options (delimiter, header_row,
-        # skip_rows, null_values, column_data_types, columns_read, day_first,
-        # decimal_character, dataframe_index, already_exists, …) which the
-        # previous bare ``pd.read_csv/read_excel/read_parquet`` silently dropped.
         reader = self._build_reader()
         bio = io.BytesIO(self._file_contents)
         # The columnar reader sniffs ``filename`` for zip/extension detection.
         bio.name = self._filename or table_name  # type: ignore[attr-defined]
-        # ``reader.read`` opens the SYNC engine + pandas to_sql (blocking IO) and
-        # wraps errors as ``DatabaseUploadFailed`` (422); run it off-loop.
         await asyncio.to_thread(
             reader.read, bio, self._database, table_name, schema_name
         )
 
-        # Create or update the SqlaTable entry, assigning the uploading user as
-        # owner and introspecting columns/metrics — 1:1 with upstream
-        # (``owners=[get_user()]`` + ``sqla_table.fetch_metadata()``). The port
-        # previously created an OWNERLESS, column-less table.
         from sqlalchemy import select
 
         from superset.db.daos.dataset import AsyncDatasetDAO
@@ -265,22 +225,12 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
                 database_id=self._database_id,
                 schema=schema_name,
             )
-            # Pre-init owners to avoid a sync lazy-load on the transient object.
+            # Pre-init to avoid sync lazy-load on the transient object.
             sqla_table.owners = [self._current_user] if self._current_user else []
             self._dao.session.add(sqla_table)
 
         await self._dao.session.flush()
 
-        # Introspect physical columns/metrics (1:1 ``fetch_metadata()``).
-        #
-        # Upstream ``UploadCommand.run`` calls ``sqla_table.fetch_metadata()``
-        # with NO local try/except — any failure propagates and is wrapped by
-        # the ``@transaction(on_error=partial(on_error,
-        # reraise=DatabaseUploadSaveMetadataFailed))`` decorator
-        # (superset_old/commands/database/uploaders/base.py:156-183).  The port
-        # must NOT swallow this: a metadata-introspection failure means the
-        # dataset row is incomplete, so we surface it as the equivalent
-        # ``DatabaseUploadSaveMetadataFailed`` (HTTP 500, same message).
         from superset.commands.database.exceptions import (
             DatabaseUploadSaveMetadataFailed,
         )
@@ -291,12 +241,10 @@ class UploadCommand(AsyncBaseCommand[dict[str, Any]]):
             logger.warning("fetch_metadata failed for uploaded table", exc_info=True)
             raise DatabaseUploadSaveMetadataFailed() from ex
 
-        # 1:1 with the original API contract — ``self.response(201,
-        # message="OK")`` (the endpoint returns only ``{"message": "OK"}``).
         return {"message": "OK"}
 
     def _build_reader(self) -> "BaseDataReader":
-        """Select the per-format reader, forwarding the full parsed options."""
+        """Select the per-format reader."""
         from superset.commands.database.uploaders.columnar_reader import ColumnarReader
         from superset.commands.database.uploaders.csv_reader import CSVReader
         from superset.commands.database.uploaders.excel_reader import ExcelReader

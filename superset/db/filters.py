@@ -48,9 +48,7 @@ _UUID_RE = re.compile(
 def _is_uuid(value: Any) -> bool:
     """Return True if ``value`` looks like a stringified UUID.
 
-    Mirrors ``superset_old.models.dashboard.is_uuid`` which is used by the
-    original ``DashboardAccessFilter`` to choose between filtering embedded
-    UUIDs vs integer ids.
+    Used to choose between filtering embedded UUIDs vs integer ids.
     """
     if isinstance(value, UUID):
         return True
@@ -65,13 +63,11 @@ async def chart_access_filters(
 ) -> list[Any]:
     """Return SQLAlchemy filters restricting charts to those the user can access.
 
-    1:1 with ``superset_old/charts/filters.py::ChartFilter.apply`` +
-    ``get_dataset_access_filters(Slice)``: admins / ``can_access_all_datasources``
-    see all; everyone else sees charts whose datasource lives in an accessible
-    database OR whose denormalized ``perm``/``catalog_perm``/``schema_perm``
-    matches a held grant.
+    Admins / ``can_access_all_datasources`` see all; everyone else sees
+    charts whose datasource lives in an accessible database OR whose
+    denormalized ``perm``/``catalog_perm``/``schema_perm`` matches a held grant.
 
-    The previous port filtered ONLY on ``Slice.datasource_id.in_(
+    The previous implementation filtered ONLY on ``Slice.datasource_id.in_(
     get_accessible_datasource_ids(...))`` — i.e. per-dataset ``datasource_access``
     perms — dropping the ``database_access``/``schema_access``/``catalog_access``
     branches. A non-admin whose chart access derives from a per-DB / schema /
@@ -120,8 +116,7 @@ async def chart_access_filters(
 def _databases_from_view_menus(view_menu_names: set[str]) -> set[str]:
     """Extract database names from a set of ``view_menu`` permission strings.
 
-    1:1 port of ``superset_old/databases/filters.py:can_access_databases``:
-    a ``catalog_access`` / ``schema_access`` / ``datasource_access`` view menu
+    A ``catalog_access`` / ``schema_access`` / ``datasource_access`` view menu
     looks like ``[db_name].[schema]`` (or ``[db_name].[schema].[table](id:N)``);
     the database name is the first dotted component with its surrounding
     brackets stripped (``vm.split(".")[0][1:-1]``).
@@ -139,20 +134,16 @@ def _databases_from_view_menus(view_menu_names: set[str]) -> set[str]:
 def _apply_extra_dynamic_database_filters() -> list[Any]:
     """Apply ``EXTRA_DYNAMIC_QUERY_FILTERS["databases"]`` if configured.
 
-    1:1 port of the dynamic-filter hook from
-    ``superset_old/databases/filters.py:DatabaseFilter.apply`` (lines 52-55).
+    Passes the ``Query`` through the callable BEFORE the permission check,
+    so the callable can hide/show databases independent of RBAC (e.g. via
+    feature flags).  Accepts a ``Callable[[Query], Query]`` that may call
+    ``query.filter(clause)`` and/or ``query.join(...)`` to restrict which
+    databases are visible.
 
-    The original passes the upstream ``Query`` through the callable BEFORE the
-    permission check, so the callable can hide/show databases independent
-    of RBAC (e.g. via feature flags).  We honour the same contract: a
-    ``Callable[[Query], Query]`` that may call ``query.filter(clause)``
-    and/or ``query.join(...)`` to restrict which databases are visible.
-
-    To faithfully replicate the original behaviour — including callables
-    that add JOINs rather than (or in addition to) WHERE clauses — we
-    construct a detached ``sqlalchemy.orm.Query``, invoke the callable,
-    and then use the resulting statement's full FROM clause.  When the
-    query has joins (detected via additional FROM entries beyond the base
+    To honour callables that add JOINs rather than (or in addition to)
+    WHERE clauses, we construct a detached ``sqlalchemy.orm.Query``, invoke
+    the callable, and use the resulting statement's full FROM clause.  When
+    the query has joins (detected via additional FROM entries beyond the base
     ``Database`` table), we convert the whole filtered statement into a
     scalar sub-select on ``Database.id`` and express it as an IN clause.
     When only a plain WHERE was added we return that clause directly,
@@ -212,8 +203,6 @@ async def database_access_filters(
 ) -> list[Any]:
     """Return SQLAlchemy filters restricting databases to those the user can access.
 
-    1:1 port of ``superset_old/databases/filters.py:DatabaseFilter.apply``.
-
     Visibility rules:
       * ``EXTRA_DYNAMIC_QUERY_FILTERS["databases"]`` is applied FIRST
         (before the RBAC check) so deployments can show/hide databases
@@ -226,8 +215,7 @@ async def database_access_filters(
         ``catalog_access`` / ``schema_access`` / ``datasource_access``
         view-menu permission.
     """
-    # Dynamic filters are applied BEFORE the permission check, matching
-    # the original ordering (superset_old/databases/filters.py:52-55).
+    # Dynamic filters are applied BEFORE the permission check.
     dynamic_clauses = _apply_extra_dynamic_database_filters()
 
     if await security_manager.can_access_all_databases(user=user):
@@ -261,13 +249,11 @@ async def database_access_filters(
     ]
 
 
-async def dashboard_access_filters(  # noqa: C901  # full 1:1 port from old code
+async def dashboard_access_filters(  # noqa: C901
     security_manager: Any,
     user: Any,
 ) -> list[Any]:
     """Return SQLAlchemy filters restricting dashboards to those the user can access.
-
-    1:1 port of ``superset_old/dashboards/filters.py:DashboardAccessFilter``.
 
     Visibility rules for non-admin users:
       1. dashboards the user owns (via ``Dashboard.owners`` M2M);
@@ -282,9 +268,8 @@ async def dashboard_access_filters(  # noqa: C901  # full 1:1 port from old code
 
     Admins see all dashboards.
 
-    The output mirrors the original ``DashboardAccessFilter.apply`` so
-    existing SQL-trace based test fixtures and observability dashboards
-    continue to match.
+    The output format is consistent so existing SQL-trace based test
+    fixtures and observability dashboards continue to match.
     """
     if security_manager.is_admin(user):
         return []
@@ -303,10 +288,6 @@ async def dashboard_access_filters(  # noqa: C901  # full 1:1 port from old code
     rbac_enabled = feature_flag_manager.is_feature_enabled("DASHBOARD_RBAC")
     embedded_enabled = feature_flag_manager.is_feature_enabled("EMBEDDED_SUPERSET")
 
-    # ------------------------------------------------------------------
-    # Build the dataset-permission filter expression that mirrors the
-    # original ``superset_old/utils/filters.py:get_dataset_access_filters``.
-    # ------------------------------------------------------------------
     can_access_all_datasources = await security_manager.can_access_all_datasources(
         user=user
     )
@@ -322,9 +303,6 @@ async def dashboard_access_filters(  # noqa: C901  # full 1:1 port from old code
     )
 
     if can_access_all_datasources:
-        # Original short-circuits: ``get_dataset_access_filters`` returns a
-        # non-restrictive ``or_()`` clause; building the OR with a constant
-        # ``True`` here keeps the SQL identical to "no dataset restriction".
         dataset_access_clause: Any = True
     else:
         dataset_access_clause = or_(
@@ -334,12 +312,9 @@ async def dashboard_access_filters(  # noqa: C901  # full 1:1 port from old code
             Slice.schema_perm.in_(schema_perms),
         )
 
-    # ------------------------------------------------------------------
-    # Dataset-perm subquery (Branch 2 of the original filter).
     # ``isouter=True`` join on slices so dashboards without any slice still
     # surface (they would never match the perm clause but the LEFT JOIN
     # parity matches the original SQL trace).
-    # ------------------------------------------------------------------
     is_rbac_disabled_filter: list[Any] = []
     dashboard_has_roles = Dashboard.roles.any()
     if rbac_enabled:
@@ -362,9 +337,6 @@ async def dashboard_access_filters(  # noqa: C901  # full 1:1 port from old code
         )
     )
 
-    # ------------------------------------------------------------------
-    # Owner-id subquery (Branch 1).
-    # ------------------------------------------------------------------
     user_id = getattr(user, "id", None)
     if user_id is None:
         owner_ids_query: Any = select(Dashboard.id).where(Dashboard.id == -1)
@@ -377,9 +349,6 @@ async def dashboard_access_filters(  # noqa: C901  # full 1:1 port from old code
 
     feature_flagged_filters: list[Any] = []
 
-    # ------------------------------------------------------------------
-    # DASHBOARD_RBAC role-based branch (Branch 3).
-    # ------------------------------------------------------------------
     if rbac_enabled:
         user_roles = await security_manager.get_user_roles(user)
         user_role_ids = [getattr(r, "id", None) for r in (user_roles or [])]
@@ -420,9 +389,6 @@ async def dashboard_access_filters(  # noqa: C901  # full 1:1 port from old code
 
         feature_flagged_filters.append(Dashboard.id.in_(roles_based_query))
 
-    # ------------------------------------------------------------------
-    # EMBEDDED_SUPERSET guest-user branch (Branch 4).
-    # ------------------------------------------------------------------
     if embedded_enabled and security_manager.is_guest_user(user):
         # The guest user carries its dashboard resources in ``user.resources``
         # (see ``superset/security/guest.py``).  Each resource is
@@ -434,7 +400,6 @@ async def dashboard_access_filters(  # noqa: C901  # full 1:1 port from old code
         ]
 
         # TODO (embedded): only use uuid filter once uuids are rolled out.
-        # 1:1 with the original ``superset_old/dashboards/filters.py``.
         if any(_is_uuid(rid) for rid in embedded_dashboard_ids):
             condition = Dashboard.embedded.any(
                 EmbeddedDashboard.uuid.in_(embedded_dashboard_ids)
@@ -453,9 +418,6 @@ async def dashboard_access_filters(  # noqa: C901  # full 1:1 port from old code
 
         feature_flagged_filters.append(condition)
 
-    # ------------------------------------------------------------------
-    # Combine all branches.  Original is a single OR over four subqueries.
-    # ------------------------------------------------------------------
     return [
         or_(
             Dashboard.id.in_(owner_ids_query),
@@ -471,19 +433,17 @@ async def dataset_access_filters(
 ) -> list[Any]:
     """Return SQLAlchemy filters restricting datasets to those the user can access.
 
-    1:1 with ``superset_old/views/base.py::DatasourceFilter.apply`` +
-    ``superset_old/utils/filters.py::get_dataset_access_filters``:
+    Visibility rules:
 
     * ``can_access_all_datasources()`` (admin / all_datasource_access /
-      all_database_access) → no filter (see everything). The port previously
-      only short-circuited on ``is_admin`` then filtered by
+      all_database_access) → no filter (see everything). The previous
+      implementation only short-circuited on ``is_admin`` then filtered by
       ``get_accessible_database_ids``, which returns ``[]`` for a user whose
       access comes from the GLOBAL ``all_database_access`` perm (no per-DB
       ``[db].(id:N)`` grant) → ``database_id.in_([])`` → ZERO datasets. That
       wrongly hid every dataset from the stock Alpha role.
     * otherwise: ``OR`` of accessible-database-ids, datasource_access perms,
-      catalog_access perms, schema_access perms — matching upstream's
-      ``get_dataset_access_filters`` (not just the database-id branch).
+      catalog_access perms, schema_access perms.
     """
     if security_manager.is_admin(user):
         return []
@@ -555,8 +515,7 @@ async def report_access_filters(
     """Return SQLAlchemy filters restricting report schedules to those the user
     can access.
 
-    1:1 port of ``superset_old/reports/filters.py:ReportScheduleFilter``:
-    users with the global ``can_access_all_datasources`` permission (which
+    Users with the global ``can_access_all_datasources`` permission (which
     includes admins) see every report; everyone else is restricted to the
     reports they own (via the ``ReportSchedule.owners`` M2M).
     """
@@ -573,8 +532,6 @@ async def report_access_filters(
 
     user_id = getattr(user, "id", None)
     if user_id is None:
-        # No authenticated user — deny everything (mirrors the original which
-        # filters on ``get_user_id()`` and would match nothing).
         return [ReportSchedule.id == -1]
 
     owner_ids_query = (
@@ -591,8 +548,7 @@ async def saved_query_access_filters(
 ) -> list[Any]:
     """Return SQLAlchemy filters restricting saved queries to the user's own.
 
-    1:1 port of ``superset_old/queries/saved_queries/filters.py:SavedQueryFilter``
-    (lines 82-91): the base_filter UNCONDITIONALLY scopes to
+    The base_filter UNCONDITIONALLY scopes to
     ``SavedQuery.created_by == g.user`` — there is NO bypass for admins or for
     holders of ``can_access_all_queries``.  Even an admin only sees the saved
     queries they created.
@@ -613,8 +569,6 @@ async def saved_query_access_filters(
         return []
 
     if user_id is None:
-        # No authenticated user — the original would compare ``created_by``
-        # against an anonymous ``g.user`` and match nothing; deny everything.
         return [SavedQuery.created_by_fk == -1]
 
     return [SavedQuery.created_by_fk == user_id]

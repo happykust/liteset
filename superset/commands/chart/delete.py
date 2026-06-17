@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/chart/delete.py``."""
+"""Commands for deleting charts."""
 
 from __future__ import annotations
 
@@ -52,10 +52,8 @@ class DeleteChartCommand(AsyncBaseCommand[None]):
         self._chart = await self._dao.find_by_id(self._chart_id)
         if not self._chart:
             raise ObjectNotFoundError("Chart", self._chart_id)
-        # Visibility scope — upstream ``ChartDAO.find_by_ids`` applies
-        # ``ChartFilter`` (base_filter), so a chart outside the caller's
-        # scope is a 404 BEFORE the reports/ownership checks; a 403 here
-        # would disclose its existence (R14-06).
+        # Visibility scope: a chart outside the caller's access scope is a 404
+        # before the reports/ownership checks; a 403 would disclose its existence.
         from superset.commands.utils import filter_visible_ids
         from superset.db.filters import chart_access_filters
         from superset.models.slice import Slice
@@ -70,9 +68,8 @@ class DeleteChartCommand(AsyncBaseCommand[None]):
         )
         if self._chart_id not in visible:
             raise ObjectNotFoundError("Chart", self._chart_id)
-        # Check there are no associated ReportSchedules — 1:1 with the
-        # original, which raises BEFORE the ownership check (a chart with
-        # alerts/reports reports "reports exist", not "forbidden").
+        # Reports check before ownership: a chart with alerts/reports raises
+        # "reports exist" rather than "forbidden", regardless of ownership.
         from superset.db.daos.report import AsyncReportScheduleDAO
 
         reports = await AsyncReportScheduleDAO(self._dao.session).find_by_chart_ids(
@@ -89,9 +86,6 @@ class DeleteChartCommand(AsyncBaseCommand[None]):
     async def run(self) -> None:
         assert self._chart is not None
         chart_id = self._chart.id
-        # Remove implicit tags before deleting — 1:1 with
-        # ``ChartUpdater.after_delete`` which fires only when the
-        # TAGGING_SYSTEM feature flag is enabled (see ``superset_old/app.py:158``).
         if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
             await delete_tagged_objects(self._dao.session, "chart", chart_id)
         await self._dao.delete([self._chart])
@@ -118,8 +112,6 @@ class BulkDeleteChartsCommand(AsyncBaseCommand[None]):
         self._charts = await self._dao.find_by_ids(self._chart_ids)
         found_ids = {int(c.id) for c in self._charts}
         missing = set(self._chart_ids) - found_ids
-        # Visibility scope — ids outside the caller's ChartFilter scope read
-        # as missing, exactly like upstream's filtered find_by_ids (R14-06).
         from superset.commands.utils import filter_visible_ids
         from superset.db.filters import chart_access_filters
         from superset.models.slice import Slice
@@ -134,11 +126,8 @@ class BulkDeleteChartsCommand(AsyncBaseCommand[None]):
         )
         missing |= found_ids - visible
         if missing:
-            # ``str({99998, 99999})`` would render as the Python set repr;
-            # frontend message comparisons (and unit tests) expect a list.
+            # str(set) renders as Python set repr; frontend expects a sorted list.
             raise ObjectNotFoundError("Chart", str(sorted(missing)))
-        # Check there are no associated ReportSchedules (1:1 with the original
-        # ``DeleteChartCommand``; the bulk path previously skipped this check).
         from superset.db.daos.report import AsyncReportScheduleDAO
 
         reports = await AsyncReportScheduleDAO(self._dao.session).find_by_chart_ids(
@@ -154,15 +143,8 @@ class BulkDeleteChartsCommand(AsyncBaseCommand[None]):
                 await self._security_manager.raise_for_ownership(chart, self._user_id)
 
     async def run(self) -> None:
-        # Mirror ``DeleteChartCommand.run()`` which calls ``delete_tagged_objects``
-        # for every chart before deleting it.  The original relied on the ORM
-        # ``after_delete`` event (``ChartUpdater.after_delete`` registered via
-        # ``sqla.event.listen(Slice, "after_delete", …)`` in
-        # ``superset_old/tags/core.py:42``) which fires per-item because
-        # ``BaseDAO.delete`` iterates and calls ``db.session.delete(item)``.
-        # The async session may not have the same sync event listeners, so both
-        # single-delete and bulk-delete must call ``delete_tagged_objects``
-        # explicitly — 1:1 parity with the single-delete path above.
+        # ORM ``after_delete`` event may not fire on the async session; call
+        # ``delete_tagged_objects`` explicitly for each item before bulk delete.
         if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
             for chart in self._charts:
                 await delete_tagged_objects(self._dao.session, "chart", chart.id)

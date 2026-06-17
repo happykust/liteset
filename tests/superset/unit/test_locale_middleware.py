@@ -16,10 +16,10 @@
 # under the License.
 """``Accept-Language`` / cookie resolution, bounded by configured LANGUAGES.
 
-The resolver only ever returns a *configured* language — 1:1 with upstream's
-``accept_languages.best_match(appbuilder.bm.languages)``.  With the default
-English-only config a French/Chinese browser resolves to ``en`` (no match),
-never a half-translated UI.
+The resolver only ever returns a *configured* language (via
+``accept_languages.best_match``).  With the default English-only config a
+French/Chinese browser resolves to ``en`` (no match), never a half-translated
+UI.
 """
 
 from superset.middleware.locale import (

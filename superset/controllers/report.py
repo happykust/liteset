@@ -67,9 +67,7 @@ def _slack_cache_get() -> list[dict[str, str]] | None:
 
     Returns the cached list if present, or ``None`` on cache miss or error.
     Uses the synchronous cache interface — avoids asyncio loop conflicts when
-    called from a sync function running on the event loop thread.  1:1 with the
-    original ``@cache_util.memoized_func`` synchronous decorator in
-    ``superset_old/utils/slack.py:62-65``.
+    called from a sync function running on the event loop thread.
     """
     import json as _json
 
@@ -97,9 +95,7 @@ def _slack_cache_set(channels: list[dict[str, str]], ttl: int) -> None:
 
     Silently ignores errors so a cache failure never breaks the API call.
     Uses the synchronous cache interface — avoids asyncio loop conflicts when
-    called from a sync function running on the event loop thread.  1:1 with the
-    original ``@cache_util.memoized_func`` synchronous decorator in
-    ``superset_old/utils/slack.py:62-65``.
+    called from a sync function running on the event loop thread.
     """
     from superset.extensions import cache_manager as _cm
 
@@ -175,10 +171,8 @@ def _slack_filter_by_search(
 ) -> list[dict[str, str]]:
     """Filter channels by name / id search terms.
 
-    Splits ``search_string`` on comma, whitespace, OR semicolon — 1:1 with
-    ``superset_old/utils/core.py::recipients_string_to_list`` which uses
-    ``re.split(r',|\\s|;', address_string)`` (called from
-    ``superset_old/utils/slack.py:162``).
+    Splits ``search_string`` on comma, whitespace, OR semicolon
+    (``re.split(r',|\\s|;', address_string)``).
     """
     import re
 
@@ -208,12 +202,9 @@ def _get_slack_channels(
 ) -> list[dict[str, str]]:
     """Fetch Slack channels from the API (with optional filtering).
 
-    1:1 port of ``superset_old/utils/slack.py:get_channels_with_search``.
-
     The Slack API is paginated but does not support server-side search,
-    so we fetch all channels and filter client-side.  Results are cached
-    under the ``slack_conversations_list`` key via the Superset cache
-    backend (mirroring the original ``@cache_util.memoized_func`` decorator).
+    so we fetch all channels and filter client-side. Results are cached
+    under the ``slack_conversations_list`` key.
 
     Returns a list of ``{"id": ..., "name": ...}`` dicts.
     Raises :exc:`RuntimeError` / :exc:`Exception` on Slack API errors so
@@ -235,11 +226,9 @@ def _get_slack_channels(
     slack_token = getattr(settings, "slack_api_token", None)
     if callable(slack_token):
         slack_token = slack_token()
-    # NB: no early-return when the token is missing — the original creates
-    # ``WebClient(token=None)`` and lets Slack answer ``not_authed``
-    # (SlackApiError -> SupersetException -> HTTP 422,
-    # superset_old/utils/slack.py:47-58); short-circuiting to ``[]`` here
-    # would turn that 422 into a silent 200.
+    # NB: no early-return when the token is missing — ``WebClient(token=None)``
+    # lets Slack answer ``not_authed`` (SlackApiError → HTTP 422);
+    # short-circuiting to ``[]`` would turn that 422 into a silent 200.
 
     slack_proxy = getattr(settings, "slack_proxy", None) or None
     max_retry_count = getattr(settings, "slack_api_rate_limit_retry_count", 2) or 2
@@ -284,9 +273,8 @@ def _get_slack_channels(
 def _report_custom_filters() -> dict[str, Any]:
     """Search-filter map for the report list endpoint.
 
-    Registers ``report_all_text`` — a 1:1 port of
-    ``superset_old/reports/filters.py::ReportScheduleAllTextFilter`` — which
-    OR-matches the search term across ``name``, ``description`` and ``sql``.
+    Registers ``report_all_text``, which OR-matches the search term across
+    ``name``, ``description`` and ``sql``.
     """
 
     def _report_all_text(model_cls: Any, value: Any) -> Any:
@@ -304,11 +292,10 @@ def _report_custom_filters() -> dict[str, Any]:
     return {"report_all_text": _report_all_text}
 
 
-# Exactly mirrors ``superset_old/reports/api.py::ReportScheduleRestApi.list_columns``
-# (26 fields).  Fields present only in ``show_columns`` (report_format,
+# 26 list fields. Fields present only in ``show_columns`` (report_format,
 # database_id, last_value, log_retention, grace_period, working_timeout) and
-# the liteset-only ``changed_on_utc`` are intentionally absent — they belong to
-# the detail endpoint only.
+# ``changed_on_utc`` are intentionally absent — they belong to the detail
+# endpoint only.
 _LIST_COLUMNS = [
     "active",
     "changed_by.first_name",
@@ -342,9 +329,8 @@ _LIST_COLUMNS = [
 class ReportScheduleController(Controller):
     path = "/api/v1/report"
     tags = ["Report Schedule"]
-    # 1:1 with the original ``@before_request ensure_alert_reports_enabled``
-    # (superset_old/reports/api.py:69-73): every report endpoint returns 404
-    # when the ALERT_REPORTS feature flag is disabled.
+    # Every report endpoint returns 404 when the ALERT_REPORTS feature flag
+    # is disabled.
     guards = [require_feature_flag("ALERT_REPORTS")]
     dependencies = {
         "dao": Provide(provide_report_dao, sync_to_thread=False),
@@ -376,8 +362,8 @@ class ReportScheduleController(Controller):
         if not order_by:
             order_by = [ReportSchedule.changed_on.desc()]
 
-        # Owner-scope visibility (1:1 with ``ReportScheduleFilter``): non
-        # ``can_access_all_datasources`` users only see reports they own.
+        # Owner-scope visibility: non ``can_access_all_datasources`` users
+        # only see reports they own.
         base_filters = await report_access_filters(security_manager, current_user)
         all_filters = (rison_filters or []) + base_filters
 
@@ -419,8 +405,8 @@ class ReportScheduleController(Controller):
         from superset.db.filters import report_access_filters
         from superset.models.reports import ReportSchedule
 
-        # Owner-scope visibility (1:1 with ``ReportScheduleFilter``): non
-        # ``can_access_all_datasources`` users can only read reports they own.
+        # Owner-scope visibility: non ``can_access_all_datasources`` users can
+        # only read reports they own.
         base_filters = await report_access_filters(security_manager, current_user)
         results = await dao.find_all(
             filters=[ReportSchedule.id == pk, *base_filters],
@@ -503,11 +489,9 @@ class ReportScheduleController(Controller):
             raw["validator_config_json"] = {
                 k: v for k, v in vcj_raw.items() if v is not msgspec.UNSET
             }
-        # Echo the validated input payload back in ``result`` — 1:1 with the
-        # original ``self.response(201, id=new_model.id, result=item)``
-        # (superset_old/reports/api.py:366-367). Snapshot before the command
-        # mutates ``raw`` (it resolves chart/dashboard ids to ORM objects and
-        # serializes validator_config_json).
+        # Echo the validated input payload back in ``result``. Snapshot before
+        # the command mutates ``raw`` (it resolves chart/dashboard ids to ORM
+        # objects and serializes validator_config_json).
         echo = dict(raw)
         cmd = CreateReportScheduleCommand(
             dao=dao,
@@ -518,16 +502,13 @@ class ReportScheduleController(Controller):
         try:
             item = await cmd.execute()
         except ObjectNotFoundError as ex:
-            # 1:1 with original POST handler
-            # (superset_old/reports/api.py:368-369): a "not found" during
-            # creation means an invalid resource reference (chart, dashboard,
-            # database), so return 400 instead of the default 404.
+            # "not found" during creation means an invalid resource reference
+            # (chart, dashboard, database) → 400 instead of the default 404.
             from litestar.exceptions import HTTPException
 
             raise HTTPException(status_code=400, detail=str(ex)) from ex
         except ReportScheduleCreateFailedError as ex:
-            # 1:1 with superset_old/reports/api.py:372-379 — DB-level
-            # failure during create returns 422 with the error message.
+            # DB-level failure during create returns 422.
             logger.error("Error creating report schedule: %s", str(ex), exc_info=True)
             from litestar.exceptions import HTTPException
 
@@ -595,11 +576,9 @@ class ReportScheduleController(Controller):
             raw["validator_config_json"] = {
                 k: v for k, v in vcj_raw.items() if v is not msgspec.UNSET
             }
-        # Echo the validated input payload back in ``result`` — 1:1 with the
-        # original ``self.response(200, id=new_model.id, result=item)``
-        # (superset_old/reports/api.py:447). Snapshot before the command
-        # mutates ``raw`` (it resolves chart/dashboard ids to ORM objects and
-        # serializes validator_config_json).
+        # Echo the validated input payload back in ``result``. Snapshot before
+        # the command mutates ``raw`` (it resolves chart/dashboard ids to ORM
+        # objects and serializes validator_config_json).
         echo = dict(raw)
         cmd = UpdateReportScheduleCommand(
             dao=dao,
@@ -611,8 +590,7 @@ class ReportScheduleController(Controller):
         try:
             item = await cmd.execute()
         except ReportScheduleUpdateFailedError as ex:
-            # 1:1 with superset_old/reports/api.py:454-461 — DB-level
-            # failure during update returns 422.
+            # DB-level failure during update returns 422.
             logger.error(
                 "Error updating report schedule %d: %s", pk, str(ex), exc_info=True
             )
@@ -648,7 +626,6 @@ class ReportScheduleController(Controller):
         try:
             await cmd.execute()
         except ReportScheduleDeleteFailedError as ex:
-            # 1:1 with superset_old/reports/api.py:299-306 and :520 —
             # DB-level failure during delete returns 422.
             logger.error(
                 "Error deleting report schedule %d: %s", pk, str(ex), exc_info=True
@@ -682,7 +659,6 @@ class ReportScheduleController(Controller):
         try:
             await cmd.execute()
         except ReportScheduleDeleteFailedError as ex:
-            # 1:1 with superset_old/reports/api.py:520-521 —
             # DB-level failure during bulk-delete returns 422.
             logger.error(
                 "Error deleting report schedules %s: %s",
@@ -696,9 +672,6 @@ class ReportScheduleController(Controller):
         await event_logger.alog_with_context(
             "report.bulk_delete", extra={"count": len(ids)}
         )
-        # 1:1 with original ``ngettext('Deleted %(num)d report schedule',
-        # 'Deleted %(num)d report schedules', num=len(item_ids))``
-        # (superset_old/reports/api.py:508-514) — locale-aware plural forms.
         from superset.i18n import ngettext
 
         msg = ngettext(
@@ -732,7 +705,6 @@ class ReportScheduleController(Controller):
                 {"owners", "created_by", "changed_by", "chart", "dashboard", "database"}
             ),
             base_filters=base_filters or None,
-            # 1:1 superset_old/reports/api.py:233-237.
             text_field_rel_fields={
                 "dashboard": "dashboard_title",
                 "chart": "slice_name",
@@ -762,11 +734,9 @@ class ReportScheduleController(Controller):
 
     @get(
         "/slack_channels/",
-        # 1:1 with upstream ``MODEL_API_RW_METHOD_PERMISSION_MAP
-        # ["slack_channels"] = "write"`` (constants.py:173): only users who can
-        # create/edit reports need to enumerate Slack channels. A ``can_read``
-        # gate would let view-only users list the workspace's channels and
-        # trigger Slack API calls.
+        # Only users who can create/edit reports need to enumerate Slack
+        # channels. A ``can_read`` gate would let view-only users list the
+        # workspace's channels and trigger Slack API calls.
         guards=[require_permission("can_write", "ReportSchedule")],
     )
     async def slack_channels(
@@ -775,8 +745,6 @@ class ReportScheduleController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/report/slack_channels/ -- list Slack channels.
 
-        1:1 port of
-        ``superset_old/reports/api.py:ReportScheduleRestApi.slack_channels``.
         Queries the Slack API for all accessible channels, applies optional
         filtering by name/id (``search_string``), and returns a list of
         ``{id, name}`` dicts.
@@ -785,9 +753,7 @@ class ReportScheduleController(Controller):
         ``slack_sdk`` is not installed.
 
         Filter parameters are read from the Rison ``q=`` query parameter
-        (``search_string``, ``types``, ``exact_match``, ``force``), matching
-        the original ``kwargs.get("rison", {})`` plumbing in
-        ``superset_old/reports/api.py:534-586``.
+        (``search_string``, ``types``, ``exact_match``, ``force``).
         """
         from litestar.exceptions import HTTPException
 
@@ -808,11 +774,7 @@ class ReportScheduleController(Controller):
             )
             return {"result": channels}
         except RuntimeError as exc:
-            # 1:1 with superset_old/reports/api.py:588-590: the original only
-            # catches SupersetException (which the Slack util wraps SlackApiError
-            # into) and maps it to 422; all other exceptions propagate as 500.
-            # In liteset, _slack_fetch_all_channels raises RuntimeError for Slack
-            # errors — so we catch only RuntimeError here, letting unexpected
+            # Slack API errors surface as RuntimeError → 422. Unexpected
             # AttributeError / TypeError / etc. propagate and become HTTP 500.
             logger.error("Error fetching slack channels: %s", str(exc), exc_info=True)
             raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -128,11 +128,7 @@ SCREENSHOT_FILE = read_fixture("sample.png")
 DEFAULT_OWNER_EMAIL = "admin@fab.org"
 
 
-# ---------------------------------------------------------------------------
-# Settings injection helpers (replace app.config mutation)
-# ---------------------------------------------------------------------------
 def _settings(**overrides: Any) -> SupersetSettings:
-    """Build a real settings instance with selected fields overridden."""
     settings = SupersetSettings()  # type: ignore[call-arg]
     feature_overrides = overrides.pop("feature_flags", None)
     if feature_overrides is not None:
@@ -143,7 +139,6 @@ def _settings(**overrides: Any) -> SupersetSettings:
 
 
 def _patch_settings(**overrides: Any):
-    """Patch the execute command's settings accessor for the test body."""
     return patch(
         "superset.commands.report_execute._get_settings",
         return_value=_settings(**overrides),
@@ -165,11 +160,7 @@ def _template_processing_on():
     return patch("superset.jinja_context.feature_flag_manager", ff)
 
 
-# ---------------------------------------------------------------------------
-# Data builders (sync Celery session)
-# ---------------------------------------------------------------------------
 def _get_owner(session: Session) -> User:
-    """Get-or-create the default report owner (``admin@fab.org``)."""
     owner = session.query(User).filter(User.email == DEFAULT_OWNER_EMAIL).one_or_none()
     if owner is None:
         owner = User(
@@ -227,8 +218,6 @@ def create_report_notification(
     bccTarget: Optional[str] = None,  # noqa: N803
     use_slack_v2: bool = False,
 ) -> ReportSchedule:
-    """1:1 port of ``tests/integration_tests/reports/utils.create_report_notification``
-    against the sync Celery session."""
     if not owners:
         owners = [_get_owner(session)]
 
@@ -294,9 +283,6 @@ def reset_key_values(session: Session) -> None:
     session.commit()
 
 
-# ---------------------------------------------------------------------------
-# Log assertion helpers
-# ---------------------------------------------------------------------------
 def get_target_from_report_schedule(report_schedule: ReportSchedule) -> list[str]:
     return [
         json.loads(recipient.recipient_config_json)["target"]
@@ -376,9 +362,6 @@ def assert_log(
             assert log.value_row_json is None
 
 
-# ---------------------------------------------------------------------------
-# Test-table context (alert SQL fixtures)
-# ---------------------------------------------------------------------------
 class _TestTableContext:
     def __init__(self, database: Database) -> None:
         self._database = database
@@ -409,9 +392,6 @@ class _TestTableContext:
                 conn.execute(text("DROP TABLE test_table"))
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
 def _machine_auth_cookies():
     """Supply machine-auth cookies for the CSV/dataframe HTTP fetch path.
@@ -917,9 +897,6 @@ def _run(report_id: int, session: Session, dttm: Optional[datetime] = None) -> N
     ).run()
 
 
-# ===========================================================================
-# Email chart/dashboard report tests
-# ===========================================================================
 @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
 @patch("superset.reports.notifications.email._send_email_smtp")
 @patch("superset.commands.report_execute.ChartScreenshot.get_screenshot")
@@ -929,7 +906,6 @@ def test_email_chart_report_schedule_with_cc_bcc(
     sync_session,
     create_report_email_chart_with_cc_and_bcc,
 ):
-    """ExecuteReport Command: chart email report with screenshot and cc/bcc."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     report = create_report_email_chart_with_cc_and_bcc
 
@@ -973,7 +949,6 @@ def test_email_chart_report_schedule(
     sync_session,
     create_report_email_chart,
 ):
-    """ExecuteReport Command: chart email report with screenshot."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     report = create_report_email_chart
 
@@ -1002,7 +977,6 @@ def test_email_chart_report_schedule_alpha_owner(
     sync_session,
     create_report_email_chart_alpha_owner,
 ):
-    """ExecuteReport Command: chart email report executed as the chart owner."""
     report = create_report_email_chart_alpha_owner
     username = ""
 
@@ -1039,7 +1013,6 @@ def test_email_chart_report_schedule_force_screenshot(
     sync_session,
     create_report_email_chart_force_screenshot,
 ):
-    """ExecuteReport Command: chart email report with force_screenshot true."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     report = create_report_email_chart_force_screenshot
 
@@ -1068,7 +1041,6 @@ def test_email_chart_alert_schedule(
     sync_session,
     create_alert_email_chart,
 ):
-    """ExecuteReport Command: chart email alert with screenshot."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     report = create_alert_email_chart
 
@@ -1097,7 +1069,6 @@ def test_email_chart_report_dry_run(
     sync_session,
     create_report_email_chart,
 ):
-    """ExecuteReport Command: chart email report dry run (no email sent)."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     report = create_report_email_chart
 
@@ -1120,7 +1091,6 @@ def test_email_chart_report_schedule_with_csv(
     sync_session,
     create_report_email_chart_with_csv,
 ):
-    """ExecuteReport Command: chart email report with CSV."""
     response = Mock()
     mock_open.return_value = response
     mock_urlopen.return_value = response
@@ -1159,7 +1129,6 @@ def test_email_chart_report_schedule_with_csv_no_query_context(
     sync_session,
     create_report_email_chart_with_csv_no_query_context,
 ):
-    """ExecuteReport Command: chart email report with CSV (no query context)."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     response = Mock()
     mock_open.return_value = response
@@ -1188,7 +1157,6 @@ def test_email_chart_report_schedule_with_text(
     sync_session,
     create_report_email_chart_with_text,
 ):
-    """ExecuteReport Command: chart email report with embedded text table."""
     response = Mock()
     mock_open.return_value = response
     mock_urlopen.return_value = response
@@ -1299,7 +1267,6 @@ def test_email_chart_report_schedule_with_text(
 def test_email_dashboard_report_schedule(
     screenshot_mock, email_mock, sync_session, create_report_email_dashboard
 ):
-    """ExecuteReport Command: dashboard email report schedule."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     report = create_report_email_dashboard
 
@@ -1326,7 +1293,6 @@ def test_email_dashboard_report_schedule_with_tab_anchor(
     _screenshot_mock,  # noqa: PT019
     sync_session,
 ):
-    """ExecuteReport Command: dashboard email report with tab metadata."""
     _screenshot_mock.return_value = SCREENSHOT_FILE
     dashboard = (
         sync_session.query(Dashboard)
@@ -1369,7 +1335,6 @@ def test_email_dashboard_report_schedule_disabled_tabs(
     _screenshot_mock,  # noqa: PT019
     sync_session,
 ):
-    """ExecuteReport Command: dashboard email report with tabs disabled."""
     _screenshot_mock.return_value = SCREENSHOT_FILE
     dashboard = (
         sync_session.query(Dashboard)
@@ -1408,7 +1373,6 @@ def test_email_dashboard_report_schedule_force_screenshot(
     sync_session,
     create_report_email_dashboard_force_screenshot,
 ):
-    """ExecuteReport Command: dashboard email report with force_screenshot."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     report = create_report_email_dashboard_force_screenshot
 
@@ -1423,9 +1387,6 @@ def test_email_dashboard_report_schedule_force_screenshot(
         assert_log(sync_session, report, ReportState.SUCCESS)
 
 
-# ===========================================================================
-# Slack chart report tests
-# ===========================================================================
 @patch("superset.commands.report_execute._get_slack_channels", create=True)
 @patch("superset.reports.notifications.slack._should_use_v2_api", return_value=True)
 @patch("superset.reports.notifications.slack._get_slack_client")
@@ -1438,7 +1399,6 @@ def test_slack_chart_report_schedule_converts_to_v2(
     sync_session,
     create_report_slack_chart,
 ):
-    """ExecuteReport Command: chart slack report converts recipients to v2."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     report = create_report_slack_chart
     channel_id = "slack_channel_id"
@@ -1498,7 +1458,6 @@ def test_slack_chart_report_schedule_converts_to_v2_channel_with_hash(
     slack_should_use_v2_api_mock,
     sync_session,
 ):
-    """ExecuteReport Command: convert Slack report to v2 with leading-hash name."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     channel_id = "slack_channel_id"
     chart = _first_chart(sync_session)
@@ -1567,7 +1526,6 @@ def test_slack_chart_report_schedule_fails_to_converts_to_v2(
     slack_should_use_v2_api_mock,
     sync_session,
 ):
-    """ExecuteReport Command: convert Slack report to v2 fails (missing channel)."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     channel_id = "slack_channel_id"
     chart = _first_chart(sync_session)
@@ -1621,7 +1579,6 @@ def test_slack_chart_report_schedule_v2(
     sync_session,
     create_report_slack_chartv2,
 ):
-    """ExecuteReport Command: chart slack report using Slack v2."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     report = create_report_slack_chartv2
 
@@ -1655,7 +1612,6 @@ def test_slack_chart_report_schedule_with_errors(
     sync_session,
     create_report_slack_chart,
 ):
-    """ExecuteReport Command: every slack error is logged."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     report = create_report_slack_chart
 
@@ -1699,7 +1655,6 @@ def test_slack_chart_report_schedule_with_csv(
     sync_session,
     create_report_slack_chart_with_csv,
 ):
-    """ExecuteReport Command: chart slack v1 report with CSV."""
     response = Mock()
     mock_open.return_value = response
     mock_urlopen.return_value = response
@@ -1740,7 +1695,6 @@ def test_slack_chart_report_schedule_with_text(
     sync_session,
     create_report_slack_chart_with_text,
 ):
-    """ExecuteReport Command: chart slack report with embedded text table."""
     response = Mock()
     mock_open.return_value = response
     mock_urlopen.return_value = response
@@ -1786,11 +1740,7 @@ def test_slack_chart_report_schedule_with_text(
         assert_log(sync_session, report, ReportState.SUCCESS)
 
 
-# ===========================================================================
-# State machine / grace period tests
-# ===========================================================================
 def test_report_schedule_not_found(sync_session, create_report_slack_chart):
-    """ExecuteReport Command: report schedule not found."""
     max_id = sync_session.query(func.max(ReportSchedule.id)).scalar()
     with _patch_settings():
         with pytest.raises(ReportScheduleNotFoundError):
@@ -1798,7 +1748,6 @@ def test_report_schedule_not_found(sync_session, create_report_slack_chart):
 
 
 def test_report_schedule_working(sync_session, create_report_slack_chart_working):
-    """ExecuteReport Command: report schedule still working."""
     report = create_report_slack_chart_working
     with freeze_time("2020-01-01T00:00:00Z"):
         with _patch_settings():
@@ -1817,7 +1766,6 @@ def test_report_schedule_working(sync_session, create_report_slack_chart_working
 def test_report_schedule_working_timeout(
     sync_session, create_report_slack_chart_working
 ):
-    """ExecuteReport Command: report schedule working timeout."""
     report = create_report_slack_chart_working
     current_time = report.last_eval_dttm + timedelta(seconds=report.working_timeout + 1)
     with freeze_time(current_time):
@@ -1839,7 +1787,6 @@ def test_report_schedule_working_timeout(
 
 
 def test_report_schedule_success_grace(sync_session, create_alert_slack_chart_success):
-    """ExecuteReport Command: report schedule on success to grace."""
     report = create_alert_slack_chart_success
     current_time = report.last_eval_dttm + timedelta(seconds=report.grace_period - 10)
     with freeze_time(current_time):
@@ -1860,7 +1807,6 @@ def test_report_schedule_success_grace_end(
     sync_session,
     create_alert_slack_chart_grace,
 ):
-    """ExecuteReport Command: report schedule on grace to noop/success."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     report = create_alert_slack_chart_grace
     current_time = report.last_eval_dttm + timedelta(seconds=report.grace_period + 1)
@@ -1888,7 +1834,6 @@ def test_alert_limit_is_applied(
     sync_session,
     create_alert_email_chart,
 ):
-    """ExecuteReport Command: alerts apply a SQL LIMIT to statements."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     report = create_alert_email_chart
 
@@ -1911,7 +1856,6 @@ def test_alert_limit_is_applied(
 def test_email_dashboard_report_fails(
     screenshot_mock, email_mock, sync_session, create_report_email_dashboard
 ):
-    """ExecuteReport Command: dashboard email report notification fails (SMTP)."""
     from smtplib import SMTPException
 
     screenshot_mock.return_value = SCREENSHOT_FILE
@@ -1941,7 +1885,7 @@ def test_email_dashboard_report_fails_uncaught_exception(
     The email call-to-action link text is read from the notification config
     dict (``_build_notification_config`` → ``EMAIL_REPORTS_CTA``), not from the
     execute command's ``_get_settings``, so ``EMAIL_REPORTS_CTA`` is injected
-    there to mirror the upstream ``app.config`` override.
+    there to override ``EMAIL_REPORTS_CTA`` in the config dict.
     """
     from superset.reports.notifications import _build_notification_config
 
@@ -1982,7 +1926,6 @@ def test_slack_chart_alert(
     sync_session,
     create_alert_email_chart,
 ):
-    """ExecuteReport Command: chart alert with attached screenshot."""
     screenshot_mock.return_value = SCREENSHOT_FILE
     report = create_alert_email_chart
 
@@ -2002,7 +1945,6 @@ def test_slack_chart_alert(
 def test_slack_chart_alert_no_attachment(
     email_mock, sync_session, create_alert_email_chart
 ):
-    """ExecuteReport Command: chart alert without attached image."""
     report = create_alert_email_chart
 
     with freeze_time("2020-01-01T00:00:00Z"):
@@ -2026,12 +1968,10 @@ def test_slack_token_callable_chart_report(
 ):
     """ExecuteReport Command: chart slack alert with a callable Slack token.
 
-    The port resolves the callable Slack token inside the real
-    ``_get_slack_client`` (built from the notification config dict), so the
-    callable is injected into ``_build_notification_config`` and the
-    ``WebClient`` class is patched (mirroring the upstream
-    ``superset.utils.slack.WebClient`` patch) to assert it receives the
-    resolved token.
+    The callable token is resolved inside ``_get_slack_client`` (built from
+    the notification config dict); it is injected into
+    ``_build_notification_config`` and ``superset.utils.slack.WebClient`` is
+    patched to assert it receives the resolved token.
     """
     report = create_report_slack_chart
     notification_targets = get_target_from_report_schedule(report)
@@ -2068,7 +2008,6 @@ def test_slack_token_callable_chart_report(
 
 
 def test_email_chart_no_alert(sync_session, create_no_alert_email_chart):
-    """ExecuteReport Command: chart email no alert (noop)."""
     report = create_no_alert_email_chart
     with freeze_time("2020-01-01T00:00:00Z"):
         with _patch_settings():
@@ -2077,7 +2016,6 @@ def test_email_chart_no_alert(sync_session, create_no_alert_email_chart):
 
 
 def test_email_mul_alert(sync_session, create_mul_alert_email_chart):
-    """ExecuteReport Command: chart email multiple rows/columns errors."""
     report = create_mul_alert_email_chart
     with freeze_time("2020-01-01T00:00:00Z"):
         with _patch_settings():
@@ -2090,7 +2028,6 @@ def test_email_mul_alert(sync_session, create_mul_alert_email_chart):
 @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
 @patch("superset.reports.notifications.email._send_email_smtp")
 def test_soft_timeout_alert(email_mock, sync_session, create_alert_email_chart):
-    """ExecuteReport Command: soft timeout on alert query."""
     from celery.exceptions import SoftTimeLimitExceeded
 
     from superset.commands.report_exceptions import AlertQueryTimeout
@@ -2120,7 +2057,6 @@ def test_soft_timeout_alert(email_mock, sync_session, create_alert_email_chart):
 def test_soft_timeout_screenshot(
     screenshot_mock, email_mock, sync_session, create_alert_email_chart
 ):
-    """ExecuteReport Command: soft timeout on screenshot."""
     from celery.exceptions import SoftTimeLimitExceeded
 
     screenshot_mock.side_effect = SoftTimeLimitExceeded()
@@ -2152,7 +2088,6 @@ def test_soft_timeout_csv(
     sync_session,
     create_report_email_chart_with_csv,
 ):
-    """ExecuteReport Command: soft timeout generating csv."""
     from celery.exceptions import SoftTimeLimitExceeded
 
     response = Mock()
@@ -2187,7 +2122,6 @@ def test_generate_no_csv(
     sync_session,
     create_report_email_chart_with_csv,
 ):
-    """ExecuteReport Command: fail generating csv (empty response)."""
     response = Mock()
     mock_open.return_value = response
     mock_urlopen.return_value = response
@@ -2214,7 +2148,6 @@ def test_generate_no_csv(
 def test_fail_screenshot(
     screenshot_mock, email_mock, sync_session, create_report_email_chart
 ):
-    """ExecuteReport Command: screenshot failure."""
     screenshot_mock.side_effect = Exception("Unexpected error")
     report = create_report_email_chart
 
@@ -2244,7 +2177,6 @@ def test_fail_csv(
     sync_session,
     create_report_email_chart_with_csv,
 ):
-    """ExecuteReport Command: csv generation HTTP error."""
     response = Mock()
     mock_open.return_value = response
     mock_urlopen.return_value = response
@@ -2267,7 +2199,6 @@ def test_fail_csv(
 @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
 @patch("superset.reports.notifications.email._send_email_smtp")
 def test_email_disable_screenshot(email_mock, sync_session, create_alert_email_chart):
-    """ExecuteReport Command: alert with screenshot attachment disabled."""
     report = create_alert_email_chart
 
     with _patch_settings(feature_flags={"ALERTS_ATTACH_REPORTS": False}):
@@ -2283,7 +2214,6 @@ def test_email_disable_screenshot(email_mock, sync_session, create_alert_email_c
 def test_invalid_sql_alert(
     email_mock, sync_session, create_invalid_sql_alert_email_chart
 ):
-    """ExecuteReport Command: alert with invalid SQL."""
     report = create_invalid_sql_alert_email_chart
     with freeze_time("2020-01-01T00:00:00Z"):
         with _patch_settings():
@@ -2298,7 +2228,6 @@ def test_invalid_sql_alert(
 def test_grace_period_error(
     email_mock, sync_session, create_invalid_sql_alert_email_chart
 ):
-    """ExecuteReport Command: alert grace period on error."""
     report = create_invalid_sql_alert_email_chart
     with freeze_time("2020-01-01T00:00:00Z"):
         with _patch_settings():
@@ -2331,7 +2260,6 @@ def test_grace_period_error_flap(
     sync_session,
     create_invalid_sql_alert_email_chart,
 ):
-    """ExecuteReport Command: alert grace period on error (with recovery)."""
     report = create_invalid_sql_alert_email_chart
     with freeze_time("2020-01-01T00:00:00Z"):
         with _patch_settings():
@@ -2419,7 +2347,6 @@ def test__send_with_client_errors(notification_mock, logger_mock):
 @patch("superset.commands.report_execute.logger")
 @patch("superset.commands.report_execute.create_notification")
 def test__send_with_multiple_errors(notification_mock, logger_mock):
-    """BaseReportState._send: multiple errors → system errors (500)."""
     notification_content = "I am some content"
     recipients = ["test@foo.com", "test2@bar.com"]
     notification_mock.return_value.send.side_effect = [

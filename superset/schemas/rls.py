@@ -16,15 +16,11 @@
 # under the License.
 """msgspec Structs for the Row Level Security API.
 
-Mirrors ``superset_old/row_level_security/schemas.py`` exactly:
-
 * ``RLSPostSchema`` — required: ``name`` (1-255 chars), ``filter_type``
   (``Regular``/``Base``), ``tables`` (≥ 1 id), ``roles`` (id list,
-  may be empty), ``clause`` (any string, including empty — original
-  has no length validator); optional with ``allow_none=True``:
-  ``description``, ``group_key``.
-* ``RLSPutSchema`` — every field optional; same per-field validators
-  apply when present.
+  may be empty), ``clause`` (any string, no length limit); optional
+  with ``allow_none=True``: ``description``, ``group_key``.
+* ``RLSPutSchema`` — every field optional; same per-field validators apply.
 """
 
 from __future__ import annotations
@@ -42,22 +38,11 @@ FilterTypeLiteral = Literal["Regular", "Base"]
 class RLSPostSchema(msgspec.Struct):
     """Body for POST /api/v1/rowlevelsecurity/.
 
-    Mirrors ``superset_old.row_level_security.schemas.RLSPostSchema``:
-    every field marked ``required=True`` there is required here, and
-    the marshmallow ``Length`` / ``OneOf`` validators map onto
-    ``msgspec.Meta`` constraints.
+    ``clause`` has no length validator; an empty string is valid.
+    ``description`` and ``group_key`` accept ``null``.
 
-    Note: ``clause`` has *no* length validator (mirrors the original
-    which only sets ``required=True, allow_none=False``). An empty
-    string is a valid clause. ``description`` and ``group_key`` accept
-    ``null`` (``allow_none=True`` in the original).
-
-    Optional fields (``description``, ``group_key``) default to
-    ``msgspec.UNSET`` so that absent keys are distinguishable from
-    explicitly-null ones.  This mirrors Marshmallow 3 ``Schema.load()``
-    which omits absent optional fields from the returned dict — the
-    original Superset ``POST /api/v1/rowlevelsecurity/`` returns only the
-    keys that were actually present in the request body under ``result``.
+    Optional fields default to ``msgspec.UNSET`` so absent keys are
+    distinguishable from explicitly-null ones.
     """
 
     name: Annotated[str, Meta(min_length=1, max_length=255)]
@@ -72,18 +57,12 @@ class RLSPostSchema(msgspec.Struct):
 class RLSPutSchema(msgspec.Struct):
     """Body for PUT /api/v1/rowlevelsecurity/{pk}.
 
-    Mirrors ``superset_old.row_level_security.schemas.RLSPutSchema`` —
-    every field is optional (``required=False``), and the same per-field
-    validators apply when the caller provides a value.
+    Every field is optional. ``msgspec.UNSET`` distinguishes "absent" from
+    ``None`` so the controller can patch only the fields that were sent.
 
-    ``msgspec.UNSET`` distinguishes "absent" from ``None`` so the
-    controller can patch only the fields that were sent.
-
-    Per the original schema:
-    - ``name``, ``filter_type``, ``clause``, ``tables``, ``roles`` are
-      ``allow_none=False`` (when present, must not be null).
-    - ``description`` and ``group_key`` are ``allow_none=True`` (may be
-      null to clear the field).
+    ``name``, ``filter_type``, ``clause``, ``tables``, ``roles`` are
+    non-nullable when present. ``description`` and ``group_key`` may be
+    null to clear the field.
     """
 
     name: Annotated[str, Meta(min_length=1, max_length=255)] | msgspec.UnsetType = (

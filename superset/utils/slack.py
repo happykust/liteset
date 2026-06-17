@@ -44,10 +44,8 @@ def get_user_avatar(email: str) -> str:
             "slack_sdk is not installed — cannot fetch avatars"
         ) from exc
 
-    # Read the canonical ``slack_api_token`` setting (honours
-    # ``SLACK_API_TOKEN`` from superset_config.py AND a callable token),
-    # 1:1 with upstream ``get_slack_client`` reading ``app.config``. The raw
-    # ``os.environ`` lookup missed tokens set only in the config file.
+    # Read via SupersetSettings rather than os.environ: tokens set only in
+    # superset_config.py (not env) would be missed by a raw env lookup.
     from superset.config import SupersetSettings
 
     settings = SupersetSettings()  # type: ignore[call-arg]
@@ -57,8 +55,6 @@ def get_user_avatar(email: str) -> str:
     if not token:
         raise SlackClientError("SLACK_API_TOKEN is not configured")
 
-    # Configure proxy + rate-limit retry handler, 1:1 with upstream
-    # ``get_slack_client`` (which all Slack calls route through).
     client = WebClient(token=token, proxy=settings.slack_proxy)
     try:
         from slack_sdk.http_retry.builtin_handlers import (

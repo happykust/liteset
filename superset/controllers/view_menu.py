@@ -14,11 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""ViewMenu (Resources) controller — full CRUD for view menus (ab_view_menu).
-
-Mirrors the upstream ``ViewMenuApi`` which is a ``ModelRestApi``
-with all default route methods enabled (get_list, get, info, post, put, delete).
-"""
+"""ViewMenu (Resources) controller — full CRUD for view menus (ab_view_menu)."""
 
 from __future__ import annotations
 
@@ -67,14 +63,7 @@ class ViewMenuPutBody(msgspec.Struct):
 
 
 class ViewMenuController(Controller):
-    """Full CRUD controller for view menus / resources (ab_view_menu).
-
-    Mirrors the original ``ViewMenuApi(ModelRestApi)`` which exposes
-    all default CRUD methods.
-
-    Used by the frontend to manage resource names in the security
-    permission model.
-    """
+    """Full CRUD controller for view menus / resources (ab_view_menu)."""
 
     path = "/api/v1/security/resources"
     tags = ["Security Resources (View Menus)"]
@@ -98,8 +87,7 @@ class ViewMenuController(Controller):
         """GET /api/v1/security/resources/ -- list all view menus.
 
         Supports Rison query parameters for pagination and ordering.
-        Matches the upstream ``ViewMenuApi.get_list`` with
-        ``list_columns = ["id", "name"]`` and
+        Columns: ``list_columns = ["id", "name"]``,
         ``search_columns = ["id", "name"]``.
         """
         from superset.models.security import ViewMenu
@@ -152,11 +140,7 @@ class ViewMenuController(Controller):
         vm_dao: Any,
         pk: int,
     ) -> dict[str, Any]:
-        """GET /api/v1/security/resources/{pk} -- get single view menu.
-
-        Matches the upstream ``ViewMenuApi.get`` with
-        ``show_columns = ["id", "name"]``.
-        """
+        """GET /api/v1/security/resources/{pk} -- get single view menu."""
         vm = await vm_dao.find_by_id(pk)
         if vm is None:
             raise ObjectNotFoundError("ViewMenu", pk)
@@ -173,11 +157,7 @@ class ViewMenuController(Controller):
         guards=[require_permission("can_info", "ViewMenu")],
     )
     async def get_info(self) -> dict[str, Any]:
-        """GET /api/v1/security/resources/_info -- metadata.
-
-        Matches the upstream ``ViewMenuApi.info`` response shape with
-        ``add_columns = ["name"]``, ``edit_columns = ["name"]``.
-        """
+        """GET /api/v1/security/resources/_info -- metadata."""
         return {
             "permissions": ["can_read", "can_write"],
             "add_columns": ["name"],
@@ -198,9 +178,6 @@ class ViewMenuController(Controller):
         data: ViewMenuPostBody,
     ) -> dict[str, Any]:
         """POST /api/v1/security/resources/ -- create a new view menu.
-
-        Mirrors the upstream ``ViewMenuApi.post`` with
-        ``add_columns = ["name"]``.
 
         Returns 201 with ``{id, result}`` on success.
         Raises database error (422) if name already exists (unique constraint).
@@ -237,9 +214,6 @@ class ViewMenuController(Controller):
     ) -> dict[str, Any]:
         """PUT /api/v1/security/resources/{pk} -- update a view menu.
 
-        Mirrors the upstream ``ViewMenuApi.put`` with
-        ``edit_columns = ["name"]``.
-
         Returns 200 with ``{result}`` on success.
         Returns 404 if not found.
         Returns 422 on database error (e.g., duplicate name).
@@ -272,8 +246,6 @@ class ViewMenuController(Controller):
         pk: int,
     ) -> dict[str, str]:
         """DELETE /api/v1/security/resources/{pk} -- delete a view menu.
-
-        Mirrors the upstream ``ViewMenuApi.delete``.
 
         Returns 200 with ``{message: "OK"}`` on success.
         Returns 404 if not found.

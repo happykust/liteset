@@ -16,13 +16,10 @@
 # under the License.
 """SQL clause sanitization.
 
-Thin compatibility wrapper that delegates to the canonical implementation in
-``superset.sql.parse``. The original (``superset_old``) imports
-``sanitize_clause`` directly from ``superset.sql.parse`` in both ``viz.py`` and
-``common/query_object.py``; this module re-exports the same behavior so the new
-callers (which import from here) keep the canonical normalization: SQL comments
-are stripped via ``Dialect.generate(comments=False)`` and a
-``QueryClauseValidationException`` is raised on invalid input.
+Thin compatibility wrapper that delegates to
+:func:`superset.sql.parse.sanitize_clause`. SQL comments are stripped via
+``Dialect.generate(comments=False)`` and a ``QueryClauseValidationException``
+is raised on invalid input.
 """
 
 from __future__ import annotations
@@ -31,10 +28,5 @@ from superset.sql.parse import sanitize_clause as _sanitize_clause
 
 
 def sanitize_clause(clause: str, engine: str = "postgresql") -> str:
-    """Validate and normalize a SQL clause.
-
-    Delegates to :func:`superset.sql.parse.sanitize_clause` so that the
-    normalization (comment removal) and the raised exception type
-    (``QueryClauseValidationException``) match the canonical implementation 1:1.
-    """
+    """Thin wrapper; raises ``QueryClauseValidationException`` on invalid input."""
     return _sanitize_clause(clause, engine)

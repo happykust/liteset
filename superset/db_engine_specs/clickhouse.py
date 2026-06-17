@@ -15,16 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""ClickHouse engine spec -- sync-compatible.
-
-Ported 1:1 from ``superset_old/db_engine_specs/clickhouse.py`` with legacy
-imports removed.  Only overridden methods and attributes are included.
-
-Includes:
-  - ``ClickHouseBaseEngineSpec`` -- shared base for all ClickHouse connectors
-  - ``ClickHouseEngineSpec``     -- clickhouse_sqlalchemy connector
-  - ``ClickHouseConnectEngineSpec`` -- clickhouse-connect connector
-"""
+"""ClickHouse database engine spec."""
 
 from __future__ import annotations
 
@@ -59,8 +50,6 @@ logger = logging.getLogger(__name__)
 
 
 class ClickHouseBaseEngineSpec(BaseEngineSpec):
-    """Shared engine spec for ClickHouse."""
-
     time_groupby_inline = True
 
     _time_grain_expressions = {
@@ -147,8 +136,6 @@ class ClickHouseBaseEngineSpec(BaseEngineSpec):
 
 
 class ClickHouseEngineSpec(ClickHouseBaseEngineSpec):
-    """Engine spec for clickhouse_sqlalchemy connector."""
-
     engine = "clickhouse"
     engine_name = "ClickHouse"
 
@@ -170,19 +157,10 @@ class ClickHouseEngineSpec(ClickHouseBaseEngineSpec):
 
     @classmethod
     def get_function_names(cls, database: Database) -> list[str]:
-        """Get a list of function names from system.functions.
+        """Return cached function names from system.functions (SQL Lab autocomplete).
 
-        Results are cached per-database for SQL Lab autocomplete — the business
-        equivalent of upstream's ``@cache_manager.cache.memoize()``. The port's
-        cache layer exposes no upstream ``memoize``, so this uses the
-        sync cache slot (``cache_manager.sync_cache``) directly with a manual
-        get/set. When no cache backend is configured the slot is a no-op
-        (``NullSyncCacheManager``) and every call recomputes — exactly like
-        upstream's ``NullCache`` fallback. Like ``memoize``, the returned value
-        (including an empty list on error) is what gets cached.
-
-        :param database: The database to get functions for
-        :return: A list of function names usable in the database
+        Uses ``cache_manager.sync_cache`` directly (no upstream ``memoize``);
+        when no cache backend is configured every call recomputes.
         """
         from superset.extensions import cache_manager
 
@@ -204,7 +182,7 @@ class ClickHouseEngineSpec(ClickHouseBaseEngineSpec):
 
     @classmethod
     def _fetch_function_names(cls, database: Database) -> list[str]:
-        """Query ``system.functions`` (uncached); see :meth:`get_function_names`."""
+        """Uncached query against system.functions."""
         system_functions_sql = "SELECT name FROM system.functions"
         try:
             df = database.get_df(system_functions_sql)
@@ -219,7 +197,6 @@ class ClickHouseEngineSpec(ClickHouseBaseEngineSpec):
                 ", ".join(columns),
                 exc_info=True,
             )
-            # if the results have a single column, use that
             if len(columns) == 1:
                 return df[columns[0]].tolist()
         except Exception:  # noqa: BLE001
@@ -230,25 +207,15 @@ class ClickHouseEngineSpec(ClickHouseBaseEngineSpec):
             )
             return []
 
-        # otherwise, return no function names to prevent errors
         return []
 
 
-# ---------------------------------------------------------------------------
-# clickhouse-connect module-level setup (ported from original).
-#
-# Deviation from original: the original reads
-# ``app.config.get("VERSION_STRING", "dev")`` from the upstream
-# ``current_app``.
-# In liteset we resolve it via ``SupersetSettings`` instead; the semantics
-# are identical.  If ``clickhouse-connect`` is not installed the entire
-# block is a no-op, matching the original.
-# ---------------------------------------------------------------------------
+# clickhouse-connect setup: reads version via SupersetSettings (instead of upstream's
+# current_app.config). No-op if clickhouse-connect is not installed.
 try:
     from clickhouse_connect.common import set_setting
     from clickhouse_connect.datatypes.format import set_default_formats
 
-    # override default formats for compatibility
     set_default_formats(
         "FixedString",
         "string",
@@ -324,8 +291,6 @@ CLICKHOUSE_PARAMETERS_JSON_SCHEMA: dict[str, Any] = {
 
 
 class ClickHouseConnectEngineSpec(BasicParametersMixin, ClickHouseEngineSpec):
-    """Engine spec for clickhouse-connect connector."""
-
     engine = "clickhousedb"
     engine_name = "ClickHouse Connect (Superset)"
 
@@ -373,7 +338,7 @@ class ClickHouseConnectEngineSpec(BasicParametersMixin, ClickHouseEngineSpec):
 
     @classmethod
     def get_datatype(cls, type_code: str) -> str:
-        # keep it lowercase, as ClickHouse types aren't typical SHOUTCASE ANSI SQL
+        # ClickHouse type names are mixed-case, not UPPER like standard SQL.
         return type_code
 
     @classmethod
@@ -479,12 +444,7 @@ class ClickHouseConnectEngineSpec(BasicParametersMixin, ClickHouseEngineSpec):
 
     @staticmethod
     def _mutate_label(label: str) -> str:
-        """Suffix with the first six characters from the md5 of the label
-        to avoid collisions with original column names.
-
-        :param label: Expected expression label
-        :return: Conditionally mutated label
-        """
+        # Suffix with first 6 chars of md5 to avoid clashes with real column names.
         return f"{label}_{md5_sha_from_str(label)[:6]}"
 
     @classmethod

@@ -135,7 +135,6 @@ class RoleController(Controller):
                 detail=f"Invalid order column: {order_column}",
             )
 
-        # Extract filters — mirrors original filter_dict loop (security/api.py:305-319)
         name_filter: str | None = None
         user_ids_filter: str | None = None
         permission_ids_filter: str | None = None

@@ -14,16 +14,15 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for TableSchemaController.set_expanded parity with original.
+"""Unit tests for TableSchemaController.set_expanded.
 
-Regression guard: the original TableSchemaView.expanded
-(superset_old/views/sql_lab/views.py:270-278) has NO try/except, so
-a missing 'expanded' form key (KeyError) or invalid JSON (JSONDecodeError)
+Regression guard: the TableSchemaView.expanded handler has NO try/except,
+so a missing 'expanded' form key (KeyError) or invalid JSON (JSONDecodeError)
 propagates as an unhandled exception — Flask/Werkzeug returns HTTP 500.
 
-A prior liteset port wrapped the body in try/except and returned HTTP 400,
+A prior port wrapped the body in try/except and returned HTTP 400,
 which is a client-observable status-code regression. The fix removes the
-try/except so exceptions propagate identically to the original.
+try/except so exceptions propagate.
 """
 
 from __future__ import annotations
@@ -68,11 +67,7 @@ def _make_request(
 
 
 async def test_set_expanded_true_returns_200_body(mock_dao):
-    """Valid expanded=true returns {id, expanded: true} with HTTP 200.
-
-    Original: json_success(json.dumps({"id": table_schema_id, "expanded": payload}))
-    (superset_old/views/sql_lab/views.py:277-278).
-    """
+    """Valid expanded=true returns {id, expanded: true} with HTTP 200."""
     handler = TableSchemaController.set_expanded
     fn = handler.fn if hasattr(handler, "fn") else handler
 

@@ -15,14 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""URL helpers — port of ``superset_old/utils/urls.py`` to Liteset.
+"""URL helpers.
 
-The original module relied on the upstream ``url_for`` helper to resolve
-view names (Superset.dashboard, ExploreView.root, etc.) to URLs in a
-``test_request_context``.  Liteset is Litestar/ASGI: there is no
-``url_for`` helper and no legacy request context, so :func:`get_url_path`
-ports each view name used by the screenshot / thumbnail / report /
-celery code paths to its concrete URL template.
+:func:`get_url_path` resolves view names (``Superset.dashboard``,
+``ExploreView.root``, etc.) to concrete URL templates for the screenshot,
+thumbnail, report, and Celery code paths.
 
 The mapping is intentionally explicit (rather than reflective on the
 Litestar router) because:
@@ -49,13 +46,6 @@ import urllib.parse
 from typing import Any
 from urllib.parse import urlparse
 
-# ---------------------------------------------------------------------------
-# Settings access (lazy, cached) — mirrors the pattern used in
-# ``superset/utils/rls.py`` so this module never instantiates a heavy
-# ``SupersetSettings`` until somebody actually calls a helper that needs
-# the WEBDRIVER_BASEURL config.
-# ---------------------------------------------------------------------------
-
 
 @functools.lru_cache(maxsize=1)
 def _cached_settings() -> Any:
@@ -73,10 +63,10 @@ def _cached_settings() -> Any:
 def _baseurl(user_friendly: bool) -> str:
     """Pull the base URL out of ``SupersetSettings``.
 
-    Mirrors ``superset_old/utils/urls.py`` 1:1: returns
-    ``WEBDRIVER_BASEURL_USER_FRIENDLY`` or ``WEBDRIVER_BASEURL`` directly,
-    with no fallback between them.  Operators who want the user-friendly
-    URL to mirror the headless one must set both keys explicitly.
+    Returns ``WEBDRIVER_BASEURL_USER_FRIENDLY`` or ``WEBDRIVER_BASEURL``
+    directly, with no fallback between them.  Operators who want the
+    user-friendly URL to mirror the headless one must set both keys
+    explicitly.
     """
     settings = _cached_settings()
     if user_friendly:
@@ -84,19 +74,11 @@ def _baseurl(user_friendly: bool) -> str:
     return str(getattr(settings, "webdriver_baseurl", "") or "")
 
 
-# ---------------------------------------------------------------------------
-# Public helpers
-# ---------------------------------------------------------------------------
-
-
 def get_url_host(user_friendly: bool = False) -> str:
     """Return the configured ``WEBDRIVER_BASEURL`` (or the user-friendly
     variant when ``user_friendly=True``).
 
-    Mirrors ``superset_old.utils.urls.get_url_host``: in the original
-    this returned ``app.config["WEBDRIVER_BASEURL_USER_FRIENDLY"]`` /
-    ``app.config["WEBDRIVER_BASEURL"]`` directly; here the values come
-    from :class:`SupersetSettings`.
+    Values come from :class:`SupersetSettings`.
     """
     return _baseurl(user_friendly)
 
@@ -111,9 +93,6 @@ def headless_url(path: str, user_friendly: bool = False) -> str:
     return urllib.parse.urljoin(get_url_host(user_friendly=user_friendly), path)
 
 
-# ---------------------------------------------------------------------------
-# View-name → URL-template mapping
-# ---------------------------------------------------------------------------
 #
 # Each entry maps a legacy upstream view name (used by the original
 # ``get_url_path`` callers) to:

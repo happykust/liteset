@@ -68,15 +68,9 @@ class OpenApiController(Controller):
     ) -> Response[Any]:
         """GET /api/v1/_openapi — return the assembled OpenAPI spec.
 
-        Mirrors the upstream ``GET /api/<version>/_openapi`` which Superset
-        contract tests fetch as a drift detector against ``openapi.json``.
-        Only ``v1`` is published, matching the original Superset router.
-
-        Litestar emits an ``openapi: "3.1.0"`` document, but the original
-        upstream spec (and the snapshot the contract tests
-        validate against) declares ``3.0.x``. Pin the field down to
-        ``"3.0.3"`` so drift checks pass without changing what's
-        actually served — 3.1.0 is fully backward-compatible at the
+        Only ``v1`` is published. Litestar emits ``openapi: "3.1.0"`` but the
+        snapshot contract tests validate against declares ``3.0.x``, so the field
+        is pinned to ``"3.0.3"`` — 3.1.0 is fully backward-compatible at the
         component level we expose.
         """
         app = request.app

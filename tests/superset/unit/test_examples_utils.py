@@ -14,14 +14,14 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for superset/examples/utils.py parity fixes.
+"""Unit tests for superset/examples/utils.py.
 
-Covers two 1:1 regressions vs. superset_old:
+Covers two regression fixes:
   1. _update_metadata_chart_ids: scope.excluded lists drop unmapped IDs
-     (original uses filter-not-keep; liteset wrongly used id_map.get(id, id)).
+     (uses filter-not-keep; previously used id_map.get(id, id) which kept them).
   2. _import_dataset: existing dataset is updated from config on re-run
-     (original calls import_from_dict with overwrite=True which merges all
-     fields and syncs columns/metrics; liteset wrongly returned stale object).
+     (import_from_dict with overwrite=True merges all fields and syncs
+     columns/metrics; previously returned stale object).
 """
 
 from __future__ import annotations
@@ -431,10 +431,9 @@ def test_import_dataset_existing_no_force_data_skips_load():
 
 
 # ---------------------------------------------------------------------------
-# Finding 3: default_filters JSON errors must propagate (no silent swallow)
-# Original: superset_old/commands/dashboard/importers/v1/utils.py lines 105-113
-# has NO try/except; json.JSONDecodeError (ValueError subclass) propagates,
-# aborting the dashboard import. The liteset code must NOT swallow these errors.
+# default_filters JSON errors must propagate (no silent swallow)
+# There is NO try/except around json.loads(metadata['default_filters']);
+# json.JSONDecodeError (ValueError subclass) propagates, aborting the import.
 # ---------------------------------------------------------------------------
 
 
@@ -465,10 +464,9 @@ def test_default_filters_valid_json_remaps_ids():
 def test_default_filters_malformed_json_raises_value_error():
     """Malformed default_filters JSON must propagate ValueError.
 
-    Original (superset_old/commands/dashboard/importers/v1/utils.py:106)
-    has no try/except around json.loads(metadata['default_filters']).
+    There is no try/except around json.loads(metadata['default_filters']).
     The caller only catches KeyError, so a JSONDecodeError aborts the
-    import. liteset must match that behaviour — no silent swallowing.
+    import — no silent swallowing.
     """
     import json as _json
 
@@ -516,9 +514,9 @@ def test_default_filters_empty_object_json_gives_empty():
 
 
 # ---------------------------------------------------------------------------
-# _import_dashboard — dedup by UUID (1:1 superset_old/commands/dashboard/
-# importers/v1/utils.py:203), NOT by slug. Six example dashboards ship
-# ``slug: null``; a slug-based lookup re-INSERTs them on every run.
+# _import_dashboard — dedup by UUID, NOT by slug.
+# Six example dashboards ship ``slug: null``; a slug-based lookup re-INSERTs
+# them on every run.
 # ---------------------------------------------------------------------------
 
 

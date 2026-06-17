@@ -14,8 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Tests for SecurityController (remaining endpoints validation)."""
-
 from __future__ import annotations
 
 import jwt
@@ -40,22 +38,15 @@ def test_controller_has_search_roles_endpoint() -> None:
     assert hasattr(SecurityController, "search_roles")
 
 
-# ---------------------------------------------------------------------------
-# GuestTokenUser._to_sparse_dict() — mirrors Marshmallow sparse behaviour
-# ---------------------------------------------------------------------------
-
-
 class TestGuestTokenUserSparseDict:
-    """Verify that GuestTokenUser._to_sparse_dict() matches the original
-    Marshmallow UserSchema behaviour: only explicitly-provided (non-None)
-    fields appear in the output dict.
+    """GuestTokenUser._to_sparse_dict() must match the original Marshmallow
+    UserSchema behaviour: only explicitly-provided (non-None) fields appear.
 
     Original evidence: UserSchema().load({}) == {} and
     UserSchema().load({"first_name": "John"}) == {"first_name": "John"}.
     """
 
     def test_all_none_produces_empty_dict(self) -> None:
-        """No fields provided → empty dict, matching UserSchema().load({})."""
         user = GuestTokenUser()
         assert user._to_sparse_dict() == {}
 
@@ -72,8 +63,10 @@ class TestGuestTokenUserSparseDict:
         }
 
     def test_empty_string_is_included(self) -> None:
-        """An explicitly-provided empty string is included (caller sent '').
-        Marshmallow also includes explicitly-provided empty strings."""
+        """An explicitly-provided empty string is included (caller sent ''),
+        unlike None which is excluded. Marshmallow also includes
+        explicitly-provided empty strings.
+        """
         user = GuestTokenUser(username="", first_name="Alice", last_name="Smith")
         assert user._to_sparse_dict() == {
             "username": "",
@@ -89,19 +82,13 @@ class TestGuestTokenUserSparseDict:
         assert "last_name" not in result
 
 
-# ---------------------------------------------------------------------------
-# JWT round-trip: sparse user dict → GuestUser fallbacks fire correctly
-# ---------------------------------------------------------------------------
-
-
 _SECRET = "test-secret-at-least-32-bytes-long!"
 
 
 class TestGuestTokenJwtRoundTrip:
-    """Confirm that the sparse user dict stored in the JWT causes
-    GuestUser.from_token_payload to apply the correct canonical fallbacks.
+    """The sparse user dict stored in the JWT must cause GuestUser.from_token_payload
+    to apply the correct canonical fallbacks:
 
-    Original: GuestUser.__init__ (superset_old/security/guest_token.py:84-86)
       self.username = user.get("username", "guest_user")
       self.first_name = user.get("first_name", "Guest")
       self.last_name = user.get("last_name", "User")
@@ -118,7 +105,6 @@ class TestGuestTokenJwtRoundTrip:
         return GuestUser.from_token_payload(payload)
 
     def test_empty_user_dict_gets_canonical_fallbacks(self) -> None:
-        """user={} in the token → fallbacks 'guest_user'/'Guest'/'User'."""
         guest = self._encode_and_decode({})
         assert guest.username == "guest_user"
         assert guest.first_name == "Guest"
@@ -145,7 +131,6 @@ class TestGuestTokenJwtRoundTrip:
         of the canonical 'guest_user' fallback."""
         user = GuestTokenUser()
         sparse = user._to_sparse_dict()
-        # Sparse dict must be empty for user: {} case
         assert sparse == {}
         guest = self._encode_and_decode(sparse)
         assert guest.username == "guest_user"
@@ -153,7 +138,6 @@ class TestGuestTokenJwtRoundTrip:
         assert guest.last_name == "User"
 
     def test_guest_token_user_partial_to_sparse_dict(self) -> None:
-        """user: {'username': 'embed'} → first_name/last_name fallbacks."""
         user = GuestTokenUser(username="embed")
         sparse = user._to_sparse_dict()
         assert sparse == {"username": "embed"}

@@ -52,7 +52,6 @@ class AsyncUserDAO:
         return self._user_model
 
     async def get_by_id(self, user_id: int) -> Any | None:
-        """Get a user by ID."""
         return await self.session.get(self.user_model, user_id)
 
     async def get_by_id_with_role_permissions(self, user_id: int) -> Any | None:
@@ -94,9 +93,8 @@ class AsyncUserDAO:
         """Load Role rows by id with the permission chain eager-loaded.
 
         Used for GuestUser callers of ``/me/roles/``: the middleware stores
-        lightweight ``_CachedRole`` stubs without ``.permissions``, while the
-        original ``GuestUser.__init__`` receives real ORM Roles
-        (superset_old/security/guest_token.py:81).
+        lightweight ``_CachedRole`` stubs without ``.permissions``, while
+        GuestUser requires real ORM Roles with permissions fully loaded.
         """
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
@@ -125,7 +123,7 @@ class AsyncUserDAO:
     ) -> bool:
         """Update user profile attributes and optionally set a new password.
 
-        Mirrors original pre_update (superset_old/views/users/api.py:48-56):
+        Side effects:
         - sets ``changed_on`` to ``datetime.now()``
         - sets ``changed_by_fk`` to the ID of the requesting user
 
@@ -138,7 +136,6 @@ class AsyncUserDAO:
             setattr(user, attr, value)
         if hashed_password is not None:
             user.password = hashed_password
-        # Audit trail — mirrors pre_update side effects
         user.changed_on = datetime.now()
         if changed_by_fk is not None:
             user.changed_by_fk = changed_by_fk
@@ -146,11 +143,6 @@ class AsyncUserDAO:
         return True
 
     async def set_avatar_url(self, user: Any, avatar_url: str) -> None:
-        """Set the avatar URL for a user.
-
-        Updates the user's extra attributes with the avatar URL.
-        """
-        # Refresh to safely load lazy relationship in async context
         try:
             await self.session.refresh(user, attribute_names=["extra_attributes"])
         except (InvalidRequestError, AttributeError):
@@ -172,22 +164,14 @@ class AsyncUserDAO:
                 logger.debug("UserAttribute model not available")
 
     async def update_login_count(self, user_id: int, login_count: int) -> None:
-        """Set the login_count for a user (noop update for timing balance).
-
-        Used during failed auth when the user is not found or inactive,
-        to mirror the DB write timing of a successful login and prevent
-        timing-based user enumeration.
-        """
+        """Set login_count; used to balance DB write timing during
+        failed auth to prevent user enumeration."""
         User = self.user_model  # noqa: N806
         await self.session.execute(
             update(User).where(User.id == user_id).values(login_count=login_count)
         )
 
     async def increment_fail_login_count(self, user_id: int) -> None:
-        """Increment fail_login_count by 1 for a user.
-
-        Called when a valid user provides the wrong password.
-        """
         User = self.user_model  # noqa: N806
         await self.session.execute(
             update(User)
@@ -196,11 +180,6 @@ class AsyncUserDAO:
         )
 
     async def record_successful_login(self, user_id: int) -> None:
-        """Record a successful login for a user.
-
-        Sets last_login to now, increments login_count by 1,
-        and resets fail_login_count to 0.
-        """
         User = self.user_model  # noqa: N806
         await self.session.execute(
             update(User)

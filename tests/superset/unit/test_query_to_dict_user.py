@@ -16,13 +16,12 @@
 # under the License.
 """Regression tests for Query.to_dict() 'user' field type contract.
 
-Original contract (superset_old/models/sql_lab.py:194):
     "user": user_label(self.user)
 
-Where user_label() returns None when user is falsy.  Prior to the fix,
-the liteset port defaulted _user_label to "" (empty string) so a query
-with no associated user produced ``"user": ""`` instead of ``"user": null``,
-breaking API clients that do a strict null check on the field.
+``user_label()`` returns None when user is falsy.  Prior to the fix, the
+liteset port defaulted _user_label to "" (empty string) so a query with no
+associated user produced ``"user": ""`` instead of ``"user": null``, breaking
+API clients that do a strict null check on the field.
 """
 
 from __future__ import annotations

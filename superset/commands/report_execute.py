@@ -17,7 +17,6 @@
 # mypy: ignore-errors
 """Report schedule execution command and state machine.
 
-Ported 1:1 from ``superset_old/commands/report/execute.py``.
 Runs **synchronously** inside a Celery worker using a plain
 :class:`~sqlalchemy.orm.Session` from
 :func:`superset.db.session.get_sync_session`.
@@ -111,9 +110,8 @@ REPORT_SCHEDULE_ERROR_NOTIFICATION_MARKER = "Notification sent with error"
 def _get_settings() -> Any:
     """Load SupersetSettings lazily (avoids circular imports) and cache it.
 
-    A single report/alert execution reads settings 7+ times; the original
-    read ``app.config[...]`` (O(1) dict lookups on a boot-time singleton).
-    Config is static per process, so a process-wide snapshot is 1:1.
+    A single report/alert execution reads settings 7+ times; config is static
+    per process, so a process-wide snapshot is efficient.
     """
     from superset.config import SupersetSettings
 
@@ -121,10 +119,7 @@ def _get_settings() -> Any:
 
 
 def _recipients_string_to_list(address_string: str | None) -> list[str]:
-    """Split a comma/semicolon/whitespace separated string into a list.
-
-    1:1 port of ``superset_old/utils/core.py::recipients_string_to_list``.
-    """
+    """Split a comma/semicolon/whitespace separated string into a list."""
     import re
 
     address_string_list: list[str] = []
@@ -139,11 +134,7 @@ def _recipients_string_to_list(address_string: str | None) -> list[str]:
 
 
 class BaseReportState:
-    """Base class for report execution states.
-
-    Ported 1:1 from ``:BaseReportState`` in
-    ``superset_old/commands/report/execute.py``.
-    """
+    """Base class for report execution states."""
 
     current_states: list[ReportState] = []
     initial: bool = False
@@ -161,17 +152,11 @@ class BaseReportState:
         self._execution_id = execution_id
         self._session = session
 
-    # ------------------------------------------------------------------
-    # State / log helpers
-    # ------------------------------------------------------------------
-
     def update_report_schedule_and_log(
         self,
         state: ReportState,
         error_message: Optional[str] = None,
     ) -> None:
-        """Update the report schedule state and reflect the change in the
-        execution log."""
         self.update_report_schedule(state)
         self.create_log(error_message)
 
@@ -190,7 +175,6 @@ class BaseReportState:
         self._report_schedule.last_eval_dttm = datetime.utcnow()
 
     def create_log(self, error_message: Optional[str] = None) -> None:
-        """Create a Report execution log entry."""
         try:
             log = ReportExecutionLog(
                 scheduled_dttm=self._scheduled_dttm,
@@ -206,7 +190,6 @@ class BaseReportState:
             self._session.add(log)
             self._session.commit()
         except StaleDataError as ex:
-            # Report schedule was modified or deleted by another process
             self._session.rollback()
             logger.warning(
                 "Report schedule (execution %s) was modified or deleted "
@@ -222,16 +205,12 @@ class BaseReportState:
     def update_report_schedule_slack_v2(self) -> None:
         """Upgrade all Slack recipients to v2 (channel names → ids).
 
-        1:1 port of
-        ``superset_old/commands/report/execute.py::update_report_schedule_slack_v2``.
         V2 uses channel **ids** instead of names, so for every ``SLACK``
-        recipient we resolve the configured channel name(s) to id(s) via
-        ``get_channels_with_search`` (ported as
-        :func:`superset.controllers.report._get_slack_channels`), validate that
-        every requested channel was found, rewrite ``recipient_config_json`` to
-        ``{"target": "<ids>"}``, and flip the type to ``SLACKV2``. On any
-        failure the recipient is reverted to ``SLACK`` and ``UpdateFailedError``
-        is raised.
+        recipient we resolve the configured channel name(s) to id(s),
+        validate that every requested channel was found, rewrite
+        ``recipient_config_json`` to ``{"target": "<ids>"}``, and flip
+        the type to ``SLACKV2``. On any failure the recipient is reverted
+        to ``SLACK`` and ``UpdateFailedError`` is raised.
         """
         from superset.controllers.report import _get_slack_channels
 
@@ -284,16 +263,9 @@ class BaseReportState:
         result_format: str | None = None,
         **kwargs: Any,
     ) -> str:
-        """Get the URL for this report schedule: chart or dashboard.
-
-        1:1 port of ``superset_old/commands/report/execute.py::_get_url``.
-        Uses :func:`superset.utils.urls.get_url_path` (the Liteset replacement
-        for the upstream ``url_for``).  For dashboards with stateful tab
-        anchors and
-        the ``ALERT_REPORT_TABS`` feature enabled, returns a permalink URL.
-
-        :param result_format: If ``"csv"`` or ``"json"``, return the chart
-            data API endpoint instead of the explore view.
+        """
+        Return chart or dashboard URL; ``result_format`` csv/json
+        switches to the data API endpoint.
         """
         from superset.utils.urls import get_url_path
 
@@ -314,8 +286,6 @@ class BaseReportState:
                 force=force,
                 **kwargs,
             )
-        # If we need to render dashboard in a specific state, use stateful
-        # permalink — 1:1 with execute.py:239-243.
         if (
             dashboard_state := self._report_schedule.extra.get("dashboard")
         ) and self._is_feature_enabled("ALERT_REPORT_TABS"):
@@ -342,11 +312,7 @@ class BaseReportState:
     def get_dashboard_urls(
         self, user_friendly: bool = False, **kwargs: Any
     ) -> list[str]:
-        """Retrieve the URL(s) for the dashboard tabs, or the single dashboard
-        URL when no tabs are configured.
-
-        1:1 port of ``execute.py::get_dashboard_urls``.
-        """
+        """Return URL(s) for dashboard tabs, or a single dashboard URL."""
         from superset.utils.urls import get_url_path
 
         force = "true" if self._report_schedule.force_screenshot else "false"
@@ -379,13 +345,6 @@ class BaseReportState:
     def _get_tab_url(
         self, dashboard_state: dict[str, Any], user_friendly: bool = False
     ) -> str:
-        """Build a single stateful dashboard-tab permalink URL.
-
-        1:1 port of ``execute.py::_get_tab_url``. The async
-        ``CreateDashboardPermalinkCommand`` is reimplemented synchronously
-        here (see :meth:`_create_dashboard_permalink`) so it can run inside
-        the synchronous Celery execution context.
-        """
         from superset.utils.urls import get_url_path
 
         permalink_key = self._create_dashboard_permalink(
@@ -401,10 +360,6 @@ class BaseReportState:
     def _get_tabs_urls(
         self, tab_anchors: list[str], user_friendly: bool = False
     ) -> list[str]:
-        """Build permalink URLs for multiple dashboard tabs.
-
-        1:1 port of ``execute.py::_get_tabs_urls``.
-        """
         return [
             self._get_tab_url(
                 {
@@ -423,11 +378,9 @@ class BaseReportState:
     ) -> str:
         """Get-or-create a dashboard permalink synchronously.
 
-        Replicates ``CreateDashboardPermalinkCommand.run`` (the async command
-        at ``superset/commands/dashboard/permalink/create.py``) against the
-        synchronous Celery ``Session``: deterministic upsert keyed by
-        ``uuid3(salt, (user_id, payload))`` so the same state for the same user
-        reuses the same row, then hashids-encodes the integer id.
+        Deterministic upsert keyed by ``uuid3(salt, (user_id, payload))``
+        so the same state for the same user reuses the same row, then
+        hashids-encodes the integer id.
         """
         from superset.key_value.shared_entries import NAMESPACE, RESOURCE
         from superset.key_value.types import KeyValueResource, SharedKey
@@ -439,7 +392,6 @@ class BaseReportState:
         from superset.models.key_value import KeyValueEntry
         from superset.utils.core import get_user_id
 
-        # --- get-or-create the permalink hashing salt (sync) ---
         salt_uuid = uuid3(NAMESPACE, SharedKey.DASHBOARD_PERMALINK_SALT.value)
         salt_entry = (
             self._session.query(KeyValueEntry)
@@ -463,7 +415,6 @@ class BaseReportState:
         else:
             salt = json.loads(salt_entry.value.decode("utf-8"))
 
-        # --- deterministic upsert of the permalink entry ---
         user_id = get_user_id()
         payload = {"dashboardId": dashboard_uuid, "state": state}
         deterministic_uuid = get_deterministic_uuid(salt, (user_id, payload))
@@ -494,23 +445,15 @@ class BaseReportState:
             raise RuntimeError("Permalink entry missing autogenerated id")
         return encode_permalink_key(key=int(entry.id), salt=salt)
 
-    # ------------------------------------------------------------------
-    # Content generation
-    # ------------------------------------------------------------------
-
     def _find_user(self, username: str) -> User | None:
-        """Find a user by username using the sync session."""
         return self._session.query(User).filter(User.username == username).one_or_none()
 
     @staticmethod
     def _get_auth_cookies(user: User | None) -> dict[str, str] | None:
         """Get authentication cookies for the given user.
 
-        Uses the Liteset ``machine_auth_provider_factory`` which is
-        initialised by ``superset.app.on_startup`` (and must be wired up
-        equivalently inside the Celery worker — see the worker boot
-        module).  Falls back to ``superset_old`` for transitional
-        compatibility while the Celery worker is still on the legacy stack.
+        Uses the ``machine_auth_provider_factory`` which must be
+        initialised before the Celery worker starts.
         """
         try:
             from superset.extensions import machine_auth_provider_factory
@@ -531,11 +474,6 @@ class BaseReportState:
                 return None
 
     def _get_screenshots(self) -> list[bytes]:
-        """Get chart or dashboard screenshots.
-
-        :raises: ReportScheduleScreenshotFailedError
-        :raises: ReportScheduleScreenshotTimeout
-        """
         settings = _get_settings()
 
         _, username = get_executor(
@@ -603,19 +541,10 @@ class BaseReportState:
         return images
 
     def _get_pdf(self) -> bytes:
-        """Get chart or dashboard as PDF.
-
-        :raises: ReportScheduleScreenshotFailedError
-        """
         screenshots = self._get_screenshots()
         return build_pdf_from_screenshots(screenshots)
 
     def _get_csv_data(self) -> bytes:
-        """Get chart data as CSV bytes.
-
-        :raises: ReportScheduleCsvFailedError
-        :raises: ReportScheduleCsvTimeout
-        """
         settings = _get_settings()
         url = self._get_url(result_format="csv")
         _, username = get_executor(
@@ -646,12 +575,6 @@ class BaseReportState:
         return csv_data
 
     def _get_embedded_data(self) -> pd.DataFrame:
-        """Return data as a Pandas dataframe, to embed in notifications
-        as a table.
-
-        :raises: ReportScheduleDataFrameFailedError
-        :raises: ReportScheduleDataFrameTimeout
-        """
         settings = _get_settings()
         url = self._get_url(result_format="json")
         _, username = get_executor(
@@ -736,10 +659,6 @@ class BaseReportState:
         return log_data
 
     def _get_notification_content(self) -> NotificationContent:  # noqa: C901
-        """Get a notification content composed by a title and data.
-
-        :raises: ReportScheduleScreenshotFailedError
-        """
         settings = _get_settings()
         csv_data = None
         screenshot_data: list[bytes] = []
@@ -809,19 +728,11 @@ class BaseReportState:
             header_data=header_data,
         )
 
-    # ------------------------------------------------------------------
-    # Notification sending
-    # ------------------------------------------------------------------
-
     def _send(
         self,
         notification_content: NotificationContent,
         recipients: list[ReportRecipients],
     ) -> None:
-        """Send a notification to all recipients.
-
-        :raises: CommandException
-        """
         settings = _get_settings()
         notification_errors: list[SupersetError] = []
         for recipient in recipients:
@@ -841,7 +752,7 @@ class BaseReportState:
                 except SlackV1NotificationError as ex:
                     # The slack notification should be sent with the v2 api.
                     # Resolve channel names → ids and persist the SLACKV2 type
-                    # before retrying — 1:1 with execute.py:603-611.
+                    # before retrying.
                     logger.info(
                         "Attempting to upgrade the report to Slackv2: %s", str(ex)
                     )
@@ -868,7 +779,6 @@ class BaseReportState:
                     )
                 )
         if notification_errors:
-            # log all errors but raise based on the most severe
             for error in notification_errors:
                 logger.warning(str(error))
 
@@ -886,18 +796,10 @@ class BaseReportState:
                 raise _exc
 
     def send(self) -> None:
-        """Create the notification content and send to all recipients.
-
-        :raises: CommandException
-        """
         notification_content = self._get_notification_content()
         self._send(notification_content, self._report_schedule.recipients)
 
     def send_error(self, name: str, message: str) -> None:
-        """Create and send an error notification to all owners.
-
-        :raises: CommandException
-        """
         header_data = self._get_log_data()
         url = self._get_url(user_friendly=True)
         logger.info(
@@ -909,7 +811,6 @@ class BaseReportState:
             name=name, text=message, header_data=header_data, url=url
         )
 
-        # filter recipients to recipients who are also owners
         owner_recipients = [
             ReportRecipients(
                 type=ReportRecipientType.EMAIL,
@@ -919,10 +820,6 @@ class BaseReportState:
         ]
 
         self._send(notification_content, owner_recipients)
-
-    # ------------------------------------------------------------------
-    # Grace period checks
-    # ------------------------------------------------------------------
 
     def is_in_grace_period(self) -> bool:
         """Check if an alert is in its grace period."""
@@ -936,8 +833,6 @@ class BaseReportState:
         )
 
     def is_in_error_grace_period(self) -> bool:
-        """Check if an alert/report on error is in its notification
-        grace period."""
         last_error_log = self._find_last_error_notification()
         if not last_error_log:
             return False
@@ -950,7 +845,6 @@ class BaseReportState:
         )
 
     def is_on_working_timeout(self) -> bool:
-        """Check if an alert is in a working timeout."""
         last_working = self._find_last_entered_working_log()
         if not last_working:
             return False
@@ -961,10 +855,6 @@ class BaseReportState:
             - timedelta(seconds=self._report_schedule.working_timeout)
             > last_working.end_dttm
         )
-
-    # ------------------------------------------------------------------
-    # DAO-style queries (inline, using self._session)
-    # ------------------------------------------------------------------
 
     def _find_last_success_log(self) -> ReportExecutionLog | None:
         return (
@@ -1002,7 +892,6 @@ class BaseReportState:
         )
         if not last_error_email_log:
             return None
-        # Checks that only errors have occurred since the last email
         report_from_last_email = (
             self._session.query(ReportExecutionLog)
             .filter(
@@ -1019,11 +908,6 @@ class BaseReportState:
 
     def next(self) -> None:
         raise NotImplementedError()
-
-
-# ---------------------------------------------------------------------------
-# Concrete state handlers
-# ---------------------------------------------------------------------------
 
 
 class ReportNotTriggeredErrorState(BaseReportState):
@@ -1067,15 +951,14 @@ class ReportNotTriggeredErrorState(BaseReportState):
                     ReportState.ERROR, error_message=error_message
                 )
             except ReportScheduleUnexpectedError as logging_ex:
-                # Logging failed (likely StaleDataError), but we still want to
-                # raise the original error so the root cause remains visible
+                # Logging failed (likely StaleDataError); re-raise original
+                # so root cause stays visible.
                 logger.warning(
                     "Failed to log error for report schedule (execution %s) "
                     "due to database issue",
                     self._execution_id,
                     exc_info=True,
                 )
-                # Re-raise the original exception, not the logging failure
                 raise first_ex from logging_ex
 
             # TODO (dpgaspar) convert this logic to a new state eg: ERROR_ON_GRACE
@@ -1093,8 +976,6 @@ class ReportNotTriggeredErrorState(BaseReportState):
                         [error.message for error in second_ex.errors]
                     )
                 except ReportScheduleUnexpectedError:
-                    # send_error failed due to logging issue, log and continue
-                    # to raise the original error
                     logger.warning(
                         "Failed to send error notification due to database issue",
                         exc_info=True,
@@ -1107,8 +988,6 @@ class ReportNotTriggeredErrorState(BaseReportState):
                             ReportState.ERROR, error_message=second_error_message
                         )
                     except ReportScheduleUnexpectedError:
-                        # Logging failed again, log it but don't let it
-                        # hide first_ex
                         logger.warning(
                             "Failed to log final error state due to database issue",
                             exc_info=True,
@@ -1184,29 +1063,20 @@ class ReportSuccessState(BaseReportState):
                     ReportState.ERROR, error_message=str(ex)
                 )
             except ReportScheduleUnexpectedError as logging_ex:
-                # Logging failed (likely StaleDataError), but we still want to
-                # raise the original error so the root cause remains visible
+                # Logging failed (likely StaleDataError); re-raise original
+                # so root cause stays visible.
                 logger.warning(
                     "Failed to log error for report schedule (execution %s) "
                     "due to database issue",
                     self._execution_id,
                     exc_info=True,
                 )
-                # Re-raise the original exception, not the logging failure
                 raise ex from logging_ex
             raise
 
 
-# ---------------------------------------------------------------------------
-# State machine
-# ---------------------------------------------------------------------------
-
-
 class ReportScheduleStateMachine:
-    """Simple state machine for Alerts/Reports states.
-
-    Ported 1:1 from ``superset_old/commands/report/execute.py``.
-    """
+    """Simple state machine for Alerts/Reports states."""
 
     states_cls = [ReportWorkingState, ReportNotTriggeredErrorState, ReportSuccessState]
 
@@ -1239,20 +1109,12 @@ class ReportScheduleStateMachine:
             raise ReportScheduleStateNotFoundError()
 
 
-# ---------------------------------------------------------------------------
-# Top-level execution command (called from Celery task)
-# ---------------------------------------------------------------------------
-
-
 class ExecuteReportScheduleCommand:
     """Execute all types of report schedules.
 
     - On reports: takes chart or dashboard screenshots and sends
       configured notifications.
     - On alerts: uses ``AlertCommand`` and sends configured notifications.
-
-    Ported 1:1 from
-    ``superset_old/commands/report/execute.py::AsyncExecuteReportScheduleCommand``.
     """
 
     def __init__(
@@ -1275,10 +1137,6 @@ class ExecuteReportScheduleCommand:
             if not self._model:
                 raise ReportScheduleExecuteUnexpectedError()
 
-            # Resolve the executor user and run the whole state machine under
-            # ``override_user`` so permalink creation, RLS and audit fields all
-            # share the executor context — 1:1 with
-            # ``superset_old/commands/report/execute.py:943-956``.
             settings = _get_settings()
             _, username = get_executor(
                 executors=settings.alert_reports_executors,
@@ -1307,7 +1165,6 @@ class ExecuteReportScheduleCommand:
             raise ReportScheduleUnexpectedError(str(ex)) from ex
 
     def validate(self) -> None:
-        """Validate/populate model exists."""
         logger.info(
             "session is validated: id %s, executionid: %s",
             self._model_id,

@@ -14,25 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/chart/data/get_data_command.py``.
-
-1:1 with the original :class:`ChartDataCommand`:
-
-* ``validate()`` — calls ``raise_for_access`` on the (async) query-context
-  processor.
-* ``run(cache=False, force_cached=False)`` — executes the query context
-  via ``processor.get_payload(cache_query_context=cache,
-  force_cached=force_cached)``.  ``CacheLoadError`` from the processor
-  is wrapped as :class:`ChartDataCacheLoadError`; per-query errors are
-  surfaced as :class:`ChartDataQueryFailedError` (skipped for
-  ``result_type == "query"``, mirroring the original short-circuit).
-
-Return shape mirrors the original:
-
-* ``"query_context"`` — the AsyncQueryContext object;
-* ``"queries"`` — the list of per-query dicts;
-* ``"cache_key"`` — only present when ``cache=True``.
-"""
+"""Chart data retrieval command."""
 
 from __future__ import annotations
 
@@ -52,11 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 class ChartDataCommand(AsyncBaseCommand[dict[str, Any]]):
-    """Process a ChartDataQueryContext via AsyncQueryContextProcessor.
-
-    Async port of
-    ``superset_old.commands.chart.data.get_data_command.ChartDataCommand``.
-    """
+    """Process a ChartDataQueryContext via AsyncQueryContextProcessor."""
 
     _query_context: AsyncQueryContext
 
@@ -67,10 +45,6 @@ class ChartDataCommand(AsyncBaseCommand[dict[str, Any]]):
     ) -> None:
         self._query_context = query_context
         self._processor = processor
-        # Stash kwargs supplied via ``run(...)`` so ``execute()`` can forward
-        # them.  ``AsyncBaseCommand.execute`` is a parameter-less wrapper —
-        # callers that need ``cache`` / ``force_cached`` use ``run()``
-        # directly (matching the original ``BaseCommand.run(**kwargs)``).
         self._cache_query_context: bool = False
         self._force_cached: bool = False
 
@@ -78,10 +52,6 @@ class ChartDataCommand(AsyncBaseCommand[dict[str, Any]]):
         await self._processor.raise_for_access()
 
     async def run(self, **kwargs: Any) -> dict[str, Any]:
-        # caching is handled inside ``processor.get_df_payload`` (also
-        # respects ``force`` on the query context).  1:1 with the
-        # original which read ``kwargs.get("cache", False)`` and
-        # ``kwargs.get("force_cached", False)``.
         cache_query_context: bool = kwargs.get("cache", self._cache_query_context)
         force_cached: bool = kwargs.get("force_cached", self._force_cached)
 
@@ -97,8 +67,7 @@ class ChartDataCommand(AsyncBaseCommand[dict[str, Any]]):
 
         # Skip per-query error check for query-only requests — errors
         # are returned in payload so the View Query modal can display
-        # validation errors.  1:1 with the original short-circuit on
-        # ``ChartDataResultType.QUERY``.
+        # validation errors.
         result_type = getattr(self._query_context, "result_type", None)
         if result_type != "query":
             for query in payload.get("queries", []):

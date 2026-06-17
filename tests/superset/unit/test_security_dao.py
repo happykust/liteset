@@ -507,8 +507,9 @@ async def test_get_role_permissions_with_production_models(prod_models_session):
 
 
 async def test_get_user_roles_includes_group_roles(group_session):
-    """get_user_roles must include group-inherited roles (1:1 with FAB
-    user.roles + group.roles). groupuser has its role only via a group."""
+    """get_user_roles must include group-inherited roles (user.roles + group.roles).
+    groupuser has its role only via a group.
+    """
     dao = _make_dao(group_session)
     user = await dao.get_user_by_id(1)  # groupuser — no direct role
     roles = await dao.get_user_roles(user)

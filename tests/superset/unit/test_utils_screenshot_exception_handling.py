@@ -18,7 +18,7 @@
 """
 Tests for screenshot exception handling in API endpoints.
 
-Ported from the upstream Flask suite. The Liteset chart/dashboard
+The chart/dashboard
 screenshot controllers serve the cached PNG bytes and return a Litestar
 ``Response(status_code=404)`` (rather than the FAB ``response_404()``)
 when ``ScreenshotCachePayload.get_image()`` raises
@@ -37,7 +37,6 @@ from superset.utils.screenshots import ScreenshotCachePayload, StatusValues
 
 
 def _make_unavailable_payload():
-    """A cache payload whose ``get_image()`` raises the not-available error."""
     payload = MagicMock()
     payload.status = StatusValues.UPDATED
     payload.get_image.side_effect = ScreenshotImageNotAvailableException()
@@ -45,18 +44,12 @@ def _make_unavailable_payload():
 
 
 class TestScreenshotAPIExceptionHandling:
-    """Test that API endpoints properly handle
-    ScreenshotImageNotAvailableException."""
-
     @pytest.mark.asyncio
     async def test_dashboard_screenshot_api_handles_exception(self):
-        """Dashboard screenshot API returns 404 when get_image raises exception.
-
-        Ports the upstream ``DashboardRestApi`` test: the real Liteset
-        ``DashboardController.screenshot`` handler catches
-        ``ScreenshotImageNotAvailableException`` and returns a 404
-        ``Response`` (the port's equivalent of FAB ``response_404()``).
-        """
+        # Ports the upstream ``DashboardRestApi`` test: the Liteset
+        # ``DashboardController.screenshot`` handler catches
+        # ``ScreenshotImageNotAvailableException`` and returns a 404
+        # ``Response`` (the port's equivalent of FAB ``response_404()``).
         from superset.controllers.dashboard import DashboardController
 
         api = DashboardController(owner=None)
@@ -99,13 +92,10 @@ class TestScreenshotAPIExceptionHandling:
 
     @pytest.mark.asyncio
     async def test_chart_screenshot_api_handles_exception(self):
-        """Chart screenshot API returns 404 when get_image raises exception.
-
-        Ports the upstream ``ChartRestApi`` test: the real Liteset
-        ``ChartController.screenshot`` handler catches
-        ``ScreenshotImageNotAvailableException`` and returns a 404
-        ``Response`` (the port's equivalent of FAB ``response_404()``).
-        """
+        # Ports the upstream ``ChartRestApi`` test: the Liteset
+        # ``ChartController.screenshot`` handler catches
+        # ``ScreenshotImageNotAvailableException`` and returns a 404
+        # ``Response`` (the port's equivalent of FAB ``response_404()``).
         from superset.controllers.chart import ChartController
 
         api = ChartController(owner=None)
@@ -139,13 +129,9 @@ class TestScreenshotAPIExceptionHandling:
         assert response.status_code == 404
 
     def test_screenshot_api_handles_exception(self):
-        """Screenshot serving returns 404 when get_image raises exception.
-
-        Mirrors the chart/dashboard ``screenshot`` controllers, which catch
-        ``ScreenshotImageNotAvailableException`` and return a 404 response
-        instead of serving image bytes.
-        """
-
+        # Mirrors the chart/dashboard ``screenshot`` controllers, which catch
+        # ``ScreenshotImageNotAvailableException`` and return a 404 response
+        # instead of serving image bytes.
         def serve_image(cache_payload):
             try:
                 image = cache_payload.get_image()
@@ -153,18 +139,15 @@ class TestScreenshotAPIExceptionHandling:
                 return 404
             return image
 
-        # Payload with no image raises -> 404
         payload_no_image = ScreenshotCachePayload()
         assert serve_image(payload_no_image) == 404
 
-        # Payload with an image -> served bytes
         payload_with_image = ScreenshotCachePayload(image=b"test data")
         result = serve_image(payload_with_image)
         assert result is not None
         assert result.read() == b"test data"
 
     def test_screenshot_cache_payload_exception_has_correct_status(self):
-        """Test that the ScreenshotImageNotAvailableException has status 404."""
         exception = ScreenshotImageNotAvailableException()
         # The port exposes ``status`` as a backward-compat alias of
         # ``status_code`` on SupersetException.
@@ -172,23 +155,18 @@ class TestScreenshotAPIExceptionHandling:
         assert exception.status_code == 404
 
     def test_api_method_simulation_with_exception(self):
-        """Simulate the API method behavior with exception handling."""
-
         def simulate_dashboard_screenshot_method(cache_payload):
-            """Simulate the logic in dashboard screenshot methods."""
             try:
                 image = cache_payload.get_image()
                 return {"status": "success", "image": image}
             except ScreenshotImageNotAvailableException:
                 return {"status": "404", "message": "Not Found"}
 
-        # Test with payload that has image
         payload_with_image = ScreenshotCachePayload(image=b"test data")
         result = simulate_dashboard_screenshot_method(payload_with_image)
         assert result["status"] == "success"
         assert result["image"] is not None
 
-        # Test with payload that has no image (should raise exception)
         payload_no_image = ScreenshotCachePayload()
         result = simulate_dashboard_screenshot_method(payload_no_image)
         assert result["status"] == "404"
@@ -204,21 +182,18 @@ class TestScreenshotAPIExceptionHandling:
         """
 
         def simulate_api_file_response(cache_payload):
-            """Simulate the image-stream logic in API methods."""
             try:
                 image = cache_payload.get_image()
                 return image
             except ScreenshotImageNotAvailableException:
                 return None
 
-        # Test with valid image
         payload_with_image = ScreenshotCachePayload(image=b"test data")
         result = simulate_api_file_response(payload_with_image)
         assert result is not None
         assert isinstance(result, BytesIO)
         assert result.read() == b"test data"
 
-        # Test without image
         payload_no_image = ScreenshotCachePayload()
         result = simulate_api_file_response(payload_no_image)
         assert result is None

@@ -14,12 +14,12 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""1:1 port of ``superset_old/temporary_cache/utils.py``.
+"""Utility helpers for temporary (filter-state / explore-form-data) caches.
 
 ``cache_key`` builds the user-visible cache key strings used by the
 filter-state and explore-form-data temporary caches.  The string format
-must stay identical to upstream (``";"``-joined) so that entries written
-by an upstream Superset instance resolve after migrating to liteset
+uses ``";"``-joined args so that entries written by an upstream Superset
+instance resolve after migrating to liteset
 (the metastore cache derives the row UUID as uuid3(namespace, this string)).
 """
 

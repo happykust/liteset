@@ -69,27 +69,13 @@ class BaseAsyncEngineSpec(ABC):
     _time_grain_expressions: dict[str | None, str] = {}  # noqa: RUF012 — safe: __init_subclass__ copies per-subclass; do not mutate base class dict after import
     _custom_errors: list[tuple[re.Pattern[str], str]] = []  # noqa: RUF012
 
-    # Safety-critical query params to enforce on connections, keyed by driver.
-    # 1:1 with ``BaseEngineSpec.enforce_uri_query_params`` in
-    # ``superset_old/db_engine_specs/base.py:385``.
     enforce_uri_query_params: dict[str, dict[str, Any]] = {}  # noqa: RUF012
-
-    # Whether to strip schema prefixes from table/view names.
-    # 1:1 with ``BaseEngineSpec.try_remove_schema_from_table_name`` in
-    # ``superset_old/db_engine_specs/base.py:390``.
     try_remove_schema_from_table_name = True
 
-    # SQL expression template converting epoch seconds to datetime.
-    # Subclasses MUST override this classmethod with engine-specific SQL.
-    # 1:1 with ``BaseEngineSpec.epoch_to_dttm`` in
-    # ``superset_old/db_engine_specs/base.py:1039-1047``.
     @classmethod
     def epoch_to_dttm(cls) -> str:
         raise NotImplementedError()
 
-    # SQL expression converting epoch milliseconds to datetime.
-    # 1:1 with ``BaseEngineSpec.epoch_ms_to_dttm`` in
-    # ``superset_old/db_engine_specs/base.py:1049-1057``.
     @classmethod
     def epoch_ms_to_dttm(cls) -> str:
         return cls.epoch_to_dttm().replace("{col}", "({col}/1000)")
@@ -98,18 +84,16 @@ class BaseAsyncEngineSpec(ABC):
     def get_datatype(cls, type_code: Any) -> str | None:
         """Map a ``cursor.description`` type code to a string type repr.
 
-        1:1 with ``BaseEngineSpec.get_datatype`` in
-        ``superset_old/db_engine_specs/base.py``: string codes (Trino /
-        ClickHouse) are upper-cased; non-string codes (e.g. DBAPI int OIDs from
-        MySQL) return ``None``. ``AsyncPostgresEngineSpec`` overrides this to
-        resolve psycopg2 int OIDs. Defined on the base so every async spec
-        exposes it — used by ``SqlaTable._get_virtual_table_metadata``.
+        String codes (Trino / ClickHouse) are upper-cased; non-string codes
+        (e.g. DBAPI int OIDs from MySQL) return ``None``.
+        ``AsyncPostgresEngineSpec`` overrides this to resolve psycopg2 int OIDs.
+        Defined on the base so every async spec exposes it — used by
+        ``SqlaTable._get_virtual_table_metadata``.
         """
         if isinstance(type_code, str) and type_code != "":
             return type_code.upper()
         return None
 
-    # Default column-type mappings used by get_column_types / get_column_spec.
     _default_column_type_mappings: tuple[ColumnTypeMapping, ...] = (  # noqa: RUF012
         (
             re.compile(r"^string", re.IGNORECASE),
@@ -228,13 +212,7 @@ class BaseAsyncEngineSpec(ABC):
         ),
     )
 
-    # Engine-specific type mappings checked *before* the defaults.
-    # Subclasses override this to handle vendor-specific types.
     column_type_mappings: tuple[ColumnTypeMapping, ...] = ()  # noqa: RUF012
-
-    # Per-type mutator functions applied to fetched values.
-    # 1:1 with ``BaseEngineSpec.column_type_mutators`` in
-    # ``superset_old/db_engine_specs/base.py``.
     column_type_mutators: dict[type[TypeEngine[Any]], Callable[[Any], Any]] = {}  # noqa: RUF012
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -253,7 +231,6 @@ class BaseAsyncEngineSpec(ABC):
         query: str,
         parameters: dict[str, Any] | None = None,
     ) -> AsyncResultSet:
-        """Default execute implementation for subclasses to reuse."""
         result = await conn.execute(text(query), parameters or {})
         columns = list(result.keys()) if result.returns_rows else []
         data = [tuple(row) for row in result.fetchall()] if result.returns_rows else []
@@ -270,12 +247,6 @@ class BaseAsyncEngineSpec(ABC):
         query: str,
         limit: int | None = None,
     ) -> list[tuple[Any, ...]]:
-        """Default fetch_data implementation for subclasses to reuse.
-
-        Applies ``column_type_mutators`` (1:1 with
-        ``BaseEngineSpec.fetch_data`` in
-        ``superset_old/db_engine_specs/base.py:973-1011``).
-        """
         try:
             result = await conn.execute(text(query))
 
@@ -290,8 +261,6 @@ class BaseAsyncEngineSpec(ABC):
                 data = [tuple(row) for row in result.fetchall()]
 
             if cls.column_type_mutators and data:
-                # Build a mapping of column-index -> mutator function based on
-                # cursor.description type codes, exactly as the original does.
                 column_mutators: dict[int, Callable[[Any], Any]] = {}
                 for idx, row in enumerate(description):
                     type_code = row[1]
@@ -338,7 +307,6 @@ class BaseAsyncEngineSpec(ABC):
         cls,
         conn: AsyncConnection,
     ) -> set[str]:
-        """Return available catalog (database) names."""
         result = await conn.execute(
             text("SELECT DISTINCT catalog_name FROM information_schema.schemata")
         )
@@ -350,7 +318,6 @@ class BaseAsyncEngineSpec(ABC):
         conn: AsyncConnection,
         catalog: str | None = None,
     ) -> set[str]:
-        """Return available schema names, optionally filtered by catalog."""
         if catalog:
             result = await conn.execute(
                 text(
@@ -371,15 +338,6 @@ class BaseAsyncEngineSpec(ABC):
         conn: AsyncConnection,
         schema: str | None = None,
     ) -> set[str]:
-        """Return table names in the given schema.
-
-        Uses SQLAlchemy Inspector (same as the original Superset)
-        via ``run_sync`` to bridge the async connection.
-
-        1:1 with ``BaseEngineSpec.get_table_names`` in
-        ``superset_old/db_engine_specs/base.py:1459-1466``: strips
-        schema prefixes when ``try_remove_schema_from_table_name`` is True.
-        """
         from sqlalchemy import inspect as sa_inspect
 
         def _get(sync_conn: Any) -> set[str]:
@@ -400,14 +358,6 @@ class BaseAsyncEngineSpec(ABC):
         conn: AsyncConnection,
         schema: str | None = None,
     ) -> set[str]:
-        """Return view names in the given schema.
-
-        Uses SQLAlchemy Inspector via ``run_sync``.
-
-        1:1 with ``BaseEngineSpec.get_view_names`` in
-        ``superset_old/db_engine_specs/base.py:1487-1494``: strips
-        schema prefixes when ``try_remove_schema_from_table_name`` is True.
-        """
         from sqlalchemy import inspect as sa_inspect
 
         def _get(sync_conn: Any) -> set[str]:
@@ -429,7 +379,6 @@ class BaseAsyncEngineSpec(ABC):
         table_name: str,
         schema: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Return column metadata for a table."""
         params: dict[str, Any] = {"table_name": table_name}
         q = (
             "SELECT column_name, data_type, is_nullable "
@@ -455,9 +404,6 @@ class BaseAsyncEngineSpec(ABC):
     ) -> float | int | str:
         """Return an ordered time-based value of a portion of a time grain
         for sorting.
-
-        1:1 with ``BaseEngineSpec._sort_time_grains`` in
-        ``superset_old/db_engine_specs/base.py:884-943``.
         """
         pos = {
             "FIRST": 0,
@@ -510,16 +456,6 @@ class BaseAsyncEngineSpec(ABC):
 
     @classmethod
     def get_time_grain_expressions(cls) -> dict[str | None, str]:
-        """Return time grain expressions for this engine.
-
-        1:1 with ``BaseEngineSpec.get_time_grain_expressions`` in
-        ``superset_old/db_engine_specs/base.py:946-971``: copies
-        ``_time_grain_expressions``, merges ``TIME_GRAIN_ADDON_EXPRESSIONS``
-        for the engine, removes ``TIME_GRAIN_DENYLIST`` entries, and sorts
-        via ``_sort_time_grains``.
-        """
-        # Mirror original app.config["TIME_GRAIN_ADDON_EXPRESSIONS"] (default {})
-        # and app.config["TIME_GRAIN_DENYLIST"] (default []).
         # SupersetSettings() needs required env vars; fall back to defaults
         # when they are absent (e.g. isolated unit-test context).
         grain_addon_expressions: dict[str, dict[str, str]] = {}
@@ -554,43 +490,14 @@ class BaseAsyncEngineSpec(ABC):
 
     @classmethod
     def get_dbapi_exception_mapping(cls) -> dict[type[Exception], type[Exception]]:
-        """Map driver-specific exceptions to Superset DBAPI exception types.
-
-        Subclasses override this to handle engine-specific exceptions.
-
-        1:1 with ``BaseEngineSpec.get_dbapi_exception_mapping`` in
-        ``superset_old/db_engine_specs/base.py:751-761``.
-
-        :return: A map of driver specific exception to superset custom exceptions
-        """
         return {}
 
     @classmethod
     def parse_error_exception(cls, exception: Exception) -> Exception:
-        """Parse a driver-specific exception string.
-
-        Subclasses override to return an exception with a cleaned-up message.
-
-        1:1 with ``BaseEngineSpec.parse_error_exception`` in
-        ``superset_old/db_engine_specs/base.py:763-770``.
-
-        :return: An Exception with a parsed string off the original exception
-        """
         return exception
 
     @classmethod
     def get_dbapi_mapped_exception(cls, exception: Exception) -> Exception:
-        """Map a driver-specific exception to a Superset DBAPI exception type.
-
-        Checks ``get_dbapi_exception_mapping`` for an exact type match; falls
-        back to ``parse_error_exception`` when no mapping is found.
-
-        1:1 with ``BaseEngineSpec.get_dbapi_mapped_exception`` in
-        ``superset_old/db_engine_specs/base.py:772-786``.
-
-        :param exception: The driver specific exception
-        :return: Superset custom DBAPI exception
-        """
         new_exception = cls.get_dbapi_exception_mapping().get(type(exception))
         if not new_exception:
             return cls.parse_error_exception(exception)
@@ -598,10 +505,6 @@ class BaseAsyncEngineSpec(ABC):
 
     @classmethod
     def extract_errors(cls, ex: Exception) -> list[dict[str, Any]]:
-        """Extract structured error information from a database exception.
-
-        Checks _custom_errors patterns first, then falls back to generic.
-        """
         error_str = str(ex)
         for pattern, message_template in cls._custom_errors:
             match = pattern.search(error_str)
@@ -620,14 +523,6 @@ class BaseAsyncEngineSpec(ABC):
         uri: str,
         connect_args: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
-        """Adjust engine connection parameters.
-
-        Merges ``enforce_uri_query_params`` for the driver (1:1 with
-        ``BaseEngineSpec.adjust_engine_params`` in
-        ``superset_old/db_engine_specs/base.py:1358-1386``).
-
-        Subclasses can override to add engine-specific connection args.
-        """
         from sqlalchemy.engine import make_url
 
         url = make_url(uri)
@@ -637,23 +532,11 @@ class BaseAsyncEngineSpec(ABC):
             **cls.enforce_uri_query_params.get(driver, {}),
         }
 
-    # ------------------------------------------------------------------
-    # Column-type introspection
-    # ------------------------------------------------------------------
-
     @classmethod
     def get_column_types(
         cls,
         column_type: str | None,
     ) -> tuple[TypeEngine[Any], GenericDataType] | None:
-        """Map a native DB column type string to SQLAlchemy + generic types.
-
-        Checks ``column_type_mappings`` (engine-specific) first, then falls
-        back to ``_default_column_type_mappings``.
-
-        :param column_type: Column type string returned by the DB inspector.
-        :return: ``(sqla_type, generic_type)`` or ``None`` if unrecognised.
-        """
         if not column_type:
             return None
 
@@ -674,13 +557,6 @@ class BaseAsyncEngineSpec(ABC):
         native_type: str | None,
         db_extra: dict[str, Any] | None = None,
     ) -> ColumnSpec | None:
-        """Return a :class:`ColumnSpec` for *native_type*, or ``None``.
-
-        :param native_type: Native database column type string.
-        :param db_extra: Optional database extra configuration.
-        :return: :class:`ColumnSpec` with ``sqla_type``, ``generic_type``
-            and ``is_dttm``, or ``None`` when the type is unrecognised.
-        """
         if col_types := cls.get_column_types(native_type):
             column_type, generic_type = col_types
             is_dttm = generic_type == GenericDataType.TEMPORAL
@@ -697,14 +573,6 @@ class BaseAsyncEngineSpec(ABC):
         native_type: str | None,
         db_extra: dict[str, Any] | None = None,
     ) -> TypeEngine[Any] | str | None:
-        """Convert a native DB type string to a SQLAlchemy :class:`TypeEngine`.
-
-        Convenience wrapper around :meth:`get_column_spec`.
-
-        :param native_type: Native database column type string.
-        :param db_extra: Optional database extra configuration.
-        :return: SQLAlchemy type instance or ``None``.
-        """
         column_spec = cls.get_column_spec(
             native_type=native_type,
             db_extra=db_extra,
@@ -718,16 +586,6 @@ class BaseAsyncEngineSpec(ABC):
         dttm: datetime,
         db_extra: dict[str, Any] | None = None,
     ) -> str | None:
-        """Convert a Python ``datetime`` to a SQL expression string.
-
-        Subclasses override to produce engine-specific literals such as
-        ``TIMESTAMP '2021-01-01 00:00:00'``.
-
-        :param target_type: Target SQL type (e.g. ``"TIMESTAMP"``).
-        :param dttm: The datetime value.
-        :param db_extra: Optional database extra configuration.
-        :return: SQL expression string, or ``None`` for unsupported types.
-        """
         return None
 
     @classmethod
@@ -736,11 +594,4 @@ class BaseAsyncEngineSpec(ABC):
         conn: Any,
         statement: str,
     ) -> dict[str, Any]:
-        """Estimate the cost of a single SQL statement.
-
-        Base contract mirroring the sync ``BaseEngineSpec``; engines that
-        support estimation (postgres, trino) override this. Callers gate on
-        ``get_allow_cost_estimate`` first, so this default is unreachable in
-        practice.
-        """
         raise Exception("Database does not support cost estimation")  # noqa: TRY002

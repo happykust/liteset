@@ -39,13 +39,10 @@ from superset.schemas.advanced_data_type import (
 def _get_registry(state: State) -> dict[str, Any]:
     """Return the advanced_data_types registry from config.
 
-    Mirrors the original ``app.config['ADVANCED_DATA_TYPES']`` read in
-    superset_old/advanced_data_type/api.py:96,148 — whatever the user
-    configured is returned as-is.  The built-in defaults
-    (``internet_address`` + ``port``) live in the field default in
-    ``superset/config.py``, not here.  Injecting them unconditionally
-    here would override a user's explicit ``ADVANCED_DATA_TYPES = {}``
-    with the built-ins, diverging from original behaviour.
+    The built-in defaults (``internet_address`` + ``port``) live in the field
+    default in ``superset/config.py``, not here.  Injecting them unconditionally
+    here would override a user's explicit ``ADVANCED_DATA_TYPES = {}`` with
+    the built-ins.
     """
     return getattr(state.settings, "advanced_data_types", {}) or {}
 
@@ -60,9 +57,8 @@ def _invoke_handler(handler: Any, adv_type: str, values: list[Any]) -> Any:
     - object exposing ``fetch_data(values)``
     """
     if isinstance(handler, AdvancedDataType):
-        # 1:1 with the original call shape (superset_old/advanced_data_type/
-        # api.py:105-109): the request dict carries ONLY ``values`` — no
-        # extra ``advanced_data_type`` key that third-party plugins never saw.
+        # The request dict carries ONLY ``values`` — no extra ``advanced_data_type``
+        # key that third-party plugins never expected.
         return handler.translate_type({"values": values})  # type: ignore[typeddict-item]
     if callable(handler):
         return handler(values)
@@ -112,8 +108,6 @@ class AdvancedDataTypeController(Controller):
         registry = _get_registry(state)
         handler = registry.get(data.type)
         if not handler:
-            # Mirror superset_old/advanced_data_type/api.py ``get``:
-            # HTTP 400 "Invalid advanced data type: <type>".
             return Response(
                 content={
                     "message": _(
@@ -182,8 +176,6 @@ class AdvancedDataTypeController(Controller):
         registry = _get_registry(state)
         handler = registry.get(adv_type)
         if not handler:
-            # Mirror superset_old/advanced_data_type/api.py ``get``:
-            # HTTP 400 "Invalid advanced data type: <type>".
             return Response(
                 content={
                     "message": _(

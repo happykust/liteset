@@ -9,19 +9,16 @@ from superset.config import _superset_config_cache, SupersetSettings
 
 
 def test_default_settings(monkeypatch) -> None:
-    # Neutralise any ambient LITESET_* env so the true defaults are asserted
-    # (env has higher precedence than the field defaults).
+    # Neutralise ambient LITESET_* env (env has higher precedence than field defaults).
     monkeypatch.delenv("LITESET_SECRET_KEY", raising=False)
     monkeypatch.delenv("LITESET_SQLALCHEMY_DATABASE_URI", raising=False)
-    # ``sqlalchemy_database_uri`` is a required field (no field default in
-    # production), so supply the upstream-style sync sqlite URI and assert the
-    # async-driver conversion. The remaining fields exercise the true defaults.
+    # sqlalchemy_database_uri has no field default in production; supply the upstream
+    # sync sqlite URI to exercise the async-driver conversion.
     settings = SupersetSettings(
         secret_key="test-key-long-enough",
         sqlalchemy_database_uri="sqlite:///superset.db",
     )
     assert settings.secret_key.get_secret_value() == "test-key-long-enough"
-    # Sync sqlite URI is converted to async sqlite
     assert settings.sqlalchemy_database_uri == "sqlite+aiosqlite:///superset.db"
     assert settings.host == "0.0.0.0"  # noqa: S104  # asserts default host value
     assert settings.port == 8088
@@ -44,8 +41,6 @@ def test_ws_url_default_targets_main_app_ws_events() -> None:
     parsed = urlparse(settings.global_async_queries_websocket_url)
     assert parsed.scheme == "ws"
     assert parsed.path == "/ws/events"
-    # The path matches the registered WebSocket route (controller path "/" +
-    # handler "/ws/events"), and the port matches the app's default port.
     assert AsyncQueryWebSocket.path == "/"
     assert str(settings.port) in settings.global_async_queries_websocket_url
 
@@ -132,22 +127,20 @@ def test_from_superset_config_missing_secret_key(tmp_path: Path) -> None:
 
 @pytest.fixture(autouse=True)
 def _clear_config_cache():
-    """Clear cached superset config between tests."""
     _superset_config_cache.clear()
     yield
     _superset_config_cache.clear()
 
 
 def test_superset_config_source_auto_loads(monkeypatch, tmp_path):
-    """Settings auto-load from superset_config.py via settings source."""
     config_file = tmp_path / "superset_config.py"
     config_file.write_text(
         'SECRET_KEY = "auto-loaded-secret-key"\n'
         'SQLALCHEMY_DATABASE_URI = "postgresql://u:p@host/db"\n'
     )
     monkeypatch.setenv("SUPERSET_CONFIG_PATH", str(config_file))
-    # Neutralise ambient LITESET_* env so the config-file values win
-    # (env has higher precedence than superset_config.py).
+    # Env has higher precedence than superset_config.py; neutralise to let
+    # config-file values win.
     monkeypatch.delenv("LITESET_SECRET_KEY", raising=False)
     monkeypatch.delenv("LITESET_SQLALCHEMY_DATABASE_URI", raising=False)
     settings = SupersetSettings()
@@ -174,8 +167,7 @@ def test_no_superset_config_uses_defaults(monkeypatch):
 def test_version_sha_respects_configured_length():
     """``_resolve_version_info`` must honor VERSION_SHA_LENGTH, not [:8].
 
-    1:1 with upstream ``_try_json_readsha(VERSION_INFO_FILE,
-    VERSION_SHA_LENGTH)`` — the truncation length is configurable.
+    The truncation length is configurable via VERSION_SHA_LENGTH.
     """
     from unittest.mock import mock_open, patch
 

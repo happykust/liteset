@@ -15,24 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Upsert command for embedded dashboards.
-
-LITESET ADDITION (no 1:1 counterpart in Apache Superset 6.0).
-
-The original Apache Superset performs the embedded-dashboard upsert
-inline inside ``superset_old/dashboards/api.py::set_embedded`` (around
-line 1743) using the sync ``EmbeddedDashboardDAO.upsert`` helper.  The
-``superset_old/commands/dashboard/embedded/`` package only ships
-``__init__.py`` and ``exceptions.py``.
-
-In Liteset the upsert was extracted into a Command class so the embedded
-controller can rely on the standard async ``Command.execute()`` pipeline
-(validate -> run, AsyncSession DI, structured error handling).  This
-file therefore intentionally has no source counterpart in
-``superset_old/commands/`` and lives here so the embedded controller
-stays clean.  Do not delete: the controller imports
-``UpsertEmbeddedDashboardCommand`` from this module.
-"""
+"""Upsert command for embedded dashboards."""
 
 from __future__ import annotations
 

@@ -48,10 +48,8 @@ def _require_log_views_enabled(
 ) -> None:
     """Guard that returns 404 when log views are disabled via config.
 
-    1:1 with the original ``LogRestApi.is_enabled()`` /
-    ``@before_request ensure_enabled`` (superset_old/views/log/api.py:88-96)
-    which returns 404 when ``FAB_ADD_SECURITY_VIEWS`` or
-    ``SUPERSET_LOG_VIEW`` is ``False``.
+    Returns 404 when ``FAB_ADD_SECURITY_VIEWS`` or ``SUPERSET_LOG_VIEW`` is
+    ``False``.
     """
     from litestar.exceptions import NotFoundException
 
@@ -94,7 +92,6 @@ class LogController(Controller):
         rison_filters, order_by, page, page_size = build_rison_query_params(
             Log,
             rison_params,
-            # ``LogRestApi.page_size = 20`` (superset_old/views/log/api.py:76).
             default_page_size=20,
         )
         items = await dao.find_all(
@@ -135,9 +132,8 @@ class LogController(Controller):
     async def get_single(self, pk: int, dao: Any) -> dict[str, Any]:
         """GET /api/v1/log/{pk} — get single log entry.
 
-        msgspec cannot serialize the SA ``Log`` ORM instance directly, so
-        the response mirrors original Superset's Marshmallow ``LogModelView``
-        dump shape.
+        msgspec cannot serialize the SA ``Log`` ORM instance directly, so the
+        response is built as a plain dict.
         """
         from sqlalchemy.orm import selectinload
 
@@ -151,8 +147,8 @@ class LogController(Controller):
         if item is None:
             raise ObjectNotFoundError("Log", pk)
         user = getattr(item, "user", None)
-        # ``show_columns = list_columns`` upstream — no ``id`` inside
-        # ``result`` (it lives only in the FAB envelope's top-level key).
+        # No ``id`` inside ``result`` — it lives only in the envelope's
+        # top-level key.
         return {
             "id": pk,
             "result": {
@@ -239,8 +235,7 @@ class LogController(Controller):
         """GET /api/v1/log/recent_activity/ — recent activity for current user."""
         params = rison_params or {}
         page = params.get("page", 0)
-        # Mirror FAB _sanitize_page_args: clamp to FAB_API_MAX_PAGE_SIZE (default 100).
-        # LogRestApi does not override max_page_size, so the cap is always 100.
+        # Clamp page_size to the max page size (100).
         page_size = min(params.get("page_size", 20), 100)
         actions = params.get("actions", ["mount_explorer", "mount_dashboard"])
         distinct = params.get("distinct", True)
@@ -268,7 +263,6 @@ class LogController(Controller):
                 item_url = f"/superset/dashboard/{dashboard_slug or dashboard_id}/"
             elif slice_id:
                 item_type = "slice"
-                # Mirror Slice.build_explore_url() (superset_old/models/slice.py:309)
                 form_data_param = parse.quote(json.dumps({"slice_id": slice_id}))
                 item_url = f"/explore/?slice_id={slice_id}&form_data={form_data_param}"
             else:
@@ -293,10 +287,8 @@ class LogController(Controller):
                     "action": getattr(item, "action", ""),
                     "item_type": item_type,
                     "item_url": item_url,
-                    # Dashboard-first priority — mirrors the original if/elif block
-                    # in superset_old/daos/log.py:128-135.  Both
-                    # get_recent_activity query paths already JOIN Dashboard and
-                    # Slice and SELECT dashboard_title / slice_name, so we read
+                    # Both get_recent_activity query paths already JOIN Dashboard
+                    # and Slice and SELECT dashboard_title / slice_name, so we read
                     # them directly from the row rather than issuing a redundant
                     # batch-fetch that could miss in a race condition.
                     "item_title": getattr(item, "dashboard_title", None)

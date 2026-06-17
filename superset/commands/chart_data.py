@@ -17,8 +17,7 @@
 """Backwards-compatible re-export shim.
 
 The chart-data commands now live in
-``superset.commands.chart.data.get_data_command`` mirroring the
-original ``superset_old/commands/chart/data/`` package layout.
+``superset.commands.chart.data.get_data_command``.
 
 This module re-exports the canonical names so existing call sites keep
 working until they're migrated.  New code should import from

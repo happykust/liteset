@@ -14,12 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Abstract SQL validator interface ported 1:1 from
-``superset_old/sql_validators/base.py``.
+"""Abstract SQL validator interface.
 
-The original is a synchronous abstraction; this port preserves the
-same exception/annotation surface so that controllers and the
-``ValidateSQLCommand`` can dispatch by engine without behaviour change.
+Provides a synchronous abstraction for engine-specific SQL validation.
+Controllers and ``ValidateSQLCommand`` dispatch by engine name without
+behaviour change.
 """
 
 from __future__ import annotations
@@ -28,11 +27,6 @@ from typing import Any
 
 
 class SQLValidationAnnotation:
-    """Represents a single annotation (error/warning) in an SQL querytext.
-
-    1:1 with ``superset_old/sql_validators/base.py::SQLValidationAnnotation``.
-    """
-
     def __init__(
         self,
         message: str,
@@ -58,8 +52,6 @@ class SQLValidationAnnotation:
 class BaseSQLValidator:
     """BaseSQLValidator defines the interface for checking that a given sql
     query is valid for a given database engine.
-
-    1:1 with ``superset_old/sql_validators/base.py::BaseSQLValidator``.
     """
 
     name = "BaseSQLValidator"

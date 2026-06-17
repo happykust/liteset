@@ -15,19 +15,17 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/database/validate_sql.py``.
+"""Command for validating SQL statements against the database engine's validator.
 
-1:1 with the original: dispatches to the per-engine
-:class:`BaseSQLValidator` resolved via ``SQL_VALIDATORS_BY_ENGINE``
-(``PostgreSQLValidator`` -> ``pgsanity``, ``PrestoDBSQLValidator`` ->
-``EXPLAIN (TYPE VALIDATE)``).
+Dispatches to the per-engine :class:`BaseSQLValidator` resolved via
+``SQL_VALIDATORS_BY_ENGINE`` (``PostgreSQLValidator`` -> ``pgsanity``,
+``PrestoDBSQLValidator`` -> ``EXPLAIN (TYPE VALIDATE)``).
 
-When the engine has no validator configured the original raises
+When the engine has no validator configured, raises
 ``NoValidatorConfigFoundError`` (HTTP 422); when the configured validator
-name cannot be resolved it raises ``NoValidatorFoundError`` (HTTP 422).
+name cannot be resolved, raises ``NoValidatorFoundError`` (HTTP 422).
 There is **no** silent sqlglot fallback — that would mask the
-"not configured" condition behind a 200 response, which is exactly the
-behaviour this port restores.
+"not configured" condition behind a 200 response.
 """
 
 from __future__ import annotations
@@ -52,14 +50,6 @@ if TYPE_CHECKING:
     from superset.sql.validators.base import BaseSQLValidator
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Validator exceptions — ported 1:1 from
-# ``superset_old/commands/database/exceptions.py``.  They are defined here
-# (rather than in ``commands/database/exceptions.py``) so this port stays
-# self-contained; the status codes match the original exactly.
-# ---------------------------------------------------------------------------
 
 
 class NoValidatorConfigFoundError(SupersetErrorException):
@@ -96,8 +86,6 @@ class ValidatorSQLUnexpectedError(CommandException):
 class ValidateSQLCommand(AsyncBaseCommand[list[dict[str, Any]]]):
     """Validate a SQL statement against the database engine's validator.
 
-    1:1 port of ``superset_old/commands/database/validate_sql.py``:
-
     1. Load the database row (404 when missing).
     2. Resolve the validator name via ``SQL_VALIDATORS_BY_ENGINE``;
        raise :class:`NoValidatorConfigFoundError` (422) when the engine
@@ -128,9 +116,6 @@ class ValidateSQLCommand(AsyncBaseCommand[list[dict[str, Any]]]):
         self._validator: type[BaseSQLValidator] | None = None
 
     async def validate(self) -> None:
-        # Validate/populate model exists — matches the original
-        # ``ValidateSQLCommand.validate`` which raises ``DatabaseNotFoundError``
-        # (404) before any validator lookup.
         if not self._sql or not self._sql.strip():
             raise CommandInvalidError("SQL query is required")
         self._database = await self._dao.find_by_id(self._database_id)
@@ -171,13 +156,7 @@ class ValidateSQLCommand(AsyncBaseCommand[list[dict[str, Any]]]):
             )
 
     async def run(self) -> list[dict[str, Any]]:
-        """Validate the SQL statement and return a list of annotations.
-
-        :return: A list of ``SQLValidationAnnotation`` dicts.
-        :raises: ObjectNotFoundError, NoValidatorConfigFoundError,
-          NoValidatorFoundError, ValidatorSQLUnexpectedError,
-          ValidatorSQLError, ValidatorSQL400Error
-        """
+        """Run the SQL validator and return a list of annotation dicts."""
         if self._database is None or self._validator is None:
             await self.validate()
         if not self._validator or not self._database:
@@ -199,28 +178,15 @@ class ValidateSQLCommand(AsyncBaseCommand[list[dict[str, Any]]]):
                 level=ErrorLevel.ERROR,
             )
 
-            # Return as a 400 if the database error message says we got a
-            # 4xx error — matches the original regex.
             if re.search(r"([\W]|^)4\d{2}([\W]|$)", str(ex)):
                 raise ValidatorSQL400Error(superset_error) from ex
             raise ValidatorSQLError(superset_error) from ex
 
-    # ------------------------------------------------------------------
-    # internal helpers
-    # ------------------------------------------------------------------
-
     def _validate_sync(self) -> list[Any]:
-        """Run the (synchronous) validator within the validation timeout.
+        """Run the synchronous validator in a worker thread
+        within the configured timeout.
 
-        Mirrors the original ``with utils.timeout(...)`` guard around
-        ``self._validator.validate(sql, catalog, schema, self._model)``.
-        Runs in a worker thread because the validators are fully
-        synchronous (``pgsanity`` / ``EXPLAIN`` over a sync engine).
-
-        ``SigalrmTimeout`` (the port of ``utils.timeout``) self-disables
-        when not on the main thread — matching the original's defensive
-        "timeout can't be used in the current context" branch — so the
-        guard is a safe no-op inside the worker thread.
+        ``SigalrmTimeout`` self-disables off the main thread — safe no-op.
         """
         from superset.utils.core import SigalrmTimeout
 
@@ -235,12 +201,7 @@ class ValidateSQLCommand(AsyncBaseCommand[list[dict[str, Any]]]):
             )
 
     def _validators_by_engine(self) -> dict[str, str]:
-        """Return the ``SQL_VALIDATORS_BY_ENGINE`` config map.
-
-        Mirrors ``app.config["SQL_VALIDATORS_BY_ENGINE"]`` from the
-        original; exposed on
-        :attr:`SupersetSettings.sql_validators_by_engine`.
-        """
+        """Return the ``SQL_VALIDATORS_BY_ENGINE`` config map, or {} on error."""
         try:
             from superset.config import SupersetSettings
 
@@ -250,7 +211,7 @@ class ValidateSQLCommand(AsyncBaseCommand[list[dict[str, Any]]]):
             return {}
 
     def _validation_timeout(self) -> int:
-        """Return ``SQLLAB_VALIDATION_TIMEOUT`` (seconds)."""
+        """Return ``SQLLAB_VALIDATION_TIMEOUT`` in seconds."""
         try:
             from superset.config import SupersetSettings
 

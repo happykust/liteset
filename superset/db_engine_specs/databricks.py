@@ -15,29 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Databricks engine spec.
-
-Ported 1:1 from ``superset_old/db_engine_specs/databricks.py``.
-
-The only deviations from the original file are:
-
-* Marshmallow ``Schema`` / ``fields`` imports are dropped.  The original
-  Marshmallow ``Schema`` subclasses (``DatabricksBaseSchema``,
-  ``DatabricksNativeSchema``, ``DatabricksNativePropertiesSchema``,
-  ``DatabricksPythonConnectorSchema``) existed solely so that FAB's
-  OpenAPI generator could introspect them.  In liteset we attach the
-  equivalent JSON Schema dictionaries directly to ``parameters_schema``
-  / ``properties_schema`` -- see the ``DATABRICKS_*_PARAMETERS_SCHEMA``
-  module-level dicts below.  ``parameters_json_schema()`` is then a
-  trivial identity function.
-* The OpenAPI introspection helper is no longer needed since the
-  dictionaries already are valid OpenAPI fragments.
-
-Everything else -- class hierarchy, attributes, time-grain dict, SQL
-URL construction, ``validate_parameters`` semantics, and the
-``monkeypatch_dialect`` hook -- is copied byte-for-byte from the
-original.
-"""
+"""Databricks database engine spec."""
 
 from __future__ import annotations
 
@@ -67,7 +45,7 @@ try:
 except ImportError:
 
     class ParamEscaper:  # type: ignore
-        """Dummy class."""
+        pass
 
 
 class DatabricksStringType(types.TypeDecorator):
@@ -123,11 +101,6 @@ def monkeypatch_dialect() -> None:
         pass
 
 
-# JSON Schema fragments mirroring the original Marshmallow ``Schema``
-# classes.  These are attached directly to the engine specs as
-# ``parameters_schema`` / ``properties_schema``; ``parameters_json_schema``
-# returns them unchanged.
-
 _DATABRICKS_BASE_PROPERTIES: dict[str, Any] = {
     "access_token": {"type": "string"},
     "host": {"type": "string"},
@@ -147,7 +120,6 @@ _DATABRICKS_BASE_PROPERTIES: dict[str, Any] = {
 _DATABRICKS_BASE_REQUIRED: list[str] = ["access_token", "host", "port"]
 
 
-# Mirror of the original ``DatabricksBaseSchema``.
 DATABRICKS_BASE_PARAMETERS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": dict(_DATABRICKS_BASE_PROPERTIES),
@@ -155,7 +127,6 @@ DATABRICKS_BASE_PARAMETERS_SCHEMA: dict[str, Any] = {
 }
 
 
-# Mirror of the original ``DatabricksNativeSchema`` (adds ``database``).
 DATABRICKS_NATIVE_PARAMETERS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -166,8 +137,6 @@ DATABRICKS_NATIVE_PARAMETERS_SCHEMA: dict[str, Any] = {
 }
 
 
-# Mirror of the original ``DatabricksNativePropertiesSchema`` — flat schema
-# inheriting from ``DatabricksNativeSchema`` and adding ``http_path``.
 DATABRICKS_NATIVE_PROPERTIES_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -179,7 +148,6 @@ DATABRICKS_NATIVE_PROPERTIES_SCHEMA: dict[str, Any] = {
 }
 
 
-# Mirror of the original ``DatabricksPythonConnectorSchema``.
 DATABRICKS_PYTHON_CONNECTOR_PARAMETERS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -198,11 +166,6 @@ DATABRICKS_PYTHON_CONNECTOR_PARAMETERS_SCHEMA: dict[str, Any] = {
 
 
 class DatabricksBaseParametersType(TypedDict):
-    """
-    The parameters are all the keys that do not exist on the Database model.
-    These are used to build the sqlalchemy uri.
-    """
-
     access_token: str
     host: str
     port: int
@@ -210,39 +173,21 @@ class DatabricksBaseParametersType(TypedDict):
 
 
 class DatabricksNativeParametersType(DatabricksBaseParametersType):
-    """
-    Additional parameters required only for the DatabricksNativeEngineSpec.
-    """
-
     database: str
 
 
 class DatabricksNativePropertiesType(TypedDict):
-    """
-    All properties that need to be available to the DatabricksNativeEngineSpec
-    in order tocreate a connection if the dynamic form is used.
-    """
-
     parameters: DatabricksNativeParametersType
     extra: str
 
 
 class DatabricksPythonConnectorParametersType(DatabricksBaseParametersType):
-    """
-    Additional parameters required only for the DatabricksPythonConnectorEngineSpec.
-    """
-
     http_path_field: str
     default_catalog: str
     default_schema: str
 
 
 class DatabricksPythonConnectorPropertiesType(TypedDict):
-    """
-    All properties that need to be available to the DatabricksPythonConnectorEngineSpec
-    in order to create a connection if the dynamic form is used.
-    """
-
     parameters: DatabricksPythonConnectorParametersType
     extra: str
 
@@ -314,10 +259,6 @@ class DatabricksDynamicBaseEngineSpec(BasicParametersMixin, DatabricksBaseEngine
     def get_extra_params(
         database: Database, source: QuerySource | None = None
     ) -> dict[str, Any]:
-        """
-        Add a user agent to be used in the requests.
-        Trim whitespace from connect_args to avoid databricks driver errors
-        """
         extra: dict[str, Any] = BaseEngineSpec.get_extra_params(database, source)
         engine_params: dict[str, Any] = extra.setdefault("engine_params", {})
         connect_args: dict[str, Any] = engine_params.setdefault("connect_args", {})
@@ -326,7 +267,7 @@ class DatabricksDynamicBaseEngineSpec(BasicParametersMixin, DatabricksBaseEngine
         connect_args.setdefault("http_headers", [("User-Agent", user_agent)])
         connect_args.setdefault("_user_agent_entry", user_agent)
 
-        # trim whitespace from http_path to avoid databricks errors on connecting
+        # Databricks driver errors on http_path with leading/trailing whitespace.
         if http_path := connect_args.get("http_path"):
             connect_args["http_path"] = http_path.strip()
 
@@ -350,10 +291,7 @@ class DatabricksDynamicBaseEngineSpec(BasicParametersMixin, DatabricksBaseEngine
         raw_message = cls._extract_error_message(ex)
 
         context = context or {}
-        # access_token isn't currently parseable from the
-        # databricks error response, but adding it in here
-        # for reference if their error message changes
-
+        # access_token is not yet included in Databricks error responses.
         for key, value in cls.context_key_mapping.items():
             context[key] = context.get(value)
 
@@ -531,31 +469,16 @@ class DatabricksNativeEngineSpec(DatabricksDynamicBaseEngineSpec):
 
     @classmethod
     def parameters_json_schema(cls) -> Any:
-        """
-        Return configuration parameters as OpenAPI.
-
-        ``properties_schema`` is already a JSON Schema dict (see
-        ``DATABRICKS_NATIVE_PROPERTIES_SCHEMA``), so we return it as-is.
-        """
         return cls.properties_schema or None
 
     @classmethod
     def get_default_catalog(cls, database: Database) -> str:
-        """
-        Return the default catalog.
+        """Return the default catalog from connect_args or SHOW CATALOGS.
 
-        It's optionally specified in `connect_args.catalog`. If not:
-
-        The default behavior for Databricks is confusing. When Unity Catalog is not
-        enabled we have (the DB engine spec hasn't been tested with it enabled):
-
-            > SHOW CATALOGS;
-            spark_catalog
-            > SELECT current_catalog();
-            hive_metastore
-
-        To handle permissions correctly we use the result of `SHOW CATALOGS` when a
-        single catalog is returned.
+        When Unity Catalog is disabled, ``SHOW CATALOGS`` returns ``spark_catalog``
+        while ``SELECT current_catalog()`` returns ``hive_metastore``.  We prefer
+        ``SHOW CATALOGS`` when a single result is returned for correct permission
+        handling.
         """
         connect_args = cls.get_extra_params(database)["engine_params"]["connect_args"]
         if default_catalog := connect_args.get("catalog"):

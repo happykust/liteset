@@ -16,9 +16,6 @@
 # under the License.
 """Analytics DB connection-safety guard.
 
-Ported 1:1 from
-``superset_old/security/analytics_db_safety.py``.
-
 The chart importer (:mod:`superset.commands.chart.importers.v1.utils`)
 calls :func:`check_sqlalchemy_uri` against every DB URI in an imported
 bundle.  Drivers that allow filesystem access from inside a SQL query
@@ -27,10 +24,8 @@ runs with a service-account that should not be able to read arbitrary
 local files.  When the ``ENABLE_SUPERSET_META_DB`` feature flag is
 disabled the meta-DB driver is also rejected.
 
-This module is intentionally framework-agnostic — the original Apache
-Superset version pulls in the upstream ``lazy_gettext`` for the error
-message; Liteset substitutes the no-op shim from
-:mod:`superset.i18n` so we can run without the legacy WSGI stack.
+This module is intentionally framework-agnostic — uses the no-op shim
+from :mod:`superset.i18n` so it can run without the legacy WSGI stack.
 """
 
 from __future__ import annotations
@@ -59,9 +54,6 @@ def check_sqlalchemy_uri(uri: URL) -> None:
     """Reject SQLAlchemy URIs that would let analytics queries escape to
     the local filesystem (sqlite, shillelagh) or cross the meta-DB
     boundary when ``ENABLE_SUPERSET_META_DB`` is disabled.
-
-    Mirrors :func:`superset_old.security.analytics_db_safety.check_sqlalchemy_uri`
-    1:1 — same dialect inspection, same error type, same message.
 
     Raises:
         SupersetSecurityException: when the URI's drivername matches

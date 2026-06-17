@@ -32,10 +32,6 @@ from superset.models.connectors import AsyncQueryExecutionMixin, SqlaTable, Tabl
 from superset.models.helpers import ExploreMixin
 from superset.models.sql_lab import Query
 
-# ---------------------------------------------------------------------------
-# Step 1 — behaviour-preserving refactor on SqlaTable
-# ---------------------------------------------------------------------------
-
 
 def test_sqlatable_mixes_in_async_query_execution_mixin() -> None:
     assert issubclass(SqlaTable, AsyncQueryExecutionMixin)
@@ -54,7 +50,6 @@ def test_sqlatable_mixes_in_async_query_execution_mixin() -> None:
 
 
 def test_async_query_methods_live_on_the_mixin_not_sqlatable() -> None:
-    # The methods were moved off SqlaTable's own __dict__ into the mixin.
     for name in (
         "async_query",
         "_build_sql",
@@ -67,13 +62,7 @@ def test_async_query_methods_live_on_the_mixin_not_sqlatable() -> None:
         assert name not in SqlaTable.__dict__, name
 
 
-# ---------------------------------------------------------------------------
-# Step 2 — Query datasource interface
-# ---------------------------------------------------------------------------
-
-
 def _make_query(**kwargs) -> Query:
-    """Build a transient Query with synthesized result columns in ``extra``."""
     extra = {
         "columns": [
             {
@@ -136,7 +125,6 @@ def test_query_columns_synthesized_from_extra() -> None:
     assert [c.column_name for c in cols] == ["gender", "ds", "num"]
     assert [c.type for c in cols] == ["STRING", "TIMESTAMP", "LONGINTEGER"]
     assert [c.is_dttm for c in cols] == [False, True, False]
-    # Synthesized columns are filterable / groupby (1:1 with upstream).
     assert all(c.filterable and c.groupby for c in cols)
 
 
@@ -149,11 +137,9 @@ def test_query_columns_are_transient_and_async_safe() -> None:
     MissingGreenlet under asyncpg).
     """
     col = _make_query().columns[0]
-    # Not attached to any session.
     from sqlalchemy import inspect as sa_inspect
 
     assert sa_inspect(col).transient is True
-    # No lazy-load / no exception.
     assert col.table is None
     assert col.database is None
 

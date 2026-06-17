@@ -16,8 +16,7 @@
 # under the License.
 """Feature flag manager backed by SupersetSettings config.
 
-1:1 port of superset_old/utils/feature_flag_manager.py — supports
-GET_FEATURE_FLAGS_FUNC (post-processes the whole flags dict per-request)
+Supports GET_FEATURE_FLAGS_FUNC (post-processes the whole flags dict per-request)
 and IS_FEATURE_ENABLED_FUNC (overrides a single flag's resolution).
 """
 
@@ -42,19 +41,13 @@ class FeatureFlagManager:
         get_feature_flags_func: Any | None = None,
         is_feature_enabled_func: Any | None = None,
     ) -> None:
-        """Initialise from config.
-
-        Mirrors ``FeatureFlagManager.init_app`` in the upstream code:
-        ``superset_old/utils/feature_flag_manager.py:29-33``.
-        """
+        """Initialise from config."""
         self._feature_flags = deepcopy(feature_flags)
         self._get_feature_flags_func = get_feature_flags_func
         self._is_feature_enabled_func = is_feature_enabled_func
 
     def get_feature_flags(self) -> dict[str, bool]:
         """Return the merged feature-flags dict.
-
-        1:1 with ``superset_old/utils/feature_flag_manager.py:35-45``:
 
         * If GET_FEATURE_FLAGS_FUNC is set, call it with a *deep copy* of the
           flags dict and return its result (the callback may mutate/return a
@@ -76,8 +69,6 @@ class FeatureFlagManager:
 
     def is_feature_enabled(self, feature: str) -> bool:
         """Return whether a feature flag is enabled.
-
-        1:1 with ``superset_old/utils/feature_flag_manager.py:47-58``:
 
         * If IS_FEATURE_ENABLED_FUNC is set, use it exclusively:
           call ``func(feature, current_value)`` when the flag exists,

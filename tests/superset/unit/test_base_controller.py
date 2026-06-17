@@ -14,8 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for base controller utilities."""
-
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -34,42 +32,32 @@ from superset.exceptions import SupersetValidationException
 
 
 def test_escape_like_percent():
-    """Test escaping of % character."""
     assert _escape_like("100%") == r"100\%"
 
 
 def test_escape_like_underscore():
-    """Test escaping of _ character."""
     assert _escape_like("a_b") == r"a\_b"
 
 
 def test_escape_like_backslash():
-    """Test escaping of backslash character."""
     assert _escape_like(r"a\b") == r"a\\b"
 
 
 def test_escape_like_backslash_then_percent():
-    """Test escaping of backslash followed by % (order matters)."""
+    # Order matters: backslash must be escaped before %, otherwise the already-escaped
+    # backslash gets a second round of escaping.
     assert _escape_like(r"a\%b") == r"a\\\%b"
 
 
 def test_escape_like_no_special_chars():
-    """Test that strings without special characters are unchanged."""
     assert _escape_like("hello") == "hello"
 
 
 def test_escape_like_multiple_specials():
-    """Test escaping of multiple special characters in one string."""
     assert _escape_like(r"a\b_c%d") == r"a\\b\_c\%d"
 
 
-# ---------------------------------------------------------------------------
-# NEW-T12: extract_ids
-# ---------------------------------------------------------------------------
-
-
 def test_extract_ids_returns_ids():
-    """extract_ids returns list of ints from rison params."""
     assert extract_ids({"ids": [1, 2, 3]}) == [1, 2, 3]
 
 
@@ -104,11 +92,6 @@ def test_extract_ids_required_returns_ids():
     assert extract_ids_required({"ids": [5, 10]}) == [5, 10]
 
 
-# ---------------------------------------------------------------------------
-# NEW-T12: serialize_list_response
-# ---------------------------------------------------------------------------
-
-
 def test_serialize_list_response_basic():
     item1 = MagicMock()
     item1.id = 1
@@ -131,7 +114,6 @@ def test_serialize_list_response_empty():
 
 
 def test_serialize_list_response_missing_attr():
-    """Attributes not on the model return None."""
     item = MagicMock(spec=["id"])
     item.id = 1
     result = serialize_list_response([item], total=1, columns=["id", "missing"])
@@ -142,10 +124,9 @@ def test_serialize_list_response_missing_attr():
 def test_serialize_list_response_ids_populated_when_id_not_in_columns():
     """ids array is populated from ORM items even when 'id' is absent from columns.
 
-    1:1 with FAB BaseModelRestApi.get_list which calls self.datamodel.get_keys(lst)
-    — getattr(item, pk_name) on each ORM object, completely independent of
-    list_columns. The Log endpoint (superset_old/views/log/api.py:48-60) omits
-    "id" from list_columns yet the response carries populated ids.
+    Computed via getattr(item, pk_name) on each ORM object, completely independent
+    of list_columns. The Log endpoint omits "id" from list_columns yet the
+    response must carry populated ids.
     """
     item1 = MagicMock()
     item1.id = 7
@@ -156,24 +137,15 @@ def test_serialize_list_response_ids_populated_when_id_not_in_columns():
     item2.action = "mount_explorer"
     item2.user_id = 4
 
-    # "id" intentionally absent — mirrors Log list_columns
     columns = ["action", "user_id"]
     result = serialize_list_response([item1, item2], total=2, columns=columns)
 
-    # ids must be populated from the ORM items, not from the row dict
     assert result["ids"] == ["7", "8"], (
         "ids should be populated from ORM item.id even when 'id' is absent from columns"
     )
-    # list_columns in the response must NOT include "id" (matches original list_columns)
     assert "id" not in result["list_columns"]
-    # result rows must NOT contain an id key
     assert "id" not in result["result"][0]
     assert "id" not in result["result"][1]
-
-
-# ---------------------------------------------------------------------------
-# NEW-T12: extract_pagination
-# ---------------------------------------------------------------------------
 
 
 def test_extract_pagination_defaults():
@@ -186,11 +158,6 @@ def test_extract_pagination_custom():
     page, page_size = extract_pagination({"page": 3, "page_size": 50})
     assert page == 3
     assert page_size == 50
-
-
-# ---------------------------------------------------------------------------
-# NEW-T12: get_info_payload
-# ---------------------------------------------------------------------------
 
 
 async def test_get_info_payload_registered_spec():
@@ -233,8 +200,6 @@ async def test_get_info_payload_sa_fallback():
     dao = MagicMock()
     dao.model_cls = model_cls
 
-    # Production imports ``from sqlalchemy import inspect as sa_inspect``
-    # inside the function, so patching ``sqlalchemy.inspect`` intercepts it.
     with patch("sqlalchemy.inspect", return_value=mock_mapper):
         result = await get_info_payload(dao, "Database", ["can_read"])
 
@@ -244,17 +209,12 @@ async def test_get_info_payload_sa_fallback():
     assert result["add_columns"][0]["required"] is True
 
 
-# ---------------------------------------------------------------------------
-# get_related_payload: 404 when column_name passes allowed_fields but has no
-# SA relationship — mirrors superset_old/views/base_api.py:585-588.
-# ---------------------------------------------------------------------------
-
-
 async def test_get_related_payload_unknown_relationship_raises_404():
     """column_name passes allowed_fields but is absent from mapper.relationships
     → NotFoundException (HTTP 404), not HTTP 200 with empty payload.
 
-    1:1 with superset_old/views/base_api.py:585-588:
+    The relationship lookup raises KeyError on unknown column_name, which the
+    controller converts to response_404:
         try:
             datamodel = self.datamodel.get_related_interface(column_name)
         except KeyError:
@@ -284,9 +244,9 @@ async def test_get_related_payload_unknown_relationship_raises_404():
 
 
 async def test_get_distinct_payload_preserves_raw_value_type():
-    """/distinct ``text`` must preserve the raw column value type (not str()),
-    1:1 with upstream views/base_api.py which uses ``item[0]`` for both
-    ``text`` and ``value`` — e.g. an int column yields {"text": 5, ...}."""
+    """/distinct ``text`` must preserve the raw column value type (not str()):
+    ``item[0]`` is used for both ``text`` and ``value`` — e.g. an int column
+    yields {"text": 5, ...}."""
     from superset.models.sql_lab import SavedQuery
 
     dao = MagicMock()

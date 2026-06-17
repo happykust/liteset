@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/database/ssh_tunnel/delete.py``."""
+"""Command for deleting an SSH tunnel for a database connection."""
 
 from __future__ import annotations
 
@@ -39,13 +39,8 @@ class DeleteSSHTunnelCommand(AsyncBaseCommand[None]):
         self._tunnel: Any = None
 
     async def validate(self) -> None:
-        # Mirrors ``superset_old/commands/database/ssh_tunnel/delete.py:42-43``:
-        # the feature-flag check runs BEFORE the existence check, so deletion
-        # returns 400 when SSH tunnelling is disabled regardless of whether a
-        # tunnel row exists. In the original this guard lives at the top of
-        # ``run()`` (which runs before ``validate()``); here ``execute()`` calls
-        # ``validate()`` first, so we put it at the start of ``validate()`` to
-        # preserve the same ordering.
+        # Feature-flag check before existence check: disabled tunnelling returns
+        # 400 regardless of whether a row exists.
         from superset.commands.database.ssh_tunnel.exceptions import (
             SSHTunnelingNotEnabledError,
         )

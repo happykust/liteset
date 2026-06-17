@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/distributed_lock/get.py``."""
+"""Command to retrieve a distributed lock entry from the key-value store."""
 
 from __future__ import annotations
 
@@ -32,11 +32,8 @@ logger = logging.getLogger(__name__)
 class GetDistributedLock(BaseDistributedLockCommand):
     """Return the decoded LockValue for ``self.key`` or ``None``.
 
-    Mirrors the sync original: superset_old/commands/distributed_lock/get.py:42
-    checks ``if not entry or entry.is_expired(): return None`` after calling
-    ``KeyValueDAO.get_entry()`` which has no SQL expiry filter.  The async DAO's
-    ``get_entry_by_key`` likewise performs no expiry filtering, so we must inline
-    the same ``is_expired()`` check here.
+    ``get_entry_by_key`` performs no SQL expiry filtering, so an explicit
+    ``is_expired()`` check is done here before returning the value.
     """
 
     async def run(self) -> LockValue | None:
@@ -44,9 +41,6 @@ class GetDistributedLock(BaseDistributedLockCommand):
         entry = await dao.get_entry_by_key(self.resource, self.key)
         if entry is None:
             return None
-        # Mirror superset_old/commands/distributed_lock/get.py:42:
-        #   if not entry or entry.is_expired(): return None
-        # KeyValueEntry.is_expired() == (expires_on is not None and expires_on <= now())
         if entry.expires_on is not None and entry.expires_on <= datetime.now():
             return None
         raw = cast("bytes | str", entry.value)

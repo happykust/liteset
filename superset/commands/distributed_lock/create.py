@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/distributed_lock/create.py``."""
+"""Command to create a distributed lock entry in the key-value store."""
 
 from __future__ import annotations
 
@@ -32,23 +32,13 @@ logger = logging.getLogger(__name__)
 
 
 class CreateDistributedLock(BaseDistributedLockCommand):
-    """Insert a fresh ``LOCK`` row for ``self.key``.
+    """Insert a fresh LOCK row for ``self.key``, deleting expired entries first.
 
-    Mirrors the sync original: deletes expired entries first, then inserts a
-    new one.  Any encoding / SQL error is rewrapped as
-    :class:`CreateKeyValueDistributedLockFailedException`, matching the
-    ``@transaction(on_error=...reraise=...)`` decorator on the original.
-    Transaction commit is handled by ``provide_async_session`` at the
-    request boundary; this method only flushes.
-
-    The INSERT is wrapped in a SAVEPOINT (``begin_nested``): when two
-    workers race for the same lock the loser hits a UNIQUE
-    ``IntegrityError``.  Without the savepoint that failed INSERT poisons
-    the shared request session (every later statement fails), which is
-    exactly the path the OAuth2 ``@backoff`` retry walks into.  Rolling
-    back only the savepoint keeps the outer request transaction intact —
-    the same pattern as ``tags/core.py::get_tag``.  This stands in for the
-    original's ``@transaction`` rollback.
+    The INSERT is wrapped in a SAVEPOINT (``begin_nested``): when two workers race
+    for the same key the loser hits a UNIQUE IntegrityError. Without the savepoint
+    the failed INSERT poisons the shared request session — exactly the path the
+    OAuth2 ``@backoff`` retry walks into. Rolling back only the savepoint keeps
+    the outer transaction intact.
     """
 
     lock_expiration = timedelta(seconds=30)

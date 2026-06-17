@@ -14,14 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""``superset load-test-users`` CLI parity.
-
-The custom test roles ``gamma_sqllab`` / ``gamma_no_csv`` must be granted
-``database_access`` on the example database — 1:1 with upstream
-``cli/test.py`` (which adds ``examples_pv`` to both roles). Standard Gamma /
-sql_lab role defs do not carry that grant, so copying their permissions is
-not sufficient.
-"""
+"""Tests for ``superset load-test-users`` CLI command."""
 
 from __future__ import annotations
 
@@ -39,9 +32,8 @@ def test_load_test_users_grants_examples_db_access(monkeypatch) -> None:
 
     monkeypatch.setenv("LITESET_TESTING", "true")
 
-    # One shared in-memory DB (SingletonThreadPool → same connection), so the
-    # async session the CLI opens and our sync verification session see the
-    # same committed rows.
+    # SingletonThreadPool keeps one connection, so the async CLI session and
+    # the sync verification session below see the same committed rows.
     sync_engine = create_engine("sqlite://")
     Base.metadata.create_all(sync_engine)
     async_engine = create_async_engine(
@@ -54,7 +46,6 @@ def test_load_test_users_grants_examples_db_access(monkeypatch) -> None:
         users_cli, "_get_async_session_factory", lambda: (factory, async_engine)
     )
 
-    # Invoke the click command's underlying callback.
     users_cli.load_test_users.callback("general")
 
     with Session(sync_engine) as s:

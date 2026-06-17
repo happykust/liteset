@@ -412,8 +412,8 @@ async def test_duplicate_validates_table_name(mock_dao):
 
 
 async def test_duplicate_source_not_found(mock_dao):
-    # 1:1 with upstream: a missing base dataset accumulates into the
-    # validation error set (422 DatasetInvalidError), not an early 404.
+    # A missing base dataset accumulates into the validation error set
+    # (422 DatasetInvalidError), not an early 404.
     from superset.commands.dataset.exceptions import DatasetInvalidError
 
     mock_dao.find_by_id = AsyncMock(return_value=None)
@@ -623,10 +623,9 @@ async def test_warm_up_success(mock_dao):
 
 async def test_warm_up_runs_chart_command_via_execute(mock_dao, monkeypatch):
     """Regression: the per-chart command MUST go through execute() AND be
-    handed the already-loaded Slice (``chart=``) — 1:1 with upstream where
-    ``ChartWarmUpCacheCommand.validate()`` short-circuits for a Slice
-    instance instead of re-fetching it per chart (the N-query regression).
-    The stub mirrors that contract exactly.
+    handed the already-loaded Slice (``chart=``).
+    ``ChartWarmUpCacheCommand.validate()`` short-circuits for a Slice instance
+    instead of re-fetching it per chart (the N-query regression).
     """
     from superset.commands.dataset import warm_up_cache as wuc_module
 
@@ -684,8 +683,8 @@ async def test_warm_up_runs_chart_command_via_execute(mock_dao, monkeypatch):
 
 async def test_delete_column_dataset_not_found(mock_dao, mock_column_dao):
     """A missing dataset surfaces as a missing COLUMN (the lookup is scoped
-    by ``(dataset_id, column_id)``) — 1:1 with upstream
-    ``DatasetDAO.find_dataset_column`` → ``DatasetColumnNotFoundError``."""
+    by ``(dataset_id, column_id)``) via ``DatasetDAO.find_dataset_column``
+    → ``DatasetColumnNotFoundError``."""
     mock_column_dao.find_by_dataset_and_id = AsyncMock(return_value=None)
     cmd = DeleteDatasetColumnCommand(
         dataset_dao=mock_dao,
@@ -698,12 +697,11 @@ async def test_delete_column_dataset_not_found(mock_dao, mock_column_dao):
 
 
 async def test_delete_column_ownership_checked_on_column(mock_dao, mock_column_dao):
-    """Ownership is checked on the COLUMN itself — 1:1 with upstream
-    ``raise_for_ownership(self._model)`` where ``_model`` is the TableColumn
-    (superset_old/commands/dataset/columns/delete.py:30-36).  TableColumn has
-    no ``owners``, so non-admins are always denied (effectively admin-only);
-    checking the parent DATASET instead silently widened access to dataset
-    owners (R14-07)."""
+    """Ownership is checked on the COLUMN itself via
+    ``raise_for_ownership(self._model)`` where ``_model`` is the TableColumn.
+    TableColumn has no ``owners``, so non-admins are always denied
+    (effectively admin-only); checking the parent DATASET instead silently
+    widened access to dataset owners (R14-07)."""
     mock_column = MagicMock()
     mock_column_dao.find_by_dataset_and_id = AsyncMock(return_value=mock_column)
     sm = AsyncMock()
@@ -926,7 +924,7 @@ async def test_bulk_delete_some_ids_not_found(mock_dao, mock_dataset):
 
 def test_dataset_invalid_error_normalized_messages_merges_per_field():
     """``normalized_messages`` merges each child into ``{field: [messages]}``
-    1:1 with upstream FAB ``response_422(message=ex.normalized_messages())``."""
+    matching the FAB ``response_422(message=ex.normalized_messages())`` shape."""
     from superset.commands.dataset.exceptions import (
         DatabaseNotFoundValidationError,
         DatasetInvalidError,
@@ -943,15 +941,14 @@ def test_dataset_invalid_error_normalized_messages_merges_per_field():
         "table_name": ["table_name is required"],
         "database": ["Database does not exist"],
     }
-    # append() extends the accumulator just like upstream CommandInvalidError.
+    # append() extends the accumulator.
     err.append(DatasetValidationError("Invalid SQL: boom", field_name="sql"))
     assert err.normalized_messages()["sql"] == ["Invalid SQL: boom"]
     assert err.status_code == 422
 
 
 def test_dataset_validation_error_field_keys_match_upstream():
-    """Field keys + message text are 1:1 with
-    ``superset_old/commands/dataset/exceptions.py``."""
+    """Field keys and message text match the expected validation error shapes."""
     from superset.commands.dataset.exceptions import (
         DatabaseNotFoundValidationError,
         DatasetColumnNotFoundValidationError,
@@ -999,7 +996,7 @@ def test_dataset_validation_error_field_keys_match_upstream():
 
 def test_dataset_invalid_error_handler_emits_message_dict():
     """The Litestar handler emits ``{"message": {field: [messages]}}`` (no
-    ``errors``/``detail`` keys) — 1:1 with upstream FAB ``response_422``."""
+    ``errors``/``detail`` keys), matching the FAB ``response_422`` shape."""
     from superset.commands.dataset.exceptions import (
         DatabaseNotFoundValidationError,
         dataset_invalid_error_handler,
@@ -1026,12 +1023,10 @@ def test_dataset_invalid_error_handler_emits_message_dict():
 async def test_update_dataset_override_columns_reaches_dao(mock_dao, mock_dataset):
     """``override_columns`` + body columns must flow into ``dao.update``.
 
-    1:1 with superset_old: the command stores the flag in its properties
-    (superset_old/commands/dataset/update.py:68) and the DAO picks the
-    delete-all-and-reinsert path via ``attributes.get("override_columns")``
-    (superset_old/daos/dataset.py:188-193). The body ``columns`` must NOT be
-    dropped — the original applies them first and lets RefreshDatasetCommand
-    only update types afterwards.
+    The command stores the flag in its properties and the DAO picks the
+    delete-all-and-reinsert path via ``attributes.get("override_columns")``.
+    The body ``columns`` must NOT be dropped — they are applied first and
+    RefreshDatasetCommand only updates types afterwards.
     """
     mock_dao.find_by_id = AsyncMock(return_value=mock_dataset)
     mock_dao.validate_uniqueness = AsyncMock(return_value=True)

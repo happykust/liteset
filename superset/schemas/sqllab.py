@@ -105,14 +105,12 @@ class SQLLabBootstrap(msgspec.Struct):
 class SqlLabPermalinkSchema(msgspec.Struct, rename="camel"):
     """POST /api/v1/sqllab/permalink
 
-    1:1 with the original ``SqlLabPermalinkSchema``
-    (superset_old/sqllab/permalink/schemas.py:20-52):
     ``dbId`` (required, non-null), ``name`` (required), and ``sql`` (required)
     are enforced at the schema level. ``schema``, ``catalog``,
     ``templateParams``, and ``autorun`` remain optional.
     """
 
-    # Required fields — 1:1 with original required=True, allow_none=False
+    # Required fields
     db_id: int
     name: str
     sql: str

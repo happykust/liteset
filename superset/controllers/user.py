@@ -121,11 +121,7 @@ def _user_to_response(user: Any) -> UserResponse:
 
 
 def _check_password_complexity(password: str, settings: Any | None) -> None:
-    """Raise HTTPException(400) if the password fails the complexity rules.
-
-    Mirrors the upstream PasswordComplexityValidator.__call__
-    and the equivalent check in user_me.py:224-239.
-    """
+    """Raise HTTPException(400) if the password fails the complexity rules."""
     if settings is None:
         return
     if not getattr(settings, "fab_password_complexity_enabled", False):
@@ -154,12 +150,7 @@ async def _validate_entity_ids(
 ) -> None:
     """Raise HTTPException when any requested ID does not exist in the DB.
 
-    Mirrors the upstream UserApi behavior:
-    - POST (post()): response_400 → status_code=400 (default)
-    - PUT  (put()):  response_404 → status_code=404
-
-    UserApi.post() lines 132-159 use response_400(...).
-    UserApi.put() lines 249-276 use response_404(...) for the same check.
+    POST callers pass status_code=400; PUT callers pass status_code=404.
     """
     if not requested_ids:
         return
@@ -183,13 +174,8 @@ async def _validate_entity_ids(
 
 
 def _hash_password(password: str, settings: Any | None = None) -> str:
-    """Hash a password using FAB_PASSWORD_HASH_METHOD and FAB_PASSWORD_HASH_SALT_LENGTH.
-
-    Mirrors pre_update (superset_old/views/users/api.py:52-56) which reads
-    FAB_PASSWORD_HASH_METHOD (default 'scrypt') and
-    FAB_PASSWORD_HASH_SALT_LENGTH (default 16) from app.config and passes
-    them to the secure-hash helper generate_password_hash.
-    """
+    """Hash a password using FAB_PASSWORD_HASH_METHOD and
+    FAB_PASSWORD_HASH_SALT_LENGTH."""
     from superset.utils.password import generate_password_hash
 
     method = "scrypt"
@@ -234,8 +220,7 @@ def _validate_user_update_payload(
 ) -> None:
     """Guard against clearing a user's last role/group assignment.
 
-    Mirrors the upstream UserApi.put() lines 225-244 which return HTTP 400 in
-    three cases:
+    Raises HTTP 400 in three cases:
     1. Both roles and groups are explicitly cleared to [].
     2. Roles are cleared to [] and the user has no existing groups (and none
        are being assigned).
@@ -271,13 +256,11 @@ async def _validate_user_update_extended(
 ) -> None:
     """Run async/settings-dependent validation for a user PUT request.
 
-    Mirrors the upstream UserApi.put() lines 245-283:
     - PasswordComplexityValidator on the new password (if provided).
     - Role/group ID existence checks (HTTP 404 if any ID is missing).
 
-    Note: the upstream UserApi.put() uses response_404() for missing role/group
-    IDs (lines 252-276), unlike post() which uses response_400() (lines
-    135-158).
+    Note: PUT uses HTTP 404 for missing role/group IDs, unlike POST which uses
+    HTTP 400.
 
     Extracted from ``update`` to keep that handler's cyclomatic complexity
     within the C901 threshold.
@@ -297,9 +280,8 @@ async def _validate_user_update_extended(
 def _build_user_filters(rison_params: dict[str, Any] | None) -> list[Any]:
     """Build SQLAlchemy filter expressions from Rison filter list.
 
-    Mirrors SupersetUserApi.search_columns (superset_old/security/manager.py:150-164)
-    which includes: id, roles, groups, first_name, last_name, username, active,
-    email, last_login, login_count, fail_login_count, created_on, changed_on.
+    Searchable columns: id, roles, groups, first_name, last_name, username,
+    active, email, last_login, login_count, fail_login_count, created_on, changed_on.
     """
     from superset.models.security import User
     from superset.utils import escape_like
@@ -328,7 +310,6 @@ def _build_user_filters(rison_params: dict[str, Any] | None) -> list[Any]:
         opr = f.get("opr", "eq")
         value = f.get("value")
 
-        # Relationship filters (roles, groups) — mirrors original .any(id=value)
         if col_name == "roles":
             filters.append(User.roles.any(id=value))
             continue
@@ -499,8 +480,6 @@ class UserController(Controller):
         await event_logger.alog_with_context(
             "user.create", extra={"username": data.username}
         )
-        # 1:1 with the upstream UserApi.post():
-        # ``self.response(201, id=model.id)`` — no ``result`` key.
         return {"id": user.id}
 
     # ------------------------------------------------------------------
@@ -555,8 +534,6 @@ class UserController(Controller):
         await user_dao.update(user, attrs)
         await event_logger.alog_with_context("user.update", object_ref=str(pk))
 
-        # 1:1 with the upstream UserApi.put() return: echoes the provided fields
-        # without `id`.
         result_dict = {
             k: getattr(data, k)
             for k in data.__struct_fields__
@@ -622,12 +599,8 @@ class UserController(Controller):
 class RegisterUserPostBody(msgspec.Struct):
     """POST body for creating a user registration request.
 
-    Mirrors the upstream auto-generated ``add_model_schema`` for RegisterUser.
-    All non-PK model columns are accepted. ``registration_date`` and
-    ``registration_hash`` are optional (nullable in the model).
-    Column order follows the upstream RegisterUser model definition:
-    first_name, last_name, username, password, email,
-    registration_date, registration_hash.
+    Column order: first_name, last_name, username, password, email,
+    registration_date, registration_hash (matches the RegisterUser model).
     """
 
     first_name: str
@@ -643,7 +616,6 @@ class RegisterUserPutBody(msgspec.Struct):
     """PUT body for updating a user registration request.
 
     All fields are optional — only provided fields are updated.
-    Mirrors the upstream auto-generated ``edit_model_schema`` for RegisterUser.
     """
 
     username: str | None = None
@@ -655,8 +627,6 @@ class RegisterUserPutBody(msgspec.Struct):
     registration_hash: str | None = None
 
 
-# Columns returned by the list/show endpoints, matching the original
-# UserRegistrationsRestAPI.list_columns from superset_old/security/api.py.
 _REG_LIST_COLUMNS = [
     "id",
     "username",
@@ -752,11 +722,8 @@ def _build_reg_filters(rison_params: dict[str, Any] | None) -> list[Any]:
 def _build_reg_update_attrs(data: RegisterUserPutBody) -> dict[str, Any]:
     """Build update attributes dict from PUT body.
 
-    Mirrors the upstream ``ModelRestApi.put_headless`` which merges the request
-    JSON into the existing item and persists. Data is stored as received
-    — no password hashing (that only happens in the register FORM flow).
-    Uniqueness is enforced by the database constraints (unique on
-    username and email columns).
+    Data is stored as received — no password hashing (that only happens in
+    the register form flow). Uniqueness enforced by DB constraints.
     """
     attrs: dict[str, Any] = {}
     if data.first_name is not None:
@@ -779,31 +746,8 @@ def _build_reg_update_attrs(data: RegisterUserPutBody) -> dict[str, Any]:
 class UserRegistrationsController(Controller):
     """CRUD controller for pending user registrations (ab_register_user).
 
-    Ported 1:1 from ``:UserRegistrationsRestAPI`` in
-    ``superset_old/security/api.py``
-    which extends ``BaseSupersetModelRestApi`` (the upstream ``ModelRestApi``)
-    with ``SQLAInterface(RegisterUser)``.
-
-    Original list_columns:
-        id, username, email, first_name, last_name, registration_date,
-        registration_hash
-
-    The original ``ModelRestApi`` automatically exposes:
-        GET /         (get_list)
-        GET /{pk}     (get)
-        POST /        (post)
-        PUT /{pk}     (put)
-        DELETE /{pk}  (delete)
-        GET /_info    (info)
-        GET /distinct/{column_name} (distinct)
-        GET /related/{column_name}  (related)
-
-    Permission mapping from ``BaseSupersetModelRestApi.method_permission_name``:
-        get_list, info, distinct, related -> "list" (mapped to can_read)
-        get -> "show" (mapped to can_read)
-        post -> "add" (mapped to can_write)
-        put -> "edit" (mapped to can_write)
-        delete -> "delete" (mapped to can_write)
+    Exposes: GET /, GET /{pk}, POST /, PUT /{pk}, DELETE /{pk}, GET /_info,
+    GET /distinct/{col}, GET /related/{col}.
     """
 
     path = "/api/v1/security/user_registrations"
@@ -827,14 +771,8 @@ class UserRegistrationsController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/security/user_registrations/ — list pending registrations.
 
-        Admin-only, matching the original ``UserRegistrationsRestAPI`` class
-        docstring ("Admin only") in ``superset_old/security/api.py:346``.
-        The original BaseSupersetModelRestApi maps ``get_list`` to
-        ``can_list`` / ``can_read`` on the resource, which is only granted
-        to the Admin role by default.
-
+        Admin-only (can_read is only granted to Admin by default).
         Supports Rison query parameters for pagination, ordering, and filtering.
-        Mirrors the upstream ``ModelRestApi.get_list`` behavior.
         """
         params = rison_params or {}
         page, page_size = extract_pagination(rison_params)
@@ -899,11 +837,8 @@ class UserRegistrationsController(Controller):
     ) -> dict[str, Any]:
         """POST /api/v1/security/user_registrations/ — create a registration request.
 
-        Mirrors the upstream ``ModelRestApi.post_headless``: validates via marshmallow
-        schema (msgspec in our case), then persists via ``session.add() +
-        session.flush()``. Data is stored as received — no password hashing
-        or ``registration_hash`` generation (those only happen in the
-        register FORM flow, not the REST API).
+        Data is stored as received — no password hashing or ``registration_hash``
+        generation (those happen only in the register form flow, not the REST API).
         """
         attrs: dict[str, Any] = {
             "first_name": data.first_name,
@@ -938,7 +873,6 @@ class UserRegistrationsController(Controller):
     ) -> dict[str, Any]:
         """PUT /api/v1/security/user_registrations/{pk} — update a registration.
 
-        Mirrors the upstream ``ModelRestApi.put`` for RegisterUser.
         Only provided (non-None) fields are updated.
         """
         reg = await reg_dao.find_by_id(pk)
@@ -966,10 +900,7 @@ class UserRegistrationsController(Controller):
         reg_dao: Any,
         pk: int,
     ) -> dict[str, str]:
-        """DELETE /api/v1/security/user_registrations/{pk} — delete a registration.
-
-        Mirrors the upstream ``SecurityManager.del_register_user``.
-        """
+        """DELETE /api/v1/security/user_registrations/{pk} — delete a registration."""
         reg = await reg_dao.find_by_id(pk)
         if reg is None:
             raise ObjectNotFoundError("UserRegistration", pk)
@@ -990,8 +921,7 @@ class UserRegistrationsController(Controller):
     async def get_info(self) -> dict[str, Any]:
         """GET /api/v1/security/user_registrations/_info — metadata.
 
-        Mirrors the upstream ``ModelRestApi.info`` endpoint. Returns permissions,
-        column metadata for add/edit forms, and available filters.
+        Returns permissions, column metadata for add/edit forms, and available filters.
         """
         permissions = ["can_read", "can_write"]
         # Column order matches the upstream RegisterUser model definition:
@@ -1036,8 +966,7 @@ class UserRegistrationsController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/security/user_registrations/distinct/{column_name}.
 
-        Mirrors the upstream ``ModelRestApi.distinct`` endpoint. Returns distinct
-        values for the specified column, used by frontend filter UIs.
+        Returns distinct values for the specified column, used by frontend filter UIs.
         """
         if column_name not in _REG_DISTINCT_COLUMNS:
             return {"count": 0, "result": []}
@@ -1071,10 +1000,7 @@ class UserRegistrationsController(Controller):
     ) -> dict[str, Any]:
         """GET /api/v1/security/user_registrations/related/{column_name}.
 
-        Mirrors the upstream ``ModelRestApi.related`` endpoint. RegisterUser has
-        no relationship columns, so this always returns an empty result
-        set — matching the original behavior where upstream would return empty
-        for models without relationships on the requested column.
+        RegisterUser has no relationship columns, so this always returns empty.
         """
         # RegisterUser has no relationship columns (no ForeignKeys to other
         # models), so the related endpoint always returns empty.
@@ -1083,11 +1009,6 @@ class UserRegistrationsController(Controller):
 
 # ---------------------------------------------------------------------------
 # Public User API — /api/v1/user
-# ---------------------------------------------------------------------------
-# Ported from superset_old/views/users/api.py ``UserRestApi``
-# (resource_name = "user", path = /api/v1/user).
-# This is the public-facing user endpoint, separate from the upstream CRUD
-# controller at /api/v1/security/users.
 # ---------------------------------------------------------------------------
 
 
@@ -1113,17 +1034,13 @@ class UserPublicController(Controller):
 
     @get(
         "/{user_id:int}/avatar.png",
-        # Require authentication — 1:1 with upstream ``UserRestApi.avatar``
-        # whose docstring states it "returns a 401 error if the user is
-        # unauthenticated" (superset_old/views/users/api.py:183-205). Avatars
-        # load via same-origin ``<img>`` which forwards the session cookie, so
-        # authenticated display is unaffected (R15-02).
+        # Require authentication: avatars return 401 for unauthenticated callers.
+        # Same-origin <img> tags forward the session cookie so authenticated
+        # display is unaffected.
         guards=[require_authentication],
     )
     async def avatar(self, user_dao: Any, user_id: int, state: State) -> Any:
         """GET /api/v1/user/{user_id}/avatar.png — redirect to avatar URL.
-
-        Ported 1:1 from superset_old/views/users/api.py ``UserRestApi.avatar``.
 
         Checks (in order):
         1. extra_attributes.avatar_url (one-to-one relationship)

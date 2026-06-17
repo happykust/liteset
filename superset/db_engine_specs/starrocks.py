@@ -15,12 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""StarRocks engine spec -- synchronous.
-
-Ported 1:1 from ``superset_old/db_engine_specs/starrocks.py`` with the legacy
-WSGI-stack imports removed.  Only overridden methods and attributes are
-included.
-"""
+"""StarRocks database engine spec."""
 
 from __future__ import annotations
 
@@ -36,10 +31,6 @@ from sqlalchemy.sql.type_api import TypeEngine
 from superset.db_engine_specs.mysql import MySQLEngineSpec
 from superset.models.core import Database
 from superset.typing import GenericDataType
-
-# ---------------------------------------------------------------------------
-# Custom types
-# ---------------------------------------------------------------------------
 
 
 class TINYINT(Integer):
@@ -89,10 +80,6 @@ class STRUCT(TypeEngine):
     def python_type(self) -> type[Any] | None:
         return None
 
-
-# ---------------------------------------------------------------------------
-# Regular expressions to catch custom errors
-# ---------------------------------------------------------------------------
 
 CONNECTION_ACCESS_DENIED_REGEX = re.compile(
     "Access denied for user '(?P<username>.*?)'"
@@ -228,13 +215,7 @@ class StarRocksEngineSpec(MySQLEngineSpec):
         url: URL,
         engine_kwargs: dict[str, Any],
     ) -> tuple[URL, dict[str, Any]]:
-        """
-        Impersonate the given user.
-
-        User impersonation is actually achieved via `get_prequeries`, so this method
-        needs to ensure that the username is not added to the URL when user
-        impersonation is enabled (the behavior of the base class).
-        """
+        # Impersonation done via get_prequeries; suppress base-class URL mutation.
         return url, engine_kwargs
 
     @classmethod
@@ -244,19 +225,6 @@ class StarRocksEngineSpec(MySQLEngineSpec):
         catalog: str | None = None,
         schema: str | None = None,
     ) -> list[str]:
-        """
-        Return pre-session queries.
-
-        These are currently used as an alternative to ``adjust_engine_params`` for
-        databases where the selected schema cannot be specified in the SQLAlchemy URI or
-        connection arguments.
-
-        For example, in order to specify a default schema in RDS we need to run a query
-        at the beginning of the session:
-
-            sql> set search_path = my_schema;
-
-        """
         if database.impersonate_user:
             username = database.get_effective_user(database.url_object)
 

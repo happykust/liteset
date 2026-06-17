@@ -14,13 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for the sync Celery task helper ``_update_job``.
-
-The relay reads the per-channel Redis Stream directly, so ``_update_job`` must
-write both the channel and global firehose streams and must NOT publish to
-pub/sub (the legacy real-time notification path that was removed).
-"""
-
 from __future__ import annotations
 
 import json
@@ -40,22 +33,18 @@ def test_update_job_writes_both_streams_no_publish():
             result_url="/api/v1/chart/data/cache-key-123",
         )
 
-    # Two xadd calls: channel stream then global firehose stream.
     assert sync_redis.xadd.call_count == 2
     channel_call, global_call = sync_redis.xadd.call_args_list
     assert channel_call.args[0] == "async-events-ch-1"
     assert global_call.args[0] == "async-events-full"
 
-    # Both streams are trimmed on write via ``maxlen``/``approximate`` (1:1 with
-    # the original ``AsyncQueryManager.update_job`` which passed
-    # ``self._stream_limit`` / ``self._stream_limit_firehose``).  Defaults apply
-    # when settings resolution falls back: channel=1000, firehose=1000000.
+    # Defaults apply when settings resolution falls back:
+    # channel=1000, firehose=1000000.
     assert channel_call.kwargs.get("approximate") is True
     assert global_call.kwargs.get("approximate") is True
     assert channel_call.kwargs.get("maxlen") == 1000
     assert global_call.kwargs.get("maxlen") == 1_000_000
 
-    # The payload carries the id-bearing event data shape under "data".
     payload = channel_call.args[1]
     event = json.loads(payload["data"])
     assert event["channel_id"] == "ch-1"
@@ -64,5 +53,4 @@ def test_update_job_writes_both_streams_no_publish():
     assert event["status"] == async_queries.STATUS_DONE
     assert event["result_url"] == "/api/v1/chart/data/cache-key-123"
 
-    # Pub/sub publish has been removed.
     sync_redis.publish.assert_not_called()

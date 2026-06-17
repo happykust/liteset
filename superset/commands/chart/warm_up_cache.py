@@ -15,27 +15,19 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/chart/warm_up_cache.py``.
-
-Mirrors the original branching:
+"""Warm-up cache command for charts.
 
 * Legacy charts (``form_data["viz_type"] in viz_types``) go through
-  :class:`superset.viz.BaseViz`'s :meth:`get_payload` — exactly like the
-  original which set the request-scoped ``form_data`` and called ``get_viz``
-  from ``superset.views.utils``.  That request-scoped ``form_data`` is
-  replaced with the existing ``_form_data_ctx`` :class:`ContextVar` exposed by
-  :func:`superset.jinja_context.set_form_data`.
+  :class:`superset.viz.BaseViz`'s :meth:`get_payload`. The request-scoped
+  ``form_data`` is threaded via the ``_form_data_ctx`` :class:`ContextVar`
+  exposed by :func:`superset.jinja_context.set_form_data`.
 
-* Non-legacy charts (modern ``query_context``) go through the async
-  :class:`AsyncQueryContextProcessor` which is what the original's
-  ``ChartDataCommand`` resolves to under the hood.
+* Non-legacy charts (modern ``query_context``) go through
+  :class:`AsyncQueryContextProcessor`.
 
-* ``error_msg_from_exception`` mirrors the original verbatim.
-
-* The ``try`` block matches the original boundary: only the *inner work*
-  (form-data parsing, viz / query execution) is wrapped — ``validate``
-  (chart fetch) is outside the try, so a missing chart still raises
-  :class:`ObjectNotFoundError`.
+* The ``try`` block wraps only the inner work (form-data parsing, viz / query
+  execution); ``validate`` (chart fetch) is outside the try, so a missing chart
+  still raises :class:`ObjectNotFoundError`.
 """
 
 from __future__ import annotations
@@ -56,10 +48,7 @@ logger = logging.getLogger(__name__)
 class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
     """Warm up the cache for a chart by executing its viz / query context.
 
-    Ported 1:1 from ``superset_old/commands/chart/warm_up_cache.py``.
-
-    Returns a ``{"chart_id", "viz_error", "viz_status"}`` dict matching
-    the original payload exactly.
+    Returns a ``{"chart_id", "viz_error", "viz_status"}`` dict.
     """
 
     def __init__(
@@ -85,16 +74,11 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
     async def validate(self) -> None:
         """Eagerly load the chart with its datasource + database.
 
-        Mirrors the original's ``db.session.query(Slice).filter_by``
-        plus the implicit lazy-load of ``chart.datasource`` later in
-        ``run``. We pre-load both relationships so the inner ``run``
-        body stays free of awaits-on-attribute-access.
-
-        1:1 with upstream ``ChartWarmUpCacheCommand.validate``: when the
-        command was constructed with an already-loaded Slice instance
-        (the dataset warm-up passes its charts directly), return without
-        a DB round-trip — the caller is responsible for eager-loading
-        the relationship chain.
+        Pre-loads relationships so the ``run`` body stays free of
+        awaits-on-attribute-access. When the command was constructed with
+        an already-loaded Slice instance (the dataset warm-up passes charts
+        directly), returns without a DB round-trip — the caller is responsible
+        for eager-loading the relationship chain.
         """
         if self._chart is not None:
             return
@@ -122,14 +106,9 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
         if not self._chart:
             raise ObjectNotFoundError("Chart", self._chart_id)
 
-    # ------------------------------------------------------------------
-    # Helpers — extra-filter resolution
-    # ------------------------------------------------------------------
-
     async def _get_dashboard_filters(self, chart_id: int) -> list[dict[str, Any]]:
         """Return dashboard ``extra_filters`` for the chart, if any.
 
-        1:1 port of the original ``_get_dashboard_filters`` helper.
         ``extra_filters`` overrides dashboard metadata; dashboard metadata
         is consulted only when no explicit overrides are present.
         """
@@ -146,12 +125,11 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
     async def _build_dashboard_extra_filters(
         self, slice_id: int, dashboard_id: int
     ) -> list[dict[str, Any]]:
-        """Async mirror of ``views.utils.get_dashboard_extra_filters``.
+        """Compute dashboard default filters that apply to ``slice_id``.
 
         Reads the dashboard JSON metadata + position layout and returns
-        the default filters that apply to ``slice_id``. Falls back to an
-        empty list whenever metadata is missing or malformed — same
-        defensive behaviour as the original.
+        the default filters. Falls back to an empty list when metadata is
+        missing or malformed.
         """
         import contextlib
         import json as _stdlib_json
@@ -225,10 +203,6 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
                 )
         return []
 
-    # ------------------------------------------------------------------
-    # Branch A — legacy ``viz_types`` (BaseViz / ChartScreenshot path)
-    # ------------------------------------------------------------------
-
     async def _warm_up_legacy_cache(
         self,
         chart: Any,
@@ -238,20 +212,13 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
     ) -> tuple[Any, Any]:
         """Warm up cache for legacy visualizations.
 
-        1:1 port of the original ``_warm_up_legacy_cache``.  The original
-        set the request-scoped ``form_data`` then called ``get_viz``;
-        we set the equivalent ``_form_data_ctx`` ContextVar exposed by
-        :func:`superset.jinja_context.set_form_data` so downstream code
-        (e.g. Jinja URL-param helpers) sees the same form_data the
-        original did.
+        Sets the ``_form_data_ctx`` ContextVar so downstream Jinja helpers
+        see the correct form_data context.
 
         ``security_manager`` and ``current_user`` are injected so that
         ``viz_obj._rls_cache_key`` can be populated before
-        ``viz_obj.get_payload()`` calls ``cache_key()``.  Without this
-        step two users with different RLS rules would collide on the
-        same cache entry.  Mirrors the original path where
-        ``security_manager.get_rls_cache_key(self.datasource)`` was
-        called inside ``BaseViz.cache_key()`` synchronously.
+        ``viz_obj.get_payload()`` calls ``cache_key()``, differentiating
+        cache entries for users with different RLS rules.
         """
         from superset.jinja_context import _form_data_ctx, set_form_data
         from superset.viz import get_viz
@@ -302,10 +269,6 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
                 _form_data_ctx.set(None)
 
         return payload.get("errors") or None, payload.get("status")
-
-    # ------------------------------------------------------------------
-    # Branch B — modern ``query_context`` (AsyncQueryContextProcessor)
-    # ------------------------------------------------------------------
 
     def _build_queries(self, qc_dict: dict[str, Any], datasource: Any) -> list[Any]:
         """Build AsyncQueryObject list from stored query_context dict.
@@ -360,12 +323,6 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
 
         queries = self._build_queries(qc_dict, datasource)
 
-        # 1:1 with the original ``_warm_up_non_legacy_cache`` which calls
-        # ``self._get_dashboard_filters(chart.id)`` and then extends each
-        # query's ``filter`` list.  The original uses ``_get_dashboard_filters``
-        # (not ``_extra_filters`` directly) so that dashboard-metadata-based
-        # default filters are applied when ``_extra_filters`` is empty but
-        # ``_dashboard_id`` is set.
         if dashboard_filters := await self._get_dashboard_filters(chart.id):
             for qo in queries:
                 if hasattr(qo, "filters") and isinstance(qo.filters, list):
@@ -383,21 +340,12 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
         processor = AsyncQueryContextProcessor(
             datasource=datasource,
             settings=SupersetSettings(),
-            # ``security_manager`` was hardcoded ``None`` — the processor
-            # unconditionally calls ``self._security_manager.get_rls_cache_key``
-            # in ``_get_cache_key``, which then ``NoneType``-errored. The
-            # controller already injects a real security_manager into the
-            # command, so pass it through.
+            # Pass the security_manager so the processor can populate the RLS cache key.
             security_manager=self._security_manager,
             user=self._current_user,
             query_context=query_context,
         )
 
-        # Datasource access gate — 1:1 with upstream where the non-legacy
-        # branch routes through ``ChartDataCommand`` whose ``validate()``
-        # calls ``query_context.raise_for_access()`` (R11-06: the direct
-        # ``get_payload`` call skipped it, letting a ``can_warm_up_cache``
-        # holder run queries against inaccessible datasources).
         if self._security_manager is not None:
             await processor.raise_for_access()
 
@@ -406,7 +354,6 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
             force=True,
         )
 
-        # Report the first error (matches original).
         for query_result in cast(list[dict[str, Any]], payload.get("queries", [])):
             error = query_result.get("error")
             status = query_result.get("status")
@@ -415,18 +362,13 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
 
         return None, QueryStatus.SUCCESS
 
-    # ------------------------------------------------------------------
-    # run
-    # ------------------------------------------------------------------
-
     async def run(self) -> dict[str, Any]:
         """Execute the warm-up.
 
-        Try-boundary mirrors the original: ``validate`` runs *outside*
-        the try, only ``form_data`` resolution + viz / query execution
-        is wrapped, and the catch-all returns the canonical
-        ``{chart_id, viz_error, viz_status}`` shape with
-        ``error_msg_from_exception`` matching the original error format.
+        ``validate`` runs outside the try so a missing chart raises
+        :class:`ObjectNotFoundError`. Only form-data resolution and viz /
+        query execution are wrapped; the catch-all returns the canonical
+        ``{chart_id, viz_error, viz_status}`` shape.
         """
         from superset.viz import get_active_viz_types
 
@@ -434,14 +376,7 @@ class WarmUpChartCacheCommand(AsyncBaseCommand[dict[str, Any]]):
         chart = self._chart
 
         try:
-            # ``Slice.form_data`` already mirrors the original's
-            # ``get_form_data(chart.id, use_slice_data=True)[0]``: it
-            # parses ``params``, injects ``slice_id`` / ``viz_type`` /
-            # ``datasource`` + cache_timeout, and runs ``update_time_range``.
             form_data = chart.form_data
-
-            # Denylist-filtered registry — a VIZ_TYPE_DENYLIST'd type must route
-            # to the non-legacy branch (1:1 upstream), never the BaseViz path.
             if form_data.get("viz_type") in get_active_viz_types():
                 error, status = await self._warm_up_legacy_cache(
                     chart,

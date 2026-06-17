@@ -14,13 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/annotation_layer/annotation/exceptions.py``.
+"""Annotation-specific exceptions.
 
-The original module mixes Marshmallow ``ValidationError`` subclasses with
-``CommandException`` subclasses.  In Liteset (msgspec / Litestar) we no
-longer use Marshmallow; the validation errors are reimplemented as plain
-``CommandInvalidError`` subclasses with the same ``message`` text so
-callers raising/catching them behave identically.
+Validation errors are implemented as plain ``CommandInvalidError`` subclasses
+with the same ``message`` text so callers raising/catching them behave
+identically.
 """
 
 from superset.exceptions import (

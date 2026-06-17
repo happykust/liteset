@@ -131,14 +131,12 @@ class AsyncSecurityDAO:
     async def get_user_by_username(self, username: str) -> Any | None:
         """Load user by username with roles eagerly loaded.
 
-        1:1 with the upstream ``SecurityManager.find_user``: when
-        ``AUTH_USERNAME_CI`` is enabled (the upstream default, ``True``) the
-        lookup is case-insensitive
-        (``lower(username) == lower(input)``), so OAuth/LDAP self-registration
-        cannot create a second user differing only in case. A
-        ``MultipleResultsFound`` (possible on a legacy DB that already holds
-        case-variant duplicates) is logged and degraded to ``None`` — exactly
-        as upstream does — rather than raising.
+        When ``AUTH_USERNAME_CI`` is enabled (the upstream default, ``True``)
+        the lookup is case-insensitive (``lower(username) == lower(input)``),
+        so OAuth/LDAP self-registration cannot create a second user differing
+        only in case. A ``MultipleResultsFound`` (possible on a legacy DB that
+        already holds case-variant duplicates) is logged and degraded to
+        ``None`` rather than raising.
         """
         from sqlalchemy import func
         from sqlalchemy.exc import MultipleResultsFound
@@ -185,13 +183,12 @@ class AsyncSecurityDAO:
     async def get_user_roles(self, user: Any) -> list[Any]:
         """Get all roles for a user — direct AND group-inherited.
 
-        1:1 with the upstream ``BaseSecurityManager.get_user_roles`` which
-        returns
+        Returns
         ``user.roles + [role for group in user.groups for role in group.roles]``.
         Group-derived roles are wrapped in :class:`_GroupRoleRef` (``.id`` /
         ``.name``).  Omitting them caused RLS role-scope filters and
-        DASHBOARD_RBAC role intersections to miss roles a user holds only via an
-        upstream group.
+        DASHBOARD_RBAC role intersections to miss roles a user holds only via a
+        group.
         """
         roles: list[Any] = list(getattr(user, "roles", []))
         user_id = getattr(user, "id", None)

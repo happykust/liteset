@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""CSS Template command classes — business logic for CSS template CRUD."""
+"""CSS Template commands — CRUD business logic."""
 
 from __future__ import annotations
 
@@ -44,10 +44,8 @@ class CreateCssTemplateCommand(AsyncBaseCommand[Any]):
         self._data = data
 
     async def validate(self) -> None:
-        # No non-empty check: the original FAB create path only marks the
-        # field required (presence enforced by the schema) — an empty
-        # template_name is accepted upstream, matching the schema comment in
-        # superset/schemas/css_template.py.
+        # FAB create path only marks the field required via schema; an empty
+        # template_name is accepted upstream (no non-empty check here).
         pass
 
     async def run(self) -> Any:
@@ -110,21 +108,13 @@ class BulkDeleteCssTemplateCommand(AsyncBaseCommand[None]):
         self._templates = await self._dao.find_by_ids(self._ids)
         found_ids = {int(t.id) for t in self._templates}
         missing = set(self._ids) - found_ids
-        # Mirror original: ``len(self._models) != len(self._model_ids)`` also
-        # fires when duplicate IDs are passed — SQL IN deduplicates at DB level
-        # so found count < requested count → 404, matching superset_old behaviour.
+        # SQL IN deduplicates; found count < requested count means some IDs are missing.
         if missing or len(self._templates) != len(self._ids):
             raise ObjectNotFoundError(
                 "CssTemplate", str(sorted(missing)) if missing else None
             )
 
     async def run(self) -> None:
-        # Mirrors ``superset_old/commands/css/delete.py`` which wraps with
-        # ``@transaction(on_error=partial(on_error,
-        #     reraise=CssTemplateDeleteFailedError))``.
-        # Any DB error during deletion is re-raised as
-        # ``CssTemplateDeleteFailedError`` so the controller can surface
-        # HTTP 422 (not 500).
         try:
             await self._dao.delete(self._templates)
             await self._dao.session.flush()

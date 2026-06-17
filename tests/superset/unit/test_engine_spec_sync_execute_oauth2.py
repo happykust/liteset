@@ -16,9 +16,8 @@
 # under the License.
 """Tests for the OAuth2 dance branch in the sync ``BaseEngineSpec.execute``.
 
-1:1 with ``superset_old/db_engine_specs/base.py::execute`` — on a DB error,
-if OAuth2 is enabled for the database and the error indicates that
-authorization is required, the OAuth2 dance is started (raising
+On a DB error, if OAuth2 is enabled for the database and the error indicates
+that authorization is required, the OAuth2 dance is started (raising
 ``OAuth2RedirectError``) *before* the exception is mapped.
 """
 
@@ -51,8 +50,8 @@ def _cursor_raising(exc: Exception) -> MagicMock:
 
 def test_execute_oauth2_enabled_and_needed_starts_dance() -> None:
     """oauth2-enabled DB + oauth2 error -> OAuth2RedirectError (dance started)."""
-    # ``needs_oauth2`` now requires a request-bound user (1:1 with upstream's
-    # ``g and hasattr(g, "user")`` guard) — bind one for the duration.
+    # ``needs_oauth2`` requires a request-bound user (``g and hasattr(g, "user")``
+    # guard) — bind one for the duration.
     from types import SimpleNamespace
 
     from superset.utils.core import set_current_user

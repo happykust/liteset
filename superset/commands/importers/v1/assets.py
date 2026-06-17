@@ -14,21 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old.commands.importers.v1.assets.ImportAssetsCommand``.
+"""All-in-one asset bundle importer for ``POST /api/v1/assets/import/``.
 
-This is the **all-in-one bundle importer** invoked by
-``POST /api/v1/assets/import/``.  It accepts the parsed YAML configs
-(plain ``{filename: dict}`` mapping) and imports every asset type in
-dependency order: databases -> saved queries -> datasets -> charts
--> dashboards.
-
-The original used four nested ``ImportXxxCommand`` classes via
-Marshmallow validation; in liteset we delegate to the
-:func:`_import_database`, :func:`_import_dataset`, :func:`_import_chart`
-helpers already implemented in the per-resource command modules
-(``superset.commands.{database,dataset,chart,dashboard}``).  This
-mirrors the original's "share the per-resource ``import_xxx()``
-helpers" pattern without duplicating logic.
+Accepts parsed YAML configs (``{filename: dict}`` mapping) and imports
+every asset type in dependency order: databases → saved queries → datasets
+→ charts → dashboards.
 
 Usage::
 
@@ -72,17 +62,12 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
     """Import every asset type from a bundle (databases, datasets, charts,
     dashboards, saved queries).
 
-    Mirrors ``superset_old.commands.importers.v1.assets.ImportAssetsCommand``:
-
-    * Imports databases first (always with ``overwrite=True`` because the
-      asset bundle is the source of truth for source-controlled assets).
-    * Then imports saved queries, then datasets (linked by ``database_uuid``),
-      then charts (linked by ``dataset_uuid``), then dashboards (linked by
-      chart UUIDs in their ``position`` and dataset UUIDs in their native
-      filter targets).
-    * For dashboards, refreshes the ``dashboard_slices`` M2M with the new
-      ``(dashboard_id, chart_id)`` pairs and triggers the legacy filter-box
-      migration.
+    * Databases are always imported with ``overwrite=True`` (the bundle is
+      the source of truth for source-controlled assets).
+    * Saved queries, datasets, charts, and dashboards follow in dependency
+      order, linked by their respective UUID references.
+    * Dashboards: refreshes the ``dashboard_slices`` M2M and triggers the
+      filter-box → native-filter migration.
     """
 
     def __init__(
@@ -110,16 +95,9 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
         self._configs: dict[str, Any] = {}
 
     async def validate(self) -> None:
-        """Read & validate the bundle metadata + every YAML entry.
-
-        Aggregates all schema errors and raises a single
-        :class:`CommandInvalidError` with the combined message — matches
-        the original Marshmallow ``raise CommandInvalidError(..., exceptions)``
-        contract.
-        """
+        """Read and validate bundle metadata and every YAML entry."""
         exceptions: list[Exception] = []
 
-        # verify that the metadata file is present and valid
         try:
             metadata = load_metadata(self.contents)
         except CommandInvalidError as exc:
@@ -147,8 +125,9 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
             )
 
     async def run(self) -> None:
-        """Execute the import in dependency order — 1:1 port of the
-        original ``ImportAssetsCommand._import``.
+        """
+        Import in dependency order:
+        databases → queries → datasets → charts → dashboards.
         """
         try:
             await self._import(self._configs, self.sparse)
@@ -162,12 +141,7 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
         configs: dict[str, Any],
         sparse: bool,
     ) -> None:
-        """Run the import in dependency order — 1:1 port of the original.
-
-        Order matches
-        ``superset_old.commands.importers.v1.assets.ImportAssetsCommand._import``:
-        databases -> saved queries -> datasets -> charts -> dashboards.
-        """
+        """Run the import in dependency order."""
         from superset.commands.chart.importers.v1.utils import (
             _import_chart,
             _import_database,
@@ -185,9 +159,6 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
         from superset.models.dashboard import dashboard_slices
         from superset.models.slice import Slice
 
-        # ------------------------------------------------------------------
-        # Sparse mode pre-population
-        # ------------------------------------------------------------------
         chart_ids: dict[str, int] = {}
         database_ids: dict[str, int] = {}
         dataset_info: dict[str, dict[str, Any]] = {}
@@ -205,9 +176,6 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
                 },
             )
 
-        # ------------------------------------------------------------------
-        # 1. Databases (always overwrite=True for asset bundles)
-        # ------------------------------------------------------------------
         for file_name, config in configs.items():
             if file_name.startswith("databases/"):
                 database = await _import_database(
@@ -219,24 +187,14 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
                 )
                 database_ids[str(database.uuid)] = int(database.id)
 
-        # ------------------------------------------------------------------
-        # 2. Saved queries
-        # ------------------------------------------------------------------
         for file_name, config in configs.items():
             if file_name.startswith("queries/"):
-                # Direct index (KeyError → ImportFailedError) — 1:1 with upstream
-                # ``config["db_id"] = database_ids[config["database_uuid"]]``. A
-                # missing dependency must fail the import, not silently skip it.
                 sq_cfg = dict(config)
                 sq_cfg["db_id"] = database_ids[config["database_uuid"]]
                 await import_saved_query(self.session, sq_cfg, overwrite=True)
 
-        # ------------------------------------------------------------------
-        # 3. Datasets
-        # ------------------------------------------------------------------
         for file_name, config in configs.items():
             if file_name.startswith("datasets/"):
-                # Direct index (KeyError → ImportFailedError) — 1:1 with upstream.
                 ds_cfg = dict(config)
                 ds_cfg["database_id"] = database_ids[config["database_uuid"]]
                 dataset = await _import_dataset(
@@ -253,14 +211,9 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
                     "datasource_name": dataset.datasource_name,
                 }
 
-        # ------------------------------------------------------------------
-        # 4. Charts
-        # ------------------------------------------------------------------
         charts: list[Slice] = []
         for file_name, config in configs.items():
             if file_name.startswith("charts/"):
-                # Direct index (KeyError → ImportFailedError) — 1:1 with upstream
-                # ``dataset_info[config["dataset_uuid"]]``.
                 cfg = update_chart_config_dataset(
                     dict(config), dataset_info[config["dataset_uuid"]]
                 )
@@ -274,9 +227,6 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
                 charts.append(chart)
                 chart_ids[str(chart.uuid)] = int(chart.id)
 
-        # ------------------------------------------------------------------
-        # 5. Dashboards
-        # ------------------------------------------------------------------
         from superset.migrations.shared.native_filters import migrate_dashboard
 
         for file_name, config in configs.items():
@@ -290,8 +240,6 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
                     current_user=self.current_user,
                 )
 
-                # set ref in the dashboard_slices table — matches original 1:1
-                # (uses ``break`` on first missing UUID, mirroring the original).
                 dashboard_chart_ids: list[dict[str, int]] = []
                 for uuid_str in find_chart_uuids(d_cfg.get("position", {})):
                     if uuid_str not in chart_ids:
@@ -303,8 +251,6 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
                         }
                     )
 
-                # Replace existing dashboard<->chart links with the imported set
-                # (matches the ``delete -> insert`` pattern in the original).
                 await self.session.execute(
                     delete(dashboard_slices).where(
                         dashboard_slices.c.dashboard_id == dashboard.id
@@ -315,24 +261,17 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
                         insert(dashboard_slices).values(dashboard_chart_ids)
                     )
 
-                # Migrate any filter-box charts to native dashboard filters.
                 await self.session.refresh(dashboard, ["slices"])
                 migrate_dashboard(dashboard)
 
-        # ------------------------------------------------------------------
-        # 6. Cleanup obsolete filter-box charts
-        # ------------------------------------------------------------------
         for chart in charts:
             if getattr(chart, "viz_type", None) == "filter_box":
                 await self.session.delete(chart)
 
         await self.session.flush()
 
-    # ------------------------------------------------------------------ #
-    # Helpers (legacy — kept as compat shims in case external callers
-    # invoke them; new code uses the per-resource async helpers in
-    # ``superset.commands.chart.importers.v1.utils``).
-    # ------------------------------------------------------------------ #
+    # Legacy helpers kept as compat shims; new code uses per-resource async helpers
+    # in superset.commands.chart.importers.v1.utils.
 
     async def _import_database(self, config: dict[str, Any]) -> Any:
         """Upsert a Database row via the per-resource async helper."""
@@ -370,18 +309,15 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
                 .one_or_none()
             )
 
-        # ``allow_csv_upload`` -> ``allow_file_upload`` rename
         if "allow_csv_upload" in cfg:
             cfg["allow_file_upload"] = cfg.pop("allow_csv_upload")
 
-        # ``schemas_allowed_for_csv_upload`` -> ``schemas_allowed_for_file_upload``
         extra = cfg.get("extra")
         if isinstance(extra, dict) and "schemas_allowed_for_csv_upload" in extra:
             extra["schemas_allowed_for_file_upload"] = extra.pop(
                 "schemas_allowed_for_csv_upload"
             )
 
-        # Serialise extra dict into JSON for the column
         if isinstance(extra, dict):
             import json
 
@@ -392,7 +328,6 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
         ssh_tunnel_config = cfg.pop("ssh_tunnel", None)
         sqlalchemy_uri = cfg.pop("sqlalchemy_uri", "")
 
-        # Trim non-model fields
         for key in ("version", "database_uuid", "uuid"):
             cfg.pop(key, None)
 
@@ -476,7 +411,7 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
             for key in attrs:
                 if key in config:
                     value = config[key]
-                    # Don't overwrite secrets with mask placeholder.
+                    # Skip masked placeholder values to preserve the stored secret.
                     if key in ("password", "private_key", "private_key_password") and (
                         value == "XXXXXXXXXX"
                     ):
@@ -507,9 +442,5 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
 
         await import_saved_query(self.session, dict(config), overwrite=True)
 
-    # Note: ``migrate_dashboard`` is now invoked inline in :meth:`_import`
-    # — no helper needed.
 
-
-# Re-export the metadata file name for convenience (parity with original).
 __all__ = ["METADATA_FILE_NAME", "ImportAssetsCommand"]

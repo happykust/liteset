@@ -125,8 +125,8 @@ def test_guest_user_roles_empty():
 def test_validate_guest_token_resources_schema_valid():
     from superset.security.guest import validate_guest_token_resources_schema
 
-    # 1:1 with superset_old: ``GuestTokenResourceType`` has only DASHBOARD, so
-    # "dashboard" is the only supported resource type.
+    # ``GuestTokenResourceType`` has only DASHBOARD, so "dashboard" is the
+    # only supported resource type.
     errors = validate_guest_token_resources_schema(
         [
             {"type": "dashboard", "id": "uuid-1"},

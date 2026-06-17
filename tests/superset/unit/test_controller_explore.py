@@ -14,8 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Tests for ExploreController."""
-
 from __future__ import annotations
 
 import json
@@ -28,17 +26,12 @@ from superset.exceptions import ObjectNotFoundError
 
 
 def _explore_sm() -> MagicMock:
-    """Security-manager mock whose datasource access check is awaitable +
-    permissive (get_explore now enforces datasource access; denial is covered
-    by the live RBAC probe / test_controller_rbac_access)."""
+    """Permissive security manager; denial scenarios are covered by
+    test_controller_rbac_access.
+    """
     sm = MagicMock()
     sm.raise_for_access = AsyncMock()
     return sm
-
-
-# ---------------------------------------------------------------------------
-# Controller metadata
-# ---------------------------------------------------------------------------
 
 
 def test_controller_path():
@@ -47,11 +40,6 @@ def test_controller_path():
 
 def test_controller_tags():
     assert ExploreController.tags == ["Explore"]
-
-
-# ---------------------------------------------------------------------------
-# Handler logic tests (call underlying fn directly)
-# ---------------------------------------------------------------------------
 
 
 async def test_get_explore_empty():
@@ -73,10 +61,6 @@ async def test_get_explore_empty():
         current_user=MagicMock(),
         session=AsyncMock(),
     )
-    # On the empty-state path the handler fills form_data with explore
-    # defaults (datasource/adhoc_filters/applied_time_extras/url_params) and
-    # returns a "[Missing Dataset]" placeholder, matching original
-    # GetExploreCommand.
     form_data = result["result"]["form_data"]
     assert form_data["adhoc_filters"] == []
     assert form_data["url_params"] == {}
@@ -90,11 +74,6 @@ async def test_get_explore_with_form_data_key(monkeypatch):
     request.query_params = {"form_data_key": "my-key"}
     chart_dao = AsyncMock()
     dataset_dao = AsyncMock()
-    # The cache-slot entry envelope: owner/datasource_id/chart_id metadata +
-    # form_data payload — 1:1 with the shape written by
-    # explore_form_data.py:338-346.  The form_data_key branch reads through
-    # ``cache_manager.explore_form_data_cache`` (same slot the
-    # explore_form_data endpoints write to), NOT the kv_dao.
     fake_cache = AsyncMock()
     fake_cache.get.return_value = {
         "datasource_id": 1,
@@ -107,9 +86,6 @@ async def test_get_explore_with_form_data_key(monkeypatch):
         lambda: fake_cache,
     )
 
-    # check_access enforces datasource/chart access on the cached form_data
-    # (1:1 with GetFormDataCommand.run() in superset_old). Patch it to succeed
-    # so this test exercises the success path without requiring real DB objects.
     monkeypatch.setattr(
         "superset.commands.explore_form_data.utils.check_access",
         AsyncMock(return_value=True),
@@ -128,9 +104,6 @@ async def test_get_explore_with_form_data_key(monkeypatch):
         session=AsyncMock(),
     )
     fake_cache.get.assert_awaited_once_with("my-key")
-    # The handler applies upstream transforms (convert_legacy_filters_into_adhoc
-    # / merge_extra_filters / merge_request_params) on top of the loaded
-    # form_data, so assert the relevant value rather than an exact dict.
     assert result["result"]["form_data"]["viz_type"] == "bar"
 
 
@@ -145,7 +118,6 @@ async def test_get_explore_with_slice_id():
     # ``Slice.form_data`` is a real property on the model; with a MagicMock we
     # supply the migrated form_data dict the handler merges into the response.
     chart.form_data = {"granularity": "day"}
-    # Iterable relationships eagerly read by the handler.
     chart.owners = []
     chart.dashboards = []
     chart.created_by = None
@@ -155,13 +127,10 @@ async def test_get_explore_with_slice_id():
     chart.datasource_id = None
 
     chart_dao = AsyncMock()
-    # The controller resolves the slice via find_by_id_with_options (eager-load),
-    # not find_by_id.
     chart_dao.find_by_id_with_options.return_value = chart
-    # The controller also calls find_by_id in the datasource fallback path;
-    # return the same chart so datasource_id=None propagates and no dataset
-    # lookup is triggered (avoiding the MagicMock auto-attribute default_endpoint
-    # from a fresh AsyncMock return value triggering a spurious 302 redirect).
+    # Also stub find_by_id so datasource_id=None propagates and no dataset lookup
+    # is triggered (a fresh AsyncMock return value has a truthy default_endpoint
+    # which triggers a spurious 302 redirect).
     chart_dao.find_by_id.return_value = chart
     dataset_dao = AsyncMock()
     kv_dao = AsyncMock()
@@ -186,7 +155,6 @@ async def test_get_explore_chart_not_found():
     request = MagicMock()
     request.query_params = {"slice_id": "999"}
     chart_dao = AsyncMock()
-    # The controller resolves the slice via find_by_id_with_options.
     chart_dao.find_by_id_with_options.return_value = None
     chart_dao.find_by_id.return_value = None
     dataset_dao = AsyncMock()
@@ -205,27 +173,16 @@ async def test_get_explore_chart_not_found():
         session=AsyncMock(),
     )
     assert result["result"]["slice"] is None
-    # Original GetExploreCommand never sets a "not found" message for a missing
-    # slice (superset_old/commands/explore/get.py:63 initialises message=None
-    # and no branch sets it when slc is None); the fix correctly mirrors that.
     assert result["result"]["message"] is None
-
-
-# ---------------------------------------------------------------------------
-# Permalink resolution (regression: explore permalink never resolved → 404)
-# ---------------------------------------------------------------------------
 
 
 async def test_get_explore_with_permalink_key_round_trip(monkeypatch):
     """A permalink_key (hashids string) must be decoded → int id, looked up in
     the EXPLORE_PERMALINK resource, and its ``state.formData`` returned.
 
-    1:1 with superset_old/commands/explore/get.py:64-73 +
-    superset_old/commands/explore/permalink/get.py — and consistent with how
-    CreateExplorePermalinkCommand (superset.controllers.explore_permalink)
-    actually stores the payload: ``{..., "state": {"formData": {...},
-    "urlParams": [...]}}`` keyed by an auto-generated integer id, with the int
-    encoded into the URL string via ``encode_permalink_key``.
+    Consistent with how CreateExplorePermalinkCommand stores the payload:
+    ``{..., "state": {"formData": {...}, "urlParams": [...]}}`` keyed by an
+    auto-generated integer id, encoded into the URL via ``encode_permalink_key``.
     """
     request = MagicMock()
     request.query_params = {"permalink_key": "qQ8Rb3X"}
@@ -267,8 +224,6 @@ async def test_get_explore_with_permalink_key_round_trip(monkeypatch):
             return stored
 
     monkeypatch.setattr("superset.db.daos.key_value.AsyncKeyValueDAO", _FakeDAO)
-    # The permalink branch now enforces check_chart_access (1:1 with
-    # GetExplorePermalinkCommand); this test covers resolution, not RBAC.
     monkeypatch.setattr(
         "superset.commands.explore_form_data.utils.check_access",
         AsyncMock(return_value=True),
@@ -287,22 +242,15 @@ async def test_get_explore_with_permalink_key_round_trip(monkeypatch):
         session=AsyncMock(),
     )
 
-    # Looked up under the correct resource, by the decoded INTEGER key.
     assert captured["resource"] == "explore_permalink"
     assert captured["key"] == 42
-    # The stored state.formData is resolved into the response form_data, and
-    # state.urlParams is merged into form_data["url_params"] (1:1 with original).
     form_data = result["result"]["form_data"]
     assert form_data["viz_type"] == "bar"
-    # state.urlParams is merged into form_data["url_params"]; the handler also
-    # folds the request query params in downstream, so assert membership.
     assert form_data["url_params"]["foo"] == "bar"
 
 
 async def test_get_explore_with_bad_permalink_key_404(monkeypatch):
-    """A bogus/expired permalink_key → 404 (ExplorePermalinkGetFailedError),
-    1:1 with GetExplorePermalinkCommand. Two failure modes: undecodable key,
-    and decodable key with no matching KV row."""
+    """Decodable key with no matching KV row → 404."""
     request = MagicMock()
     request.query_params = {"permalink_key": "not-a-real-key"}
 
@@ -340,12 +288,6 @@ async def test_get_explore_with_bad_permalink_key_404(monkeypatch):
         )
 
 
-# ---------------------------------------------------------------------------
-# Datasource resolution priority regression tests
-# (superset_old/views/utils.py:284-285 + commands/explore/get.py:129-131)
-# ---------------------------------------------------------------------------
-
-
 async def test_datasource_priority_form_data_wins_over_url_param():
     """form_data["datasource"] MUST win over ?datasource_id URL param.
 
@@ -369,8 +311,6 @@ async def test_datasource_priority_form_data_wins_over_url_param():
     chart_dao.find_by_id_with_options.return_value = None
     chart_dao.find_by_id.return_value = None
 
-    # The explore_form_data cache slot supplies form_data with
-    # datasource="2__query".
     fake_cache = AsyncMock()
     fake_cache.get.return_value = {
         "datasource_id": 2,
@@ -385,7 +325,7 @@ async def test_datasource_priority_form_data_wins_over_url_param():
     async def _find_all(filters=None, **kw):
         if filters:
             captured_filter.extend(filters)
-        return []  # no dataset needed; we only care about which id was looked up
+        return []
 
     dataset_dao.find_all = _find_all
 
@@ -419,7 +359,6 @@ async def test_datasource_priority_form_data_wins_over_url_param():
     finally:
         _fd_utils.check_access = _fd_utils_orig_check
 
-    # Dataset 2 (from form_data) must have been queried, not dataset 5 (URL).
     assert len(captured_filter) == 1
     # SQLAlchemy BinaryExpression: SqlaTable.id == 2
     expr = captured_filter[0]
@@ -427,8 +366,6 @@ async def test_datasource_priority_form_data_wins_over_url_param():
     assert int(expr.right.value) == 2, (
         f"expected ds_id=2 (form_data wins), got {expr.right.value}"
     )
-
-    # form_data["datasource"] must be normalised to "2__query" (write-back).
     form_data = result["result"]["form_data"]
     assert form_data["datasource"] == "2__query"
 
@@ -476,8 +413,6 @@ async def test_datasource_url_param_fallback_when_no_form_data_datasource():
     assert int(expr.right.value) == 7, (
         f"expected ds_id=7 (URL param), got {expr.right.value}"
     )
-
-    # Write-back must normalise form_data["datasource"] = "7__table".
     form_data = result["result"]["form_data"]
     assert form_data["datasource"] == "7__table"
 
@@ -485,9 +420,6 @@ async def test_datasource_url_param_fallback_when_no_form_data_datasource():
 async def test_datasource_writeback_normalises_form_data():
     """After resolution, form_data["datasource"] must always equal
     "<resolved_id>__<resolved_type>" regardless of original source.
-
-    1:1 with superset_old/commands/explore/get.py:129-131 which writes
-    form_data["datasource"] unconditionally after get_datasource_info().
     """
     request = MagicMock()
     # form_data_key supplies datasource="3__query"; URL param has a different id.
@@ -497,10 +429,6 @@ async def test_datasource_writeback_normalises_form_data():
         "datasource_type": "table",
     }
 
-    # The explore_form_data cache slot supplies form_data with
-    # datasource="3__query" (the form_data_key branch reads through
-    # ``cache_manager.explore_form_data_cache`` — same slot the
-    # explore_form_data endpoints write to).
     fake_cache = AsyncMock()
     fake_cache.get.return_value = {
         "datasource_id": 3,
@@ -543,25 +471,16 @@ async def test_datasource_writeback_normalises_form_data():
     finally:
         _fd_utils.check_access = orig_check
     fake_cache.get.assert_awaited_once_with("fd-key-3")
-
-    # form_data["datasource"] must reflect the RESOLVED datasource (3__query),
-    # not the stale URL param value (99__table).
     form_data = result["result"]["form_data"]
     assert form_data["datasource"] == "3__query"
-
-
-# ---------------------------------------------------------------------------
-# REJECTED_FORM_DATA_KEYS filter ordering
-# (superset_old/views/utils.py:222 — filter BEFORE slice merge)
-# ---------------------------------------------------------------------------
 
 
 async def test_rejected_form_data_keys_slice_stored_js_key_survives(monkeypatch):
     """Chart stored with js_tooltip must keep it even when ENABLE_JAVASCRIPT_CONTROLS
     is disabled.
 
-    Original superset_old/views/utils.py:222 applies the REJECTED_FORM_DATA_KEYS
-    filter BEFORE the slice_form_data.update(form_data) merge at line 239.
+    The REJECTED_FORM_DATA_KEYS filter is applied BEFORE the
+    slice_form_data.update(form_data) merge.
     The filter only strips JS keys from the *request-submitted* form_data.
     The slice's own stored form_data is NOT filtered, so a chart saved while
     the flag was enabled continues to render those keys after the flag is off.
@@ -571,7 +490,6 @@ async def test_rejected_form_data_keys_slice_stored_js_key_survives(monkeypatch)
     """
     from superset.utils.feature_flags import feature_flag_manager
 
-    # Disable JS controls for this test.
     monkeypatch.setattr(
         feature_flag_manager,
         "is_feature_enabled",
@@ -592,7 +510,6 @@ async def test_rejected_form_data_keys_slice_stored_js_key_survives(monkeypatch)
     chart.changed_on = None
     chart.created_on = None
     chart.datasource_id = None
-    # The chart was saved WITH js_tooltip while the feature was enabled.
     chart.form_data = {"viz_type": "table", "js_tooltip": "my_tooltip_fn"}
 
     chart_dao = AsyncMock()
@@ -612,7 +529,6 @@ async def test_rejected_form_data_keys_slice_stored_js_key_survives(monkeypatch)
     )
 
     form_data = result["result"]["form_data"]
-    # The slice's OWN stored js_tooltip must survive — filter must not strip it.
     assert "js_tooltip" in form_data, (
         "js_tooltip from chart.form_data must survive the REJECTED_FORM_DATA_KEYS "
         "filter (filter only strips request-submitted data, not stored slice keys)"
@@ -625,8 +541,8 @@ async def test_rejected_form_data_keys_request_js_key_stripped(monkeypatch):
     when ENABLE_JAVASCRIPT_CONTROLS is disabled.
 
     This is the security-enforcement side of the same filter:
-    superset_old/views/utils.py:222 removes REJECTED_FORM_DATA_KEYS from the
-    initial form_data (permalink/form_data_key/URL-arg) before the slice merge.
+    REJECTED_FORM_DATA_KEYS are removed from the initial form_data
+    (permalink/form_data_key/URL-arg) before the slice merge.
     A chart without a stored js_tooltip must not receive one from the request.
     """
     from superset.utils.feature_flags import feature_flag_manager
@@ -651,14 +567,12 @@ async def test_rejected_form_data_keys_request_js_key_stripped(monkeypatch):
     chart.changed_on = None
     chart.created_on = None
     chart.datasource_id = None
-    # Stored chart does NOT have js_tooltip.
     chart.form_data = {"viz_type": "table"}
 
     chart_dao = AsyncMock()
     chart_dao.find_by_id_with_options.return_value = chart
     chart_dao.find_by_id.return_value = chart
 
-    # The form_data_key cache entry injects js_tooltip via the request path.
     fake_cache = AsyncMock()
     fake_cache.get.return_value = {
         "datasource_id": 0,
@@ -695,28 +609,16 @@ async def test_rejected_form_data_keys_request_js_key_stripped(monkeypatch):
         _fd_utils.check_access = orig_check
 
     form_data = result["result"]["form_data"]
-    # js_tooltip came from the request (form_data_key), not the stored chart —
-    # it MUST be stripped.
     assert "js_tooltip" not in form_data, (
         "js_tooltip from request form_data must be stripped by "
         "REJECTED_FORM_DATA_KEYS filter"
     )
-    # Other keys from the request must survive.
     assert form_data.get("extra") == "ok"
 
 
-# ---------------------------------------------------------------------------
-# raise_for_access called unconditionally
-# (superset_old/commands/explore/get.py:123 — no hasattr guard)
-# ---------------------------------------------------------------------------
-
-
 async def test_raise_for_access_called_unconditionally():
-    """security_manager.raise_for_access must be called when a dataset is found.
-
-    Original superset_old/commands/explore/get.py:123:
-        ``security_manager.raise_for_access(datasource=datasource)``
-    No hasattr() guard — the call is always made.
+    """security_manager.raise_for_access must be called when a dataset is found;
+    the call is unconditional — no hasattr() guard.
 
     Regression: the old liteset code wrapped it in
     ``if hasattr(security_manager, "raise_for_access"):`` which silently
@@ -744,7 +646,7 @@ async def test_raise_for_access_called_unconditionally():
     chart_dao.find_by_id_with_options.return_value = None
     chart_dao.find_by_id.return_value = None
 
-    sm = _explore_sm()  # has raise_for_access = AsyncMock()
+    sm = _explore_sm()
 
     await ExploreController.get_explore.fn(
         None,
@@ -758,7 +660,6 @@ async def test_raise_for_access_called_unconditionally():
         session=AsyncMock(),
     )
 
-    # raise_for_access MUST have been called — no hasattr guard should suppress it.
     sm.raise_for_access.assert_called_once()
     call_kwargs = sm.raise_for_access.call_args.kwargs
     assert call_kwargs.get("datasource") is mock_dataset, (

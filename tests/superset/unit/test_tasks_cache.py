@@ -14,9 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Ported from ``tests/integration_tests/tasks/test_cache.py``.
-
-Exercises :func:`superset.tasks.cache.fetch_url` — the chart warm-up cache
+"""Exercises :func:`superset.tasks.cache.fetch_url` — the chart warm-up cache
 HTTP PUT helper. The upstream test patched ``fetch_csrf_token``,
 ``is_secure_url``, ``request.Request`` and ``request.urlopen`` and drove the
 URL via ``app.config["WEBDRIVER_BASEURL"]``.
@@ -107,7 +105,7 @@ def test_fetch_url(
 
     # ``fetch_url`` mutates the headers dict in place (Referer + CSRF merge), so
     # the same object reference is passed through the CSRF seam and into
-    # ``Request`` — pass it directly, mirroring the upstream test.
+    # ``Request`` — pass it directly.
     headers = dict(initial_headers)
     result = fetch_url(data, headers)
 
@@ -130,7 +128,6 @@ def test_fetch_url(
         headers=expected_headers,
         method="PUT",
     )
-    # assert the same Request object is used
     mock_urlopen.assert_called_once_with(mock_request, timeout=mock.ANY)
 
     assert data == result["success"]

@@ -14,16 +14,14 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/dashboard/filter_state/update.py``.
+"""Update command for dashboard filter state entries.
 
-Storage goes through ``cache_manager.filter_state_cache`` — see create.py
-for the CACHE_TYPE / key-format notes.
+Storage goes through ``cache_manager.filter_state_cache``; see create.py
+for CACHE_TYPE / key-format notes.
 
-The original update command performs tab_id-based key rotation:
-when ``tab_id`` changes (or is falsy), a new key is generated and the
-contextual mapping is updated. This liteset port replicates that logic
-using uuid5 deterministic keys (same approach as CreateFilterStateCommand)
-instead of the upstream ``session._id`` + ``cache_manager`` contextual keys.
+Performs tab_id-based key rotation: when ``tab_id`` changes (or is falsy),
+a new deterministic ``uuid5`` key is generated (see create.py for the
+keying strategy).
 """
 
 from __future__ import annotations
@@ -67,10 +65,7 @@ class UpdateFilterStateCommand(AsyncBaseCommand[str]):
         self._cache = cache if cache is not None else _default_cache()
 
     async def validate(self) -> None:
-        # ``check_access`` raises ``TemporaryCacheResourceNotFoundError`` /
-        # ``TemporaryCacheAccessDeniedError`` 1:1 with the original.
-        # Pass the Dashboard DAO (which has get_by_id_or_slug) -- NOT the KV DAO.
-        # The real user is required so the can_access_dashboard gate is enforced.
+        # Pass Dashboard DAO (has get_by_id_or_slug), not the KV DAO.
         await check_access(
             self._dashboard_dao,
             self._dashboard_id,
@@ -79,42 +74,27 @@ class UpdateFilterStateCommand(AsyncBaseCommand[str]):
         )
 
     async def run(self) -> str:
-        # Original (superset_old/commands/dashboard/filter_state/update.py:38-55):
-        # entry = cache.get(cache_key(resource_id, key))
-        # if entry:  <-- missing key → skip all writes, return original key
-        #     if entry["owner"] != owner: raise TemporaryCacheAccessDeniedError()
-        #     ... key rotation ...
-        #     cache.set(cache_key(resource_id, key), new_entry)
-        # return key  <-- always the original key when entry is falsy
-        #
-        # Do NOT raise ObjectNotFoundError on missing entry — that would change the HTTP
-        # status from 200 to 404, breaking the API contract.
+        # Do NOT raise on missing entry — that would change HTTP 200 to 404,
+        # breaking the API contract. Instead, skip the write and
+        # return the original key.
         entry = await self._cache.get(cache_key(self._dashboard_id, self._key))
 
         if entry is not None:
             if not isinstance(entry, dict):
                 entry = {}
-            # Original raises ``TemporaryCacheAccessDeniedError`` when the
-            # current user is not the owner.
             owner = entry.get("owner")
             if owner != self._user_id:
                 raise TemporaryCacheAccessDeniedError()
 
-            # Key rotation — deterministic uuid5 when tab_id is truthy,
-            # fresh random key otherwise, matching the original's
-            # ``if not key or not tab_id: key = random_key()``.
+            # Deterministic uuid5 when tab_id truthy, fresh random key when falsy.
             if self._tab_id:
                 seed = f"{self._user_id}:{self._dashboard_id}:{self._tab_id}"
                 key = str(uuid.uuid5(uuid.NAMESPACE_DNS, seed))
             else:
                 key = str(uuid.uuid4())
 
-            # Slot stamps a fresh TTL window on every write — 1:1 with
-            # ``SupersetMetastoreCache.set()`` (see create.py).
             new_entry = {"owner": self._user_id, "value": self._value}
             await self._cache.set(cache_key(self._dashboard_id, key), new_entry)
             return key
 
-        # Entry not found — original silently skips the write and returns the
-        # original URL key unchanged (HTTP 200, no write performed).
         return self._key

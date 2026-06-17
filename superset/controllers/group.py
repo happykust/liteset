@@ -78,12 +78,9 @@ async def _validate_group_member_ids(
 ) -> None:
     """Raise HTTP 400 when any requested role/user ID does not exist.
 
-    1:1 with the upstream ``GroupApi.post()``/``put()``
-    (the upstream group security API): after
-    ``_fetch_entities``, ``missing_*_ids = set(value) - {e.id for e in
-    fetched}`` and a non-empty set returns ``response_400(message={field:
-    ["Role(s)/User(s) with ID(s) [...] do not exist."]})``.  Without this
-    the DAO silently assigns only the rows it found.
+    After fetching entities, ``missing_*_ids = set(value) - {e.id for e in fetched}``
+    and a non-empty set returns 400.  Without this the DAO silently assigns only the
+    rows it found.
     """
     if not requested_ids:
         return

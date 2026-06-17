@@ -96,10 +96,8 @@ logger = logging.getLogger(__name__)
 # Chart data response serialization
 # ---------------------------------------------------------------------------
 def _truncate_results_query(q: dict[str, Any]) -> dict[str, Any]:
-    """Reduce a ``result_type=results`` query payload to the five keys the
-    original emits for ``RESULTS`` (data / colnames / coltypes / rowcount /
-    sql_rowcount). 1:1 with
-    ``superset_old/common/query_actions.py:_get_full`` lines 138-145.
+    """Reduce a ``result_type=results`` query payload to the five keys emitted
+    for ``RESULTS`` (data / colnames / coltypes / rowcount / sql_rowcount).
     Only applied to non-failed queries by the caller.
     """
     return {
@@ -112,9 +110,9 @@ def _truncate_results_query(q: dict[str, Any]) -> dict[str, Any]:
 
 
 def _effective_result_types(result: dict[str, Any], n: int) -> list[str]:
-    """Per-query effective result_type, mirroring the original
-    ``query_obj.result_type or query_context.result_type`` precedence
-    (``superset_old/common/query_context_processor.py:1064``)."""
+    """Per-query effective result_type: ``query_obj.result_type`` wins
+    over ``query_context.result_type``.
+    """
     qc = result.get("query_context")
     ctx_rt = getattr(qc, "result_type", None)
     qos = list(getattr(qc, "queries", []) or [])
@@ -168,21 +166,16 @@ def _render_chart_data_payload(  # noqa: C901
     form_data: dict[str, Any] | None = None,
     datasource: Any | None = None,
 ) -> Response[Any]:
-    """Serialize ``ChartDataCommand`` output as
-    ``{"result": [<query>, ...]}``.
+    """Serialize ``ChartDataCommand`` output as ``{"result": [<query>, ...]}``.
 
-    1:1 with ``superset_old/charts/data/api.py:_send_chart_response``
-    (JSON branch). Drops ``query_context`` (which holds a non-JSON
-    ``SqlaTable`` ORM instance), converts each query's pandas
-    ``DataFrame`` to ``data``/``colnames``/``coltypes``, normalizes
-    Decimal/numpy/NaN/datetime values inside row dicts, and emits the
-    response through ``msgspec`` with the same ``json_int_dttm_ser``
-    fallback the original serializer used.
+    Drops ``query_context`` (which holds a non-JSON ``SqlaTable`` ORM instance),
+    converts each query's pandas ``DataFrame`` to ``data``/``colnames``/``coltypes``,
+    normalizes Decimal/numpy/NaN/datetime values inside row dicts, and emits the
+    response through ``msgspec`` with the ``json_int_dttm_ser`` fallback.
 
     When ``form_data`` and ``datasource`` are supplied and the result type
-    is ``post_processed``, ``apply_client_processing`` is applied — 1:1
-    with the original ``_send_chart_response`` pivot/table transforms
-    (used by email reports for Pivot Table v2 / Table charts).
+    is ``post_processed``, ``apply_client_processing`` is applied (used by
+    email reports for Pivot Table v2 / Table charts).
     """
     from datetime import date as _date_t, datetime as _datetime_t
     from decimal import Decimal
@@ -265,10 +258,7 @@ def _render_chart_data_payload(  # noqa: C901
                     elif isinstance(val, _date_t):
                         row[key] = (val - epoch_date).total_seconds() * 1000
 
-    # 2b. Post-processing (pivot_table_v2 / table) — 1:1 with
-    # ``_send_chart_response``: when ``result_type == post_processed``
-    # the materialized ``query["data"]`` is pivoted/reshaped via
-    # ``apply_client_processing(result, form_data, datasource)``.
+    # When result_type == post_processed, apply pivot/table transforms.
     qc = result.get("query_context")
     _result_type = getattr(qc, "result_type", None) or ""
     if str(_result_type).lower() == "post_processed" and form_data is not None:
@@ -293,8 +283,7 @@ def _render_chart_data_payload(  # noqa: C901
         if isinstance(q, dict) and "indexnames" not in q:
             q["indexnames"] = list(range(len(q.get("data", []))))
 
-    # 4. result_type=results truncation — 1:1 with the original ``_get_full``
-    # RESULTS branch (5 keys only, for non-failed queries).
+    # Truncate result_type=results queries to the 5-key RESULTS shape (non-failed only).
     result_types = _effective_result_types(result, len(queries))
     queries = [
         _truncate_results_query(q)
@@ -324,12 +313,8 @@ def _table_like_file_response(
 ) -> Response[Any]:
     """Render a chart-data ``result`` as a CSV / XLSX download.
 
-    1:1 with the table-like branch of upstream ``_send_chart_response``
-    (superset_old/charts/data/api.py:362-378): a single query returns the
-    file directly, multiple queries are bundled into a ZIP.  Shared by the
-    POST /data and GET /{pk}/data/ handlers (R11-16 — the GET path used to
-    fall through to the JSON renderer, so CSV email reports attached a JSON
-    blob named ``.csv``).
+    A single query returns the file directly; multiple queries are bundled
+    into a ZIP. Shared by the POST /data and GET /{pk}/data/ handlers.
     """
     import zipfile
     from datetime import datetime as _dt
@@ -345,8 +330,6 @@ def _table_like_file_response(
             elif q.get("data"):
                 frames.append(pd.DataFrame(q["data"]))
 
-    # Timestamped download filename — 1:1 with the original
-    # ``generate_download_headers`` (``views/base.py``).
     _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
 
     if len(frames) <= 1:
@@ -403,8 +386,7 @@ def _resolve_async_channel_id(
     :func:`superset.middleware.async_token.resolve_async_channel_id_from_request`
     helper so that all channel-resolution logic lives in one place.
     Returns ``None`` when the cookie is missing or invalid — the caller maps
-    that to HTTP 401, mirroring the original ``AsyncQueryTokenException
-    → response_401``.
+    that to HTTP 401.
     """
     from superset.middleware.async_token import resolve_async_channel_id_from_request
 
@@ -421,29 +403,21 @@ async def _try_cached_chart_data(
 ) -> Response[Any] | None:
     """Cache-first short-circuit for the GLOBAL_ASYNC_QUERIES submit path.
 
-    1:1 with the original ``ChartDataRestApi._run_async``
-    (``superset_old/charts/data/api.py:329-333``): *before* dispatching a
-    background Celery job, run the command with ``force_cached=True`` and, on a
-    cache hit, return the already-computed result inline (HTTP 200) so a chart
-    whose data is already cached skips the whole async round-trip.
+    Before dispatching a background Celery job, run the command with
+    ``force_cached=True`` and, on a cache hit, return the already-computed
+    result inline (HTTP 200) so a chart whose data is already cached skips
+    the whole async round-trip.
 
-    ``validate()`` (``raise_for_access``) runs first — exactly as the original
-    calls ``command.validate()`` *before* ``_run_async`` — so an inline cache
-    hit can never bypass the access check (a denial propagates as 403).
+    ``validate()`` (``raise_for_access``) runs first, so an inline cache hit
+    can never bypass the access check (a denial propagates as 403).
 
     Returns the rendered ``Response`` on a cache hit, or ``None`` on a cache
     miss / any failure (the caller then dispatches the background job and
     returns 202).
 
-    The whole attempt is best-effort: the original suppresses only
-    ``ChartDataCacheLoadError`` on a miss, but liteset's processor signals a
-    ``force_cached`` miss by *returning* a per-query failed-dict (and may raise
-    other errors building/running against the query context).  Since the
-    async-dispatch path is the proven fallback — and access is independently
-    enforced by the Celery worker and the ``GET /data/<cache_key>`` read — ANY
-    failure here simply falls through to dispatch.  An inline ``Response`` is
-    only ever returned after ``validate()`` (``raise_for_access``) has passed,
-    so a cache hit can never bypass the access check.
+    The whole attempt is best-effort: any failure falls through to dispatch.
+    An inline ``Response`` is only returned after ``validate()``
+    (``raise_for_access``) has passed.
     """
     from superset.extensions import cache_manager
 
@@ -457,8 +431,7 @@ async def _try_cached_chart_data(
             query_context=query_context,
         )
         cmd = ChartDataCommand(query_context=query_context, processor=processor)
-        # Access check first — 1:1 with the original ``command.validate()``
-        # before ``_run_async``.
+        # Access check first — must run before cache hit returns.
         await cmd.validate()
         result = await cmd.run(force_cached=True)
     except Exception:  # noqa: BLE001 — best-effort; fall through to dispatch
@@ -512,8 +485,6 @@ def _chart_custom_filters(current_user: Any) -> dict[str, Any]:  # noqa: C901
     def _chart_all_text(model_cls: Any, value: Any) -> Any:
         """OR-match the search term across slice_name, description,
         viz_type and the associated dataset's table_name.
-
-        Ported 1:1 from superset_old/charts/filters.py:ChartAllTextFilter.
         """
         if not value:
             return None
@@ -533,9 +504,7 @@ def _chart_custom_filters(current_user: Any) -> dict[str, Any]:  # noqa: C901
         )
 
     def _chart_tag_name(model_cls: Any, value: Any) -> Any:
-        """1:1 with ``superset_old/charts/filters.py::ChartTagNameFilter``.
-
-        Resolves the slice via ``TaggedObject(object_type='chart',
+        """Resolve the slice via ``TaggedObject(object_type='chart',
         tag_id=<Tag.id WHERE Tag.name == value>)``.
         """
         if not value:
@@ -552,7 +521,6 @@ def _chart_custom_filters(current_user: Any) -> dict[str, Any]:  # noqa: C901
         return model_cls.id.in_(tagged_subq)
 
     def _chart_tag_id(model_cls: Any, value: Any) -> Any:
-        """1:1 with ``superset_old/charts/filters.py::ChartTagIdFilter``."""
         if value is None:
             return None
         from sqlalchemy import select as sa_select
@@ -570,7 +538,6 @@ def _chart_custom_filters(current_user: Any) -> dict[str, Any]:  # noqa: C901
         return model_cls.id.in_(tagged_subq)
 
     def _chart_has_created_by(model_cls: Any, value: Any) -> Any:
-        """1:1 with ``ChartHasCreatedByFilter``."""
         if value is True:
             return model_cls.created_by_fk.isnot(None)
         if value is False:
@@ -578,7 +545,6 @@ def _chart_custom_filters(current_user: Any) -> dict[str, Any]:  # noqa: C901
         return None
 
     def _chart_created_by_me(model_cls: Any, value: Any) -> Any:
-        """1:1 with ``ChartCreatedByMeFilter``."""
         from sqlalchemy import or_
 
         user_id = getattr(current_user, "id", None)
@@ -590,7 +556,6 @@ def _chart_custom_filters(current_user: Any) -> dict[str, Any]:  # noqa: C901
         )
 
     def _chart_owned_created_favored_by_me(model_cls: Any, value: Any) -> Any:
-        """1:1 with ``ChartOwnedCreatedFavoredByMeFilter``."""
         from sqlalchemy import or_, select as sa_select
 
         from superset.models.core import FavStar
@@ -614,8 +579,6 @@ def _chart_custom_filters(current_user: Any) -> dict[str, Any]:  # noqa: C901
         "chart_is_favorite": _chart_is_favorite,
         "chart_is_certified": _chart_is_certified,
         "chart_all_text": _chart_all_text,
-        # 1:1 ports of the missing filters reported in
-        # docs/audit_2026-05-04/01-charts-explore-dashboards.md.
         "chart_tags": _chart_tag_name,
         "chart_tag_id": _chart_tag_id,
         "chart_has_created_by": _chart_has_created_by,
@@ -743,11 +706,6 @@ class ChartController(Controller):
         thumbnail_urls = await asyncio.to_thread(
             lambda: {chart.id: chart.thumbnail_url for chart in charts}
         )
-        # Column list matches the upstream ChartRestApi.list_columns
-        # (superset_old/charts/api.py:137-184). The first block are simple
-        # model columns / relationships; the second block are computed
-        # fields populated manually below (so list_columns / label_columns
-        # expose them too).
         payload = serialize_list_response(
             charts,
             total,
@@ -855,8 +813,7 @@ class ChartController(Controller):
                 item["edit_url"] = chart_obj.edit_url
                 item["slice_url"] = chart_obj.slice_url
 
-                # changed_on_dttm — epoch *milliseconds* of changed_on
-                # (superset_old/models/slice.py converts via timestamp() * 1000)
+                # changed_on_dttm — epoch milliseconds of changed_on
                 item["changed_on_dttm"] = (
                     float(chart_obj.changed_on.timestamp()) * 1000
                     if chart_obj.changed_on
@@ -876,8 +833,6 @@ class ChartController(Controller):
 
                 # table.default_endpoint and table.table_name
                 tbl = chart_obj.table
-                # Nested ``table`` dict matches original upstream serialization
-                # (superset_old/charts/schemas.py ChartEntityResponseSchema).
                 item["table"] = (
                     {
                         "default_endpoint": tbl.default_endpoint if tbl else None,
@@ -1197,7 +1152,6 @@ class ChartController(Controller):
     ) -> Response[Any]:
         """Compute and cache a chart screenshot.
 
-        1:1 port of ``superset_old/charts/api.py:cache_screenshot``.
         Returns 200 when the existing cache payload is still valid;
         returns 202 and dispatches the Celery task when a new screenshot
         must be generated.
@@ -1217,12 +1171,10 @@ class ChartController(Controller):
 
         # Eager-load the datasource (``table``) so ``chart.digest`` →
         # get_chart_digest can read ``chart.datasource`` without a sync
-        # lazy-load (MissingGreenlet) on the async session (this endpoint is
-        # only reachable with THUMBNAILS enabled, mirroring the list loader).
-        # Access-scoped lookup (1:1 upstream ``datamodel.get(pk, base_filters)``
-        # → 404 for an inaccessible chart) — the screenshot endpoints would
-        # otherwise serve images / trigger Celery compute for a chart the user
-        # cannot access.
+        # lazy-load (MissingGreenlet) on the async session.
+        # Access-scoped lookup (404 for an inaccessible chart) — the screenshot
+        # endpoints must not serve images or trigger Celery compute for a chart
+        # the user cannot access.
         from superset.db.filters import chart_access_filters
         from superset.models.slice import Slice
         from superset.utils.screenshots import (
@@ -1318,8 +1270,7 @@ class ChartController(Controller):
         # at import time in deployments without the optional deps.
         #
         # NB: every non-image response here returns JSON (``image/png`` ONLY on
-        # a real image) — 1:1 with the original which returns ``response_404()``
-        # (application/json) on every miss. The frontend ``ImageLoader``
+        # a real image). The frontend ``ImageLoader``
         # (packages/.../ListViewCard/ImageLoader.tsx) fetches the URL and tests
         # ``/image/.test(blob.type)``; an empty ``image/png`` body would pass
         # that test and render a blank/broken tile instead of the fallback.
@@ -1331,7 +1282,7 @@ class ChartController(Controller):
                 media_type="application/json",
             )
 
-        # Access-scoped lookup (1:1 upstream → 404) — this endpoint serves the
+        # Access-scoped lookup — this endpoint serves the
         # cached PNG bytes, so it must not return an image for a chart the user
         # cannot access.
         from superset.db.filters import chart_access_filters
@@ -1407,8 +1358,7 @@ class ChartController(Controller):
         # NB: non-image responses (404 / 202) return JSON, not an empty
         # ``image/png`` — the frontend ``ImageLoader`` keys off
         # ``/image/.test(blob.type)`` and an empty image body would render a
-        # blank tile instead of the fallback. 1:1 with the original
-        # (``response_404()`` / ``response(202, task_*)``).
+        # blank tile instead of the fallback.
         feature_flags = getattr(state.settings, "feature_flags", {})
         if not feature_flags.get("THUMBNAILS", False):
             return Response(
@@ -1421,7 +1371,6 @@ class ChartController(Controller):
 
         # Eager-load the datasource (``table``) so the ``chart.digest`` read
         # below doesn't trip a sync lazy-load (MissingGreenlet).
-        # Access-scoped lookup (1:1 upstream → 404 for an inaccessible chart).
         from superset.db.filters import chart_access_filters
         from superset.models.slice import Slice
         from superset.utils.screenshots import (
@@ -1471,9 +1420,7 @@ class ChartController(Controller):
                 chart_id=str(chart.id),
                 force=False,
             )
-            # 1:1 with the original ``response(202, task_updated_at=...,
-            # task_status=...)`` (charts/api.py:794) — JSON, NOT an empty
-            # ``image/png`` (see ImageLoader note above).
+            # JSON, NOT an empty ``image/png`` (see ImageLoader note above).
             return Response(
                 content={
                     "task_updated_at": cache_payload.get_timestamp(),
@@ -1514,8 +1461,7 @@ class ChartController(Controller):
         ids = extract_ids(rison_params)
         if not ids:
             raise CommandInvalidError("At least one ID is required for export")
-        # 1:1 with ``superset_old/charts/api.py:849-850`` — nest every ZIP entry
-        # under ``chart_export_{timestamp}/`` so the v1 importer's
+        # Nest every ZIP entry under ``chart_export_{timestamp}/`` so the v1 importer's
         # ``remove_root`` (parts[1:]) strips it back off and the re-import
         # round-trip works. Without the root prefix ``remove_root("metadata.yaml")``
         # returns ``"."`` and the bundle fails validation with
@@ -1551,8 +1497,6 @@ class ChartController(Controller):
         rison_params: list[int] | dict[str, Any] | None,
     ) -> FavoriteStatusResponse | Response[Any]:
         ids = extract_ids(rison_params)
-        # 1:1 with the original: load charts by id and 404 when none are
-        # found (``superset_old/charts/api.py:912-915``).
         charts = await dao.find_by_ids(ids) if ids else []
         if not charts:
             return Response(
@@ -1577,8 +1521,6 @@ class ChartController(Controller):
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
-        # 1:1 with original: route through AddFavoriteChartCommand which calls
-        # security_manager.raise_for_ownership to verify ownership before favoriting.
         cmd = AddFavoriteChartCommand(
             dao=cast("AsyncChartDAO", dao),
             chart_id=pk,
@@ -1606,8 +1548,6 @@ class ChartController(Controller):
         current_user: UserProtocol,
         security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
-        # 1:1 with original: route through RemoveFavoriteChartCommand which calls
-        # security_manager.raise_for_ownership to verify ownership before unfavoriting.
         cmd = RemoveFavoriteChartCommand(
             dao=cast("AsyncChartDAO", dao),
             chart_id=pk,
@@ -1652,10 +1592,8 @@ class ChartController(Controller):
         "/import/",
         guards=[require_permission("can_write", "Chart")],
         media_type="application/json",
-        # Upstream returns 200 "OK" (superset_old/charts/api.py:1188:
-        # ``return self.response(200, message="OK")``), not Litestar's
-        # default 201 — import succeeds against an existing resource, no
-        # new top-level resource is created.
+        # Returns 200, not 201 — import succeeds against an existing resource,
+        # no new top-level resource is created.
         status_code=200,
     )
     async def import_chart(
@@ -1800,10 +1738,8 @@ class ChartController(Controller):
         force: str | None = None,
     ) -> dict[str, Any] | Response[Any]:
         """GET /api/v1/chart/{pk}/data/ — fetch data for a specific chart."""
-        # Access-scoped lookup — 1:1 with upstream ``charts/data/api.py`` which
-        # fetches via ``datamodel.get(pk, base_filters)``, so a chart the user
-        # cannot access returns 404 (NOT a 403 that leaks the datasource name).
-        # ``find_by_id`` alone has no access filter; mirror the single-chart GET.
+        # Access-scoped lookup: returns 404 (not 403) so the datasource name
+        # is never leaked for charts the user cannot access.
         from superset.db.filters import chart_access_filters
         from superset.models.slice import Slice
 
@@ -1831,10 +1767,8 @@ class ChartController(Controller):
                 )
                 from superset.tasks.async_queries import load_chart_data_into_cache
 
-                # 1:1 with the original ``data`` view: both an empty/missing
-                # ``query_context`` and a JSON parse failure collapse to a
-                # single 400 with the same message
-                # (``superset_old/charts/data/api.py:129-139``).
+                # Both an empty/missing ``query_context`` and a JSON parse
+                # failure collapse to a single 400 with the same message.
                 query_context_str = getattr(chart, "query_context", None)
                 form_data = None
                 if query_context_str:
@@ -1853,9 +1787,8 @@ class ChartController(Controller):
                         status_code=400,
                     )
 
-                # Cache-first short-circuit — 1:1 with the original
-                # ``_run_async``: if this chart's data is already cached, return
-                # it inline (200) and skip the async round-trip entirely.
+                # Cache-first short-circuit: if this chart's data is already
+                # cached, return it inline (200) and skip the async round-trip.
                 ds_ref = form_data.get("datasource", {}) or {}
                 ds_dict = {
                     "type": ds_ref.get("type", "table"),
@@ -1865,12 +1798,9 @@ class ChartController(Controller):
                 if not datasource:
                     raise ObjectNotFoundError("Datasource", ds_dict["id"])
                 # Enforce datasource access BEFORE dispatching the GAQ Celery
-                # job — 1:1 with upstream where ``command.validate()``
-                # (raise_for_access) runs unconditionally before the async
-                # ``_run_async`` dispatch (same gate as the POST /data path:
-                # ``_try_cached_chart_data`` swallows the access error in its
-                # broad ``except``, so without this a user with no datasource
-                # access could trigger background compute against it).
+                # job — ``_try_cached_chart_data`` swallows the access error
+                # in its broad ``except``, so without this a user with no
+                # datasource access could trigger background compute against it.
                 await security_manager.raise_for_access(
                     datasource=datasource, user=current_user
                 )
@@ -1896,13 +1826,8 @@ class ChartController(Controller):
                     return cached_response
 
                 # Channel id MUST come from the request's ``async-token``
-                # cookie (the same claim the polling endpoint and the
-                # WebSocket relay read from) — NOT a random uuid. A random
-                # channel would mean results are written where no reader is
-                # listening. 1:1 with the original
-                # ``CreateAsyncChartDataJobCommand.validate`` →
-                # ``parse_channel_id_from_request`` → 401 on missing/invalid
-                # token.
+                # cookie — NOT a random uuid. A random channel would mean
+                # results are written where no reader is listening.
                 channel_id = _resolve_async_channel_id(request, settings)
                 if not channel_id:
                     raise NotAuthorizedException(
@@ -1916,9 +1841,9 @@ class ChartController(Controller):
                     status="pending",
                 )
                 # Forward the embedded guest JWT so the worker rebuilds the
-                # same GuestUser (and matching RLS cache key) — 1:1 with the
-                # original submit_chart_data_job. Only the *dispatched* metadata
-                # carries the token; the 202 response returns clean job_metadata.
+                # same GuestUser (and matching RLS cache key). Only the
+                # *dispatched* metadata carries the token; the 202 response
+                # returns clean job_metadata.
                 dispatch_metadata = await maybe_forward_guest_token(
                     job_metadata,
                     request=request,
@@ -1932,10 +1857,8 @@ class ChartController(Controller):
                     status_code=202,
                 )
 
-        # ``chart`` was already fetched (access-scoped) at the top of the handler.
-        # 1:1 with the original ``data`` view: both an empty/missing
-        # ``query_context`` and a JSON parse failure collapse to a single 400
-        # with the same message (``superset_old/charts/data/api.py:129-139``).
+        # Both an empty/missing ``query_context`` and a JSON parse failure
+        # collapse to a single 400 with the same message.
         query_context_str = getattr(chart, "query_context", None)
         qc_data = None
         if query_context_str:
@@ -1978,11 +1901,9 @@ class ChartController(Controller):
             datasource=datasource,
             queries=query_objects,
             force=qc_data.get("force", False),
-            # Honor the ``?type=`` override (applied to ``qc_data`` above) so
-            # the processor runs the matching result-type branch — 1:1 with the
-            # original ``query_obj.result_type or query_context.result_type``
-            # precedence. (The GET endpoint previously ignored ``?type=`` and
-            # always ran ``full``.)
+            # Honor the ``?type=`` override so the processor runs the matching
+            # result-type branch (``query_obj.result_type or
+            # query_context.result_type`` precedence).
             result_type=qc_data.get("result_type"),
             result_format=qc_data.get("result_format"),
         )
@@ -1993,11 +1914,8 @@ class ChartController(Controller):
             user=current_user,
             query_context=query_context,
         )
-        # Table-like formats (?format=csv|xlsx) — 1:1 with upstream
-        # ``_send_chart_response`` which both GET and POST route through:
-        # the ``can_csv`` gate, then a raw CSV/XLSX (or ZIP) download.  The
-        # CSV email-report path (``get_chart_csv_data``) reads this raw body
-        # (R11-16: the GET path used to return the JSON envelope).
+        # Table-like formats (?format=csv|xlsx): check ``can_csv`` permission,
+        # then return a raw CSV/XLSX (or ZIP) download.
         _result_format_get = str(qc_data.get("result_format") or "json").lower()
         if _result_format_get in ("csv", "xlsx"):
             if not await security_manager.can_access(
@@ -2023,11 +1941,9 @@ class ChartController(Controller):
                 verbose_map=getattr(query_context.datasource, "verbose_map", None),
             )
 
-        # 1:1 with the original GET endpoint (charts/data/api.py:171-178):
-        # extract ``form_data`` from ``chart.params`` and pass it through
-        # to ``_send_chart_response`` so that ``apply_client_processing``
-        # runs when ``result_type == post_processed`` (pivot table / table
-        # chart email reports).
+        # Extract ``form_data`` from ``chart.params`` so that
+        # ``apply_client_processing`` runs when ``result_type == post_processed``
+        # (pivot table / table chart email reports).
         try:
             form_data = _json.loads(chart.params) if chart.params else {}
         except (TypeError, ValueError):
@@ -2074,7 +1990,6 @@ class ChartController(Controller):
 
         import msgspec as _msgspec
 
-        # 1:1 with superset_old/charts/data/api.py:226-234.
         # Litestar's typed-parameter injection cannot be used here because
         # Apache Superset's CSV-export button submits the body as
         # ``application/x-www-form-urlencoded`` with the JSON wrapped in a
@@ -2151,9 +2066,8 @@ class ChartController(Controller):
                 )
                 from superset.tasks.async_queries import load_chart_data_into_cache
 
-                # Cache-first short-circuit — 1:1 with the original
-                # ``_run_async``: if this query's data is already cached, return
-                # it inline (200) and skip the async round-trip entirely.
+                # Cache-first short-circuit: if this query's data is already
+                # cached, return it inline (200) and skip the async round-trip.
                 ds_ref = {"type": data.datasource.type, "id": data.datasource.id}
                 datasource = await ds_dao.get_datasource(
                     data.datasource.type, data.datasource.id
@@ -2161,13 +2075,9 @@ class ChartController(Controller):
                 if not datasource:
                     raise ObjectNotFoundError("Datasource", data.datasource.id)
                 # Enforce datasource access BEFORE dispatching the GAQ Celery
-                # job — 1:1 with upstream where ``command.validate()``
-                # (raise_for_access) runs unconditionally before the async
-                # ``_run_async`` dispatch. The sync path's check (below) is
-                # AFTER this early-return, and ``_try_cached_chart_data``
-                # swallows the access error in its broad ``except``, so without
-                # this gate a user with no datasource access could trigger
-                # background compute against it.
+                # job — ``_try_cached_chart_data`` swallows the access error
+                # in its broad ``except``, so without this a user with no
+                # datasource access could trigger background compute against it.
                 await security_manager.raise_for_access(
                     datasource=datasource, user=current_user
                 )
@@ -2192,13 +2102,8 @@ class ChartController(Controller):
                     return cached_response
 
                 # Channel id MUST come from the request's ``async-token``
-                # cookie (the same claim the polling endpoint and the
-                # WebSocket relay read from) — NOT a random uuid. A random
-                # channel would mean results are written where no reader is
-                # listening. 1:1 with the original
-                # ``CreateAsyncChartDataJobCommand.validate`` →
-                # ``parse_channel_id_from_request`` → 401 on missing/invalid
-                # token.
+                # cookie — NOT a random uuid. A random channel would mean
+                # results are written where no reader is listening.
                 channel_id = _resolve_async_channel_id(request, settings)
                 if not channel_id:
                     raise NotAuthorizedException(
@@ -2212,9 +2117,9 @@ class ChartController(Controller):
                     status="pending",
                 )
                 # Forward the embedded guest JWT so the worker rebuilds the
-                # same GuestUser (and matching RLS cache key) — 1:1 with the
-                # original submit_chart_data_job. Only the *dispatched* metadata
-                # carries the token; the 202 response returns clean job_metadata.
+                # same GuestUser (and matching RLS cache key). Only the
+                # *dispatched* metadata carries the token; the 202 response
+                # returns clean job_metadata.
                 form_data = _msgspec.to_builtins(data)
                 dispatch_metadata = await maybe_forward_guest_token(
                     job_metadata,
@@ -2235,14 +2140,11 @@ class ChartController(Controller):
         if not datasource:
             raise ObjectNotFoundError("Datasource", data.datasource.id)
 
-        # Enforce datasource access BEFORE dispatching on result_type — 1:1 with
-        # upstream ``charts/data/api.py`` where ``command.validate()``
-        # (``raise_for_access``) runs unconditionally before any result_type
-        # branch. The ``result_type=query`` SQL-preview path returns early
-        # (below) WITHOUT reaching ``ChartDataCommand.execute()`` (which is where
-        # the full/results path's access check lives), so without this gate a
-        # user with no datasource access could read the generated SQL (incl. the
-        # physical table name) of any datasource.
+        # Enforce datasource access BEFORE dispatching on result_type. The
+        # ``result_type=query`` SQL-preview path returns early without reaching
+        # ``ChartDataCommand.execute()``, so without this gate a user with no
+        # datasource access could read the generated SQL (incl. the physical
+        # table name) of any datasource.
         await security_manager.raise_for_access(
             datasource=datasource, user=current_user
         )
@@ -2292,15 +2194,10 @@ class ChartController(Controller):
                 media_type="application/json",
             )
 
-        # ``result_type=samples`` is NOT special-cased here — it falls through
-        # to the default JSON path, where the processor's ``_get_samples``
-        # (1:1 with ``superset_old/common/query_actions.py:_get_samples``)
-        # clears metrics/orderby/post-processing/time-window, selects every
-        # datasource column, and runs the full ``get_df_payload`` pipeline.
-        # That yields the same rich payload shape as ``full`` (data/colnames/
-        # real coltypes/label_map/applied_filters/…) and applies RLS via
-        # ``_get_query_result`` — unlike the previous inline ``SELECT *`` which
-        # returned a reduced dict with empty ``coltypes``.
+        # ``result_type=samples`` falls through to the default JSON path, where
+        # the processor's ``_get_samples`` clears metrics/orderby/post-processing/
+        # time-window, selects every datasource column, and runs the full
+        # ``get_df_payload`` pipeline with RLS applied via ``_get_query_result``.
 
         # --- result_format: csv / xlsx (early return) ----------------------------
 
@@ -2309,11 +2206,6 @@ class ChartController(Controller):
             if not await security_manager.can_access(
                 "can_csv", "Superset", user=current_user
             ):
-                # 1:1 with superset_old/charts/data/api.py:364 — a missing
-                # ``can_csv`` permission returns a plain 403 (the previous
-                # ``SupersetSecurityException(message=...)`` raised TypeError →
-                # 500 because that exception takes a SupersetError, not a
-                # ``message`` kwarg).
                 return Response(
                     content={"message": "You don't have permission to download data"},
                     status_code=403,
@@ -2343,7 +2235,6 @@ class ChartController(Controller):
                 verbose_map=getattr(datasource, "verbose_map", None),
             )
 
-        # --- post_processed branch — 1:1 with superset_old/charts/data/api.py ---
         # When result_type is "post_processed", execute the query (full path)
         # then apply pivot/table client-side transforms BEFORE the NaN/Decimal
         # cleanup pass.  Used by Pivot Table v2 and Table chart email reports.
@@ -2382,9 +2273,7 @@ class ChartController(Controller):
                 result_format=result_format,
                 # Propagate result_type so the processor runs the matching
                 # branch (``results`` skips post-processing; columns/timegrains
-                # return datasource metadata) — 1:1 with the original
-                # ``query_obj.result_type or query_context.result_type``
-                # precedence, instead of silently defaulting to ``full``.
+                # return datasource metadata).
                 result_type=result_type,
             )
             processor = AsyncQueryContextProcessor(
@@ -2458,11 +2347,9 @@ class ChartController(Controller):
         # comparisons in Cypress snapshots (e.g. table viz sort tests).
         #
         # Datetime / date / Timestamp values are serialized as epoch
-        # milliseconds to match the original chart data API
-        # (``json_int_dttm_ser`` in ``superset_old/utils/json.py``).
-        # Frontend chart components (Table, TimeSeries, …) expect
-        # numeric timestamps so they can apply ``smart_date`` formatting
-        # driven by ``time_grain_sqla`` — ISO strings break this flow.
+        # milliseconds. Frontend chart components (Table, TimeSeries, …)
+        # expect numeric timestamps so they can apply ``smart_date``
+        # formatting driven by ``time_grain_sqla`` — ISO strings break this.
         from datetime import date as _date_t, datetime as _datetime_t
         from decimal import Decimal
 
@@ -2509,16 +2396,14 @@ class ChartController(Controller):
             if isinstance(q, dict):
                 q["indexnames"] = list(range(len(q.get("data", []))))
 
-        # Client-side post-processing (pivot_table_v2 / table) — 1:1 with
-        # upstream ``_send_chart_response``: when ``result_type=post_processed``
-        # the materialized ``query["data"]`` (now a JSON-safe list of records)
-        # is pivoted/reshaped via ``apply_client_processing(result, form_data,
-        # datasource)``. ``viz_type`` lives in the request's NESTED ``form_data``
-        # sub-field — passing the whole query-context (the prior bug) left
-        # ``viz_type`` unset → the processor short-circuited → pivot/table email
-        # reports silently received RAW unpivoted rows. It must run AFTER the
-        # df→data + NaN cleanup (it reads ``query["data"]``), then its
-        # dict-of-dicts output is re-normalized for msgspec (which rejects NaN).
+        # Client-side post-processing (pivot_table_v2 / table): when
+        # ``result_type=post_processed`` the materialized ``query["data"]`` is
+        # pivoted/reshaped via ``apply_client_processing``. ``viz_type`` lives
+        # in the request's NESTED ``form_data`` sub-field — passing the whole
+        # query-context leaves ``viz_type`` unset → the processor short-circuits
+        # → pivot/table email reports receive RAW unpivoted rows. Must run AFTER
+        # df→data + NaN cleanup; the dict-of-dicts output is then re-normalized
+        # for msgspec (which rejects NaN).
         if result_type == "post_processed":
             from superset.charts.post_processing import apply_client_processing
 
@@ -2538,8 +2423,7 @@ class ChartController(Controller):
                                     _val, epoch_date
                                 )
 
-        # result_type=results truncation — 1:1 with the original ``_get_full``
-        # RESULTS branch (5 keys only, for non-failed queries).
+        # result_type=results truncation: 5 keys only, for non-failed queries.
         if result_type == "results":
             result["queries"] = [
                 _truncate_results_query(q)
@@ -2552,9 +2436,7 @@ class ChartController(Controller):
         # Frontend expects {"result": [...]} not {"queries": [...]}
         response_payload = {"result": result.get("queries", [])}
 
-        # Port of original ``json.dumps(..., default=json_int_dttm_ser)``
-        # from ``superset_old/charts/data/api.py``. The original serializer
-        # walks the entire response tree and converts ANY datetime/date value
+        # Walk the entire response tree and convert ANY datetime/date value
         # to epoch milliseconds — not just the ones inside ``data`` rows.
         # This covers top-level and nested fields such as ``from_dttm``,
         # ``to_dttm``, ``cached_dttm``, ``changed_on``, and the values inside
@@ -2594,56 +2476,39 @@ class ChartController(Controller):
     ) -> Response[Any]:
         """GET /api/v1/chart/data/{cache_key} — return data for a cached query.
 
-        1:1 port of ``superset_old/charts/data/api.py::data_from_cache``.
-
         This is the ``result_url`` target of the GLOBAL_ASYNC_QUERIES flow:
         once ``load_chart_data_into_cache`` finishes, the worker broadcasts a
         ``result_url`` of ``/api/v1/chart/data/<cache_key>`` and the frontend
-        (``asyncEvent.ts::fetchCachedData``) GETs it. The original flow:
+        (``asyncEvent.ts::fetchCachedData``) GETs it. Flow:
 
-        1. Load the cached query-context *form* (``cache.get(cache_key)["data"]``;
-           404 on miss — matching the original ``ChartDataCacheLoadError``).
+        1. Load the cached query-context *form* (404 on miss).
         2. Rebuild the query context from the form.
         3. Build the command and run it. The per-query RESULT is already cached
-           (the worker computed and stored it under the same cache manager), so
-           this is a cache hit — no re-execution against the warehouse.
-        4. Render the chart-data payload (same shape as ``POST /data``) so the
-           frontend's ``'result' in json ? json.result : json`` works unchanged.
+           (the worker computed and stored it), so this is a cache hit — no
+           re-execution against the warehouse.
+        4. Render the chart-data payload (same shape as ``POST /data``).
         """
         from superset.extensions import cache_manager
         from superset.tasks.async_queries import _create_query_context_from_form
 
-        # Use the process-wide cache manager initialized in app on_startup
-        # (``cache_manager.init_app``). ``app.state.cache_manager`` is never
-        # set, so read the module-global the rest of the controllers use — the
-        # same default cache slot the worker wrote the ``qc-`` form to.
         settings: SupersetSettings = cast(
             "SupersetSettings", getattr(state, "settings", None)
         )
 
-        # 1. Load the cached query-context form. ``cache_manager`` exposes a
-        # ``.get``/``.set`` pass-through to the default cache slot — the same
-        # slot the worker wrote the ``qc-`` form to via ``_cache_set``.
         form = await load_cached_query_context_form(cache_manager, cache_key)
         if form is None:
-            # Original returned ``response_404()`` on ``ChartDataCacheLoadError``.
             raise ObjectNotFoundError("ChartCachedData", cache_key)
 
         # Set form_data context as a fallback for async queries with jinja
-        # context (1:1 with the original ``g.form_data = cached_data`` —
-        # ``superset_old/charts/data/api.py:308-310``). The
-        # ``_form_data_ctx`` ContextVar exposed by ``set_form_data`` is the
-        # Liteset equivalent of the legacy ``g.form_data`` global.
+        # context (``_form_data_ctx`` ContextVar is the equivalent of the
+        # legacy ``g.form_data`` global in Flask).
         if isinstance(form, dict):
             from superset.jinja_context import set_form_data
 
             set_form_data(form)
 
-        # 2. Rebuild the query context from the cached form (reuses the worker's
-        # helper so the deserialization is identical to the submit path).
         query_context = _create_query_context_from_form(form)
 
-        # 3. Resolve the datasource (mirror ``POST /data``).
         ds_ref = query_context.datasource
         ds_id: int | None = None
         ds_type: str = "table"
@@ -2665,9 +2530,8 @@ class ChartController(Controller):
             raise ObjectNotFoundError("Datasource", ds_id)
         query_context.datasource = datasource
 
-        # 4. Build the processor *with* the cache manager so the per-query
-        # RESULT cache is hit, then run the command (1:1 with the original
-        # ``_get_data_response(command, True)`` → ``command.run()``).
+        # Build the processor *with* the cache manager so the per-query
+        # RESULT cache is hit on ``command.run(force_cached=True)``.
         processor = AsyncQueryContextProcessor(
             datasource=datasource,
             settings=settings,
@@ -2678,11 +2542,8 @@ class ChartController(Controller):
         )
         command = ChartDataCommand(query_context=query_context, processor=processor)
         await command.validate()
-        # 1:1 with the original ``_get_data_response(command, True)`` which
-        # passes ``force_cached=True`` to ``command.run(force_cached=force_cached)``.
-        # Without this flag the processor would re-execute the query against the
-        # warehouse instead of reading the cached result that the worker already
-        # stored; a cache miss returns a failed-dict (not a cache-load error).
+        # ``force_cached=True`` reads the result the worker already stored;
+        # without it the processor would re-execute against the warehouse.
         result = await command.run(force_cached=True)
 
         await event_logger.alog_with_context(

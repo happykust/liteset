@@ -15,11 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/chart/export.py``.
+"""Chart export command.
 
 Uses :meth:`superset.models.helpers.ImportExportMixin.export_to_dict` to
-build the YAML payload — matching the original's ``recursive=False,
-include_defaults=True, export_uuids=True`` invocation field-for-field.
+build the YAML payload with ``recursive=False, include_defaults=True,
+export_uuids=True``.
 """
 
 from __future__ import annotations
@@ -44,18 +44,16 @@ logger = logging.getLogger(__name__)
 
 EXPORT_VERSION = "1.0.0"
 
-# Keys present in the standard export that are not needed
 _REMOVE_KEYS = ("datasource_type", "datasource_name", "url_params")
 
 
 class ExportChartsCommand(AsyncExportModelsCommand):
     """Export charts to a ZIP bundle.
 
-    Ported 1:1 from ``superset_old/commands/chart/export.py``: uses
-    ``Slice.export_to_dict(recursive=False, include_defaults=True,
-    export_uuids=True)`` then strips ``datasource_*`` keys, decodes
-    ``params`` JSON, stamps ``version``, and adds the ``dataset_uuid``
-    cross-reference.  Bundles dataset + database YAMLs alongside.
+    Uses ``Slice.export_to_dict(recursive=False, include_defaults=True,
+    export_uuids=True)``, strips ``datasource_*`` keys, decodes ``params``
+    JSON, stamps ``version``, and adds the ``dataset_uuid`` cross-reference.
+    Bundles dataset + database YAMLs alongside.
     """
 
     _resource_type = "Slice"
@@ -80,9 +78,7 @@ class ExportChartsCommand(AsyncExportModelsCommand):
 
     @staticmethod
     def _file_name(model: Any) -> str:
-        # 1:1 with ``superset_old/utils/file.py::get_filename``: use
-        # ``<slug>_<id>`` when the slug is non-empty, else fall back to
-        # ``<id>`` (NOT ``unnamed_<id>``).
+        # Falls back to bare ``<id>`` (not ``unnamed_<id>``) when name is empty.
         slug = secure_filename(model.slice_name or "")
         file_name = f"{slug}_{model.id}" if slug else str(model.id)
         return f"charts/{file_name}.yaml"
@@ -95,10 +91,8 @@ class ExportChartsCommand(AsyncExportModelsCommand):
             include_defaults=True,
             export_uuids=True,
         )
-        # Drop keys not needed in the export.
         payload = {k: v for k, v in payload.items() if k not in _REMOVE_KEYS}
 
-        # Decode ``params`` JSON for human-readable YAML.
         if payload.get("params"):
             try:
                 payload["params"] = _json.loads(payload["params"])
@@ -109,7 +103,6 @@ class ExportChartsCommand(AsyncExportModelsCommand):
         if getattr(model, "table", None):
             payload["dataset_uuid"] = str(model.table.uuid)
 
-        # Fetch tags from the database if TAGGING_SYSTEM is enabled
         if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
             tags = getattr(model, "tags", []) or []
             payload["tags"] = [tag.name for tag in tags if tag.type == TagType.custom]
@@ -150,7 +143,6 @@ class ExportChartsCommand(AsyncExportModelsCommand):
             (self._file_name(chart), self._file_content(chart))
         ]
 
-        # Bundle dependent dataset + database YAMLs.
         if chart.table:
             ds = chart.table
             ds_payload = ds.export_to_dict(
@@ -198,7 +190,7 @@ class ExportChartsCommand(AsyncExportModelsCommand):
                     include_defaults=True,
                     export_uuids=True,
                 )
-                # Mirror the original: ``allow_file_upload`` -> ``allow_csv_upload``
+                # Export uses legacy key name; DB stores the renamed column.
                 replacements = {"allow_file_upload": "allow_csv_upload"}
                 db_payload = {replacements.get(k, k): v for k, v in db_payload.items()}
                 if db_payload.get("extra"):
@@ -211,8 +203,6 @@ class ExportChartsCommand(AsyncExportModelsCommand):
                             "Unable to decode `extra` field: %s", db_payload["extra"]
                         )
 
-                # SSH tunnel — 1:1 with superset_old/commands/dataset/export.py:114-121
-                # and superset_old/commands/database/export.py:91-98.
                 try:
                     from superset.db.daos.database import AsyncSSHTunnelDAO
 
@@ -237,17 +227,6 @@ class ExportChartsCommand(AsyncExportModelsCommand):
                     )
                 )
 
-        # Emit a separate ``tags.yaml`` entry when the TAGGING_SYSTEM feature
-        # flag is enabled — 1:1 with the original
-        # ``superset_old/commands/chart/export.py:107-113`` which calls
-        # ``ExportTagsCommand().export(chart_ids=[chart_id])``.
-        # The original ``ExportTagsCommand._file_content`` filters chart tags
-        # by excluding those whose name contains ``type:`` or ``owner:``
-        # (the implicit system tags), and exports ``tag_name`` + ``description``.
-        # When export_related=False (e.g. during a full-assets dump via
-        # AsyncFullAssetManager), the tags.yaml yield is skipped — matching
-        # superset_old/commands/chart/export.py:106-113 which guards this block
-        # with ``export_related``.
         if self._export_related and feature_flag_manager.is_feature_enabled(
             "TAGGING_SYSTEM"
         ):

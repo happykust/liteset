@@ -14,10 +14,8 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Ported from tests/unit_tests/connectors/sqla/models_test.py (Flask-free).
-
-The Liteset port keeps the dataset model at ``superset.models.connectors``
-(``superset.connectors.sqla.models`` is now only a thin migration shim).
+"""Tests for the dataset model at superset.models.connectors
+(superset.connectors.sqla.models is now only a thin migration shim).
 """
 
 from __future__ import annotations
@@ -42,20 +40,12 @@ from superset.models.helpers import Base
 
 
 def test_query_bubbles_errors(mocker: MockerFixture) -> None:
-    """
-    Test that the async ``async_query`` method bubbles exceptions correctly.
+    """OAuth2RedirectError IS-A SupersetErrorException and must not be swallowed
+    into QueryResult.
 
-    When a user needs to authenticate via OAuth2 to access data, a custom exception is
-    raised. The exception needs to bubble up all the way to the frontend as a SIP-40
-    compliant payload with the error type ``DATABASE_OAUTH2_REDIRECT_URI`` so that the
-    frontend can initiate the OAuth2 authentication.
-
-    The Liteset port runs queries through :meth:`SqlaTable.async_query` instead of the
-    Flask-only sync ``query`` method, but preserves the exact guarantee: its ``except``
-    block re-raises ``SupersetErrorException`` / ``SupersetErrorsException`` rather than
-    swallowing them into a ``QueryResult``, and ``OAuth2RedirectError`` IS-A
-    ``SupersetErrorException``. This test verifies the redirect is NOT captured;
-    otherwise the user would never be prompted to authenticate via OAuth2.
+    The Liteset port uses async_query instead of the Flask-only sync query method, but
+    preserves the guarantee that SupersetErrorException / SupersetErrorsException are
+    re-raised so the SIP-40 OAuth2 redirect reaches the frontend.
     """
     database = Database(database_name="my_db", sqlalchemy_uri="sqlite://")
     sqla_table = SqlaTable(
@@ -65,9 +55,7 @@ def test_query_bubbles_errors(mocker: MockerFixture) -> None:
         database=database,
     )
 
-    # Let the (sync) SQL-building stages succeed so the pipeline reaches the
-    # execution step, then have execution raise the OAuth2 redirect — mirroring
-    # the upstream test, which set ``database.get_df.side_effect``.
+    # Upstream set database.get_df.side_effect; async port patches _execute_sql instead.
     fake_sqla_query = mocker.MagicMock(cte=None, labels_expected=[])
     mocker.patch.object(
         SqlaTable, "_get_sqla_query_with_rls", return_value=fake_sqla_query
@@ -102,9 +90,6 @@ def test_query_bubbles_errors(mocker: MockerFixture) -> None:
 
 
 def test_permissions_without_catalog() -> None:
-    """
-    Test permissions when the table has no catalog.
-    """
     database = Database(database_name="my_db")
     sqla_table = SqlaTable(
         table_name="my_sqla_table",
@@ -122,9 +107,6 @@ def test_permissions_without_catalog() -> None:
 
 
 def test_permissions_with_catalog() -> None:
-    """
-    Test permissions when the table with a catalog set.
-    """
     database = Database(database_name="my_db")
     sqla_table = SqlaTable(
         table_name="my_sqla_table",
@@ -142,8 +124,6 @@ def test_permissions_with_catalog() -> None:
 
 
 async def _seed_named_datasets(session: AsyncSession, database_id: int) -> None:
-    """Seed datasets covering the name/catalog/schema lookup matrix."""
-
     def make(catalog: str | None, schema: str | None, table_name: str) -> SqlaTable:
         ds = SqlaTable(
             database_id=database_id,
@@ -164,18 +144,11 @@ async def _seed_named_datasets(session: AsyncSession, database_id: int) -> None:
 
 
 def test_query_datasources_by_name(tmp_path: Path) -> None:
-    """
-    Test name-based dataset lookup at the async DAO seam.
+    """Upstream SqlaTable.query_datasources_by_name is replaced by
+    AsyncDatasetDAO.validate_uniqueness.
 
-    Upstream ``SqlaTable.query_datasources_by_name`` was a Flask classmethod that
-    filtered ``db.session.query(...)`` by ``database_id``/``table_name`` (and, in the
-    catalog/schema variant, by ``catalog``/``schema``). The async port resolves
-    datasets through ``AsyncDatasetDAO`` and applies the SAME name + catalog + schema
-    filter (e.g. ``validate_uniqueness`` keys on
-    ``table_name``/``database_id``/``schema``/``catalog``). This asserts that the
-    filter args scope the lookup exactly as upstream: a bare name matches the
-    NULL-catalog/NULL-schema row, while a catalog+schema-qualified lookup matches only
-    the corresponding qualified row.
+    A bare name matches only the NULL-catalog/NULL-schema row; a
+    catalog+schema-qualified lookup matches only the corresponding qualified row.
     """
 
     async def run() -> None:
@@ -192,22 +165,18 @@ def test_query_datasources_by_name(tmp_path: Path) -> None:
 
                 dao = AsyncDatasetDAO(session)
 
-                # database_id + table_name (NULL catalog/schema) resolves the
-                # unqualified row → NOT unique.
                 assert not await dao.validate_uniqueness(
                     database.id,
                     "my_table",
                     schema=None,
                     catalog=None,
                 )
-                # The catalog/schema variant scopes to the qualified row only.
                 assert not await dao.validate_uniqueness(
                     database.id,
                     "my_table",
                     schema="schema1",
                     catalog="db1",
                 )
-                # A catalog/schema combo that does not exist → unique (no match).
                 assert await dao.validate_uniqueness(
                     database.id,
                     "my_table",
@@ -225,13 +194,8 @@ def _build_perms_clause(
     catalog_perms: set[str] | list[str],
     schema_perms: set[str] | list[str],
 ) -> list:
-    """Reproduce the perm/schema_perm/catalog_perm filter the security layer builds.
-
-    This is the relocated body of upstream
-    ``SqlaTable.query_datasources_by_permissions`` — now living in
-    ``AsyncSecurityManager.filter_datasources_by_perms`` (manager.py) — which OR-joins
-    ``SqlaTable.perm.in_(...)``, ``SqlaTable.schema_perm.in_(...)`` and
-    ``SqlaTable.catalog_perm.in_(...)`` for the non-empty permission sets.
+    """Reproduce the OR-joined perm/schema_perm/catalog_perm IN-clause built
+    by AsyncSecurityManager.filter_datasources_by_perms.
     """
     return [
         column.in_(perms)
@@ -245,33 +209,22 @@ def _build_perms_clause(
 
 
 def test_query_datasources_by_permissions() -> None:
-    """
-    Test the empty-permission edge of permission-scoped dataset filtering.
-
-    Upstream ``SqlaTable.query_datasources_by_permissions`` compiled an EMPTY filter
-    clause when handed empty permission sets. The async port relocates this logic to
-    ``AsyncSecurityManager.filter_datasources_by_perms``, which builds NO ``in_``
-    filters for empty sets (``if not filters: return []``), so an empty-permission user
-    matches no datasets. This asserts the empty-perms edge produces no filter clauses.
+    """Empty permission sets produce no filter clauses
+    (empty-permission user matches no datasets).
     """
     filters = _build_perms_clause(set(), set(), set())
     assert filters == []
 
 
 def test_query_datasources_by_permissions_with_catalog_schema() -> None:
-    """
-    Test the perm/schema_perm/catalog_perm IN-clause generation.
-
-    The async port's ``AsyncSecurityManager.filter_datasources_by_perms`` builds the
-    SAME OR-joined ``perm``/``schema_perm``/``catalog_perm`` IN-clause that upstream's
-    ``SqlaTable.query_datasources_by_permissions`` did. This asserts the exact compiled
-    SQL, 1:1 with the original.
+    """filter_datasources_by_perms builds an OR-joined
+    perm/schema_perm/catalog_perm IN-clause.
     """
     engine = create_engine("sqlite://")
     filters = _build_perms_clause(
         {"[my_db].[table1](id:1)"},
         {"[my_db].[db1]"},
-        # pass as list to have a deterministic order for the test
+        # list (not set) for a deterministic order in the compiled SQL assertion
         ["[my_db].[db1].[schema1]", "[my_other_db].[schema]"],
     )
     clause = or_(*filters)
@@ -283,14 +236,8 @@ def test_query_datasources_by_permissions_with_catalog_schema() -> None:
 
 
 def test_dataset_uniqueness() -> None:
-    """
-    Test dataset uniqueness, adapted to the async ``AsyncDatasetDAO``.
-
-    Upstream relied on a sync ``Session`` fixture and a static
-    ``DatasetDAO.validate_uniqueness(database, Table(...))``. The Liteset port
-    enforces uniqueness through ``AsyncDatasetDAO.validate_uniqueness`` (an async
-    instance method keyed by ``database_id``/``table_name``/``schema``/``catalog``)
-    while the DB still permits multiple ``NULL``-catalog rows (``NULL != NULL``).
+    """Uniqueness is enforced by AsyncDatasetDAO.validate_uniqueness; the DB
+    still permits multiple NULL-catalog rows (NULL != NULL in SQL).
     """
 
     async def run() -> None:
@@ -324,25 +271,21 @@ def test_dataset_uniqueness() -> None:
             session.add(database)
             await session.flush()
 
-            # add prod.schema.table
             session.add(make_dataset(database.id, "prod", "schema", "table"))
             await session.commit()
 
-            # add dev.schema.table
             session.add(make_dataset(database.id, "dev", "schema", "table"))
             await session.commit()
 
-            # add schema.table (NULL catalog)
             session.add(make_dataset(database.id, None, "schema", "table"))
             await session.commit()
 
-            # add schema.table again, works because in SQL `NULL != NULL`
+            # NULL catalog rows are always unique to SQL (NULL != NULL)
             session.add(make_dataset(database.id, None, "schema", "table"))
             await session.commit()
 
             dao = AsyncDatasetDAO(session)
 
-            # a matching catalog/schema/name is NOT unique
             assert not await dao.validate_uniqueness(
                 database.id,
                 "table",
@@ -350,7 +293,6 @@ def test_dataset_uniqueness() -> None:
                 catalog=None,
             )
 
-            # a different catalog IS unique
             assert await dao.validate_uniqueness(
                 database.id,
                 "table",
@@ -364,9 +306,6 @@ def test_dataset_uniqueness() -> None:
 
 
 def test_normalize_prequery_result_type_custom_sql() -> None:
-    """
-    Test that the `_normalize_prequery_result_type` can handle custom SQL.
-    """
     sqla_table = SqlaTable(
         table_name="my_sqla_table",
         columns=[],
@@ -386,21 +325,6 @@ def test_normalize_prequery_result_type_custom_sql() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# fetch_metadata
-#
-# Upstream exercised the synchronous ``SqlaTable.fetch_metadata`` (which mutated
-# state through the global ``db.session`` and ``config``). The Liteset port moved
-# that introspection-merge logic verbatim into the async
-# ``AsyncDatasetDAO.fetch_metadata(model)`` — including the comment -> description
-# mapping (``if col.get("comment"): new_column.description = col["comment"]``).
-# These tests assert the SAME behaviour against the DAO: ``external_metadata`` and
-# ``Database.get_metrics`` are mocked exactly as upstream, the dataset is persisted
-# in a throwaway async SQLite DB (the DAO refreshes ``columns`` from the session),
-# and the resulting ``MetadataResult`` / column descriptions are checked 1:1.
-# ---------------------------------------------------------------------------
-
-
 async def _run_fetch_metadata(
     mocker: MockerFixture,
     *,
@@ -409,7 +333,6 @@ async def _run_fetch_metadata(
     external_columns: list[dict],
     table_name: str,
 ) -> tuple[MetadataResult, SqlaTable]:
-    """Persist a dataset, mock introspection, and run the async DAO fetch."""
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
@@ -427,8 +350,6 @@ async def _run_fetch_metadata(
             session.add(table)
             await session.commit()
 
-            # Mock external_metadata to return the supplied column dicts, and
-            # get_metrics to return nothing — exactly as upstream.
             mocker.patch.object(
                 table, "external_metadata", return_value=external_columns
             )
@@ -444,10 +365,7 @@ async def _run_fetch_metadata(
 def test_fetch_metadata_with_comment_field_new_columns(
     mocker: MockerFixture, tmp_path: Path
 ) -> None:
-    """Test that fetch_metadata correctly assigns comment field to description
-    for new columns
-    """
-    # Mock external_metadata to return columns with comment fields
+    """fetch_metadata must assign comment field to description for new columns."""
     mock_columns = [
         {
             "column_name": "id",
@@ -462,7 +380,6 @@ def test_fetch_metadata_with_comment_field_new_columns(
         {
             "column_name": "status",
             "type": "VARCHAR",
-            # No comment field for this column
         },
     ]
 
@@ -476,24 +393,22 @@ def test_fetch_metadata_with_comment_field_new_columns(
         )
     )
 
-    # Verify results
     assert len(result.added) == 3
     assert set(result.added) == {"id", "name", "status"}
 
-    # Check that descriptions were set correctly from comments
     columns_by_name = {col.column_name: col for col in table.columns}
 
     assert columns_by_name["id"].description == "Primary key identifier"
     assert columns_by_name["name"].description == "Full name of the user"
-    # Column without comment should have None description
     assert columns_by_name["status"].description is None
 
 
 def test_fetch_metadata_with_comment_field_existing_columns(
     mocker: MockerFixture, tmp_path: Path
 ) -> None:
-    """Test that fetch_metadata correctly updates description for existing columns"""
-    # Create existing columns (persisted before the refresh-merge)
+    """fetch_metadata must update description on existing columns from the
+    DB comment.
+    """
     existing_col1 = TableColumn(
         column_name="id",
         type="INTEGER",
@@ -504,7 +419,6 @@ def test_fetch_metadata_with_comment_field_existing_columns(
         type="VARCHAR",
     )
 
-    # Mock external_metadata to return updated columns with comments
     mock_columns = [
         {
             "column_name": "id",
@@ -528,10 +442,8 @@ def test_fetch_metadata_with_comment_field_existing_columns(
         )
     )
 
-    # Verify no new columns were added
     assert len(result.added) == 0
 
-    # Check that descriptions were updated from comments
     columns_by_name = {col.column_name: col for col in table.columns}
 
     assert columns_by_name["id"].description == "Updated primary key description"
@@ -541,9 +453,6 @@ def test_fetch_metadata_with_comment_field_existing_columns(
 def test_fetch_metadata_mixed_comment_scenarios(
     mocker: MockerFixture, tmp_path: Path
 ) -> None:
-    """Test fetch_metadata with mix of new/existing columns and with/without
-    comments
-    """
     existing_col = TableColumn(
         column_name="existing_col",
         type="INTEGER",
@@ -565,7 +474,6 @@ def test_fetch_metadata_mixed_comment_scenarios(
         {
             "column_name": "new_without_comment",
             "type": "VARCHAR",
-            # No comment field
         },
     ]
 
@@ -579,30 +487,22 @@ def test_fetch_metadata_mixed_comment_scenarios(
         )
     )
 
-    # Check added columns
     assert len(result.added) == 2
     assert set(result.added) == {"new_with_comment", "new_without_comment"}
 
-    # Check all column descriptions
     columns_by_name = {col.column_name: col for col in table.columns}
 
-    # Existing column should have updated description
     assert (
         columns_by_name["existing_col"].description == "Updated existing column comment"
     )
-
-    # New column with comment should have description set
     assert columns_by_name["new_with_comment"].description == "New column with comment"
-
-    # New column without comment should have None description
     assert columns_by_name["new_without_comment"].description is None
 
 
 def test_fetch_metadata_no_comment_field_safe_handling(
     mocker: MockerFixture, tmp_path: Path
 ) -> None:
-    """Test that fetch_metadata safely handles columns with no comment field"""
-    # Mock external_metadata with columns that have no comment fields
+    """fetch_metadata must not raise when comment field is absent."""
     mock_columns = [
         {"column_name": "col1", "type": "INTEGER"},
         {"column_name": "col2", "type": "VARCHAR"},
@@ -618,11 +518,9 @@ def test_fetch_metadata_no_comment_field_safe_handling(
         )
     )
 
-    # Check that columns were added successfully
     assert len(result.added) == 2
     assert set(result.added) == {"col1", "col2"}
 
-    # Check that descriptions are None (not set)
     columns_by_name = {col.column_name: col for col in table.columns}
     assert columns_by_name["col1"].description is None
     assert columns_by_name["col2"].description is None
@@ -631,18 +529,19 @@ def test_fetch_metadata_no_comment_field_safe_handling(
 def test_fetch_metadata_empty_comment_field_handling(
     mocker: MockerFixture, tmp_path: Path
 ) -> None:
-    """Test that fetch_metadata handles empty comment fields correctly"""
-    # Mock external_metadata with empty comment fields
+    """fetch_metadata must not set description for empty-string or None
+    comments (both are falsy).
+    """
     mock_columns = [
         {
             "column_name": "col_with_empty_comment",
             "type": "INTEGER",
-            "comment": "",  # Empty string comment
+            "comment": "",
         },
         {
             "column_name": "col_with_none_comment",
             "type": "VARCHAR",
-            "comment": None,  # None comment
+            "comment": None,
         },
         {
             "column_name": "col_with_valid_comment",
@@ -661,25 +560,18 @@ def test_fetch_metadata_empty_comment_field_handling(
         )
     )
 
-    # Check that all columns were added
     assert len(result.added) == 3
 
     columns_by_name = {col.column_name: col for col in table.columns}
 
-    # Empty string comment should not be set (falsy)
     assert columns_by_name["col_with_empty_comment"].description is None
-
-    # None comment should not be set
     assert columns_by_name["col_with_none_comment"].description is None
-
-    # Valid comment should be set
     assert columns_by_name["col_with_valid_comment"].description == "Valid comment"
 
 
 @pytest.mark.parametrize(
     "supports_cross_catalog,table_name,catalog,schema,expected_name,expected_schema",
     [
-        # Database supports cross-catalog queries (like BigQuery)
         (
             True,
             "test_table",
@@ -688,7 +580,6 @@ def test_fetch_metadata_empty_comment_field_handling(
             '"test_project"."test_dataset"."test_table"',
             None,
         ),
-        # Database supports cross-catalog queries, catalog only (no schema)
         (
             True,
             "test_table",
@@ -697,7 +588,6 @@ def test_fetch_metadata_empty_comment_field_handling(
             '"test_project"."test_table"',
             None,
         ),
-        # Database supports cross-catalog queries, schema only (no catalog)
         (
             True,
             "test_table",
@@ -706,7 +596,6 @@ def test_fetch_metadata_empty_comment_field_handling(
             "test_table",
             "test_schema",
         ),
-        # Database supports cross-catalog queries, no catalog or schema
         (
             True,
             "test_table",
@@ -715,7 +604,6 @@ def test_fetch_metadata_empty_comment_field_handling(
             "test_table",
             None,
         ),
-        # Database doesn't support cross-catalog queries, catalog ignored
         (
             False,
             "test_table",
@@ -724,7 +612,6 @@ def test_fetch_metadata_empty_comment_field_handling(
             "test_table",
             "test_schema",
         ),
-        # Database doesn't support cross-catalog queries, no schema
         (
             False,
             "test_table",
@@ -744,16 +631,10 @@ def test_get_sqla_table_with_catalog(
     expected_name: str,
     expected_schema: str | None,
 ) -> None:
-    """
-    Test that `get_sqla_table` handles catalog inclusion correctly.
-    """
-    # Mock database with specified cross-catalog support
     database = mocker.MagicMock()
     database.db_engine_spec.supports_cross_catalog_queries = supports_cross_catalog
-    # Provide a simple quote_identifier
     database.quote_identifier = lambda x: f'"{x}"'
 
-    # Create table with specified parameters
     table = SqlaTable(
         table_name=table_name,
         database=database,
@@ -761,10 +642,8 @@ def test_get_sqla_table_with_catalog(
         catalog=catalog,
     )
 
-    # Get the SQLAlchemy table representation
     sqla_table = table.get_sqla_table()
 
-    # Verify expected table name and schema
     assert sqla_table.name == expected_name
     assert sqla_table.schema == expected_schema
 
@@ -803,20 +682,17 @@ def test_get_sqla_table_quoting_for_cross_catalog(
     expected_in_sql: str,
     not_expected_in_sql: str,
 ) -> None:
-    """
-    Test that `get_sqla_table` properly quotes each component of the identifier.
+    """Each catalog/schema/table component must be quoted individually,
+    not as one concatenated string.
     """
     from sqlalchemy import select
 
-    # Create a Postgres-like engine to test proper quoting
     engine = create_engine("postgresql://user:pass@host/db")
 
-    # Mock database with cross-catalog support and proper quote_identifier
     database = mocker.MagicMock()
     database.db_engine_spec.supports_cross_catalog_queries = True
     database.quote_identifier = engine.dialect.identifier_preparer.quote
 
-    # Create table
     table = SqlaTable(
         table_name=table_name,
         database=database,
@@ -824,14 +700,11 @@ def test_get_sqla_table_quoting_for_cross_catalog(
         catalog=catalog,
     )
 
-    # Get the SQLAlchemy table representation
     sqla_table = table.get_sqla_table()
     query = select(sqla_table)
     compiled = str(query.compile(engine, compile_kwargs={"literal_binds": True}))
 
-    # The compiled SQL should contain each part quoted separately
     assert expected_in_sql in compiled, f"Expected {expected_in_sql} in SQL: {compiled}"
-    # Should NOT have the entire identifier quoted as one string
     assert not_expected_in_sql not in compiled, (
         f"Should not have {not_expected_in_sql} in SQL: {compiled}"
     )
@@ -840,20 +713,14 @@ def test_get_sqla_table_quoting_for_cross_catalog(
 def test_get_sqla_table_without_cross_catalog_ignores_catalog(
     mocker: MockerFixture,
 ) -> None:
-    """
-    Test that databases without cross-catalog support ignore the catalog field.
-    """
     from sqlalchemy import select
 
-    # Create a PostgreSQL engine (doesn't support cross-catalog queries)
     engine = create_engine("postgresql://user:pass@localhost/db")
 
-    # Mock database without cross-catalog support
     database = mocker.MagicMock()
     database.db_engine_spec.supports_cross_catalog_queries = False
     database.quote_identifier = engine.dialect.identifier_preparer.quote
 
-    # Create table with catalog - should be ignored
     table = SqlaTable(
         table_name="my_table",
         database=database,
@@ -861,33 +728,28 @@ def test_get_sqla_table_without_cross_catalog_ignores_catalog(
         catalog="my_catalog",
     )
 
-    # Get the SQLAlchemy table representation
     sqla_table = table.get_sqla_table()
 
-    # Compile to SQL
     query = select(sqla_table)
     compiled = str(query.compile(engine, compile_kwargs={"literal_binds": True}))
 
-    # Should only have schema.table, not catalog.schema.table
     assert "my_schema" in compiled
     assert "my_table" in compiled
     assert "my_catalog" not in compiled
 
 
 def test_quoted_name_prevents_double_quoting(mocker: MockerFixture) -> None:
-    """
-    Test that `quoted_name(..., quote=False)` does not cause double quoting.
+    """quoted_name(..., quote=False) must not cause double quoting of
+    catalog.schema.table.
     """
     from sqlalchemy import select
 
     engine = create_engine("postgresql://user:pass@host/db")
 
-    # Mock database
     database = mocker.MagicMock()
     database.db_engine_spec.supports_cross_catalog_queries = True
     database.quote_identifier = engine.dialect.identifier_preparer.quote
 
-    # Use uppercase table name to force quoting
     table = SqlaTable(
         table_name="MY_TABLE",
         database=database,
@@ -895,17 +757,12 @@ def test_quoted_name_prevents_double_quoting(mocker: MockerFixture) -> None:
         catalog="MY_DB",
     )
 
-    # Get the SQLAlchemy table representation
     sqla_table = table.get_sqla_table()
 
-    # Compile to SQL
     query = select(sqla_table)
     compiled = str(query.compile(engine, compile_kwargs={"literal_binds": True}))
 
-    # Should NOT have the entire identifier quoted as one:
-    # BAD:  '"MY_DB.MY_SCHEMA.MY_TABLE"'
+    # BAD: '"MY_DB.MY_SCHEMA.MY_TABLE"' — entire dotted path as one quoted token
     assert '"MY_DB.MY_SCHEMA.MY_TABLE"' not in compiled
-
-    # Should have each part quoted separately:
-    # GOOD: "MY_DB"."MY_SCHEMA"."MY_TABLE"
+    # GOOD: each component quoted separately
     assert '"MY_DB"."MY_SCHEMA"."MY_TABLE"' in compiled

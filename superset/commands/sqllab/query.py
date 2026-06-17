@@ -16,8 +16,6 @@
 # under the License.
 """Prune old rows from the SQL Lab ``query`` table.
 
-Direct port of ``superset_old/commands/sql_lab/query.py``.
-
 The command deletes records from the :class:`~superset.models.sql_lab.Query`
 table that have not been changed within ``retention_period_days`` days.  Used
 by the ``prune_query`` Celery beat task to keep the query table from growing
@@ -84,11 +82,10 @@ class QueryPruneCommand:
                 session.close()
 
     def _run_with_session(self, session: Any) -> None:
-        batch_size = 999  # SQLite has an IN clause limit of 999
+        batch_size = 999  # SQLite IN clause limit
         total_deleted = 0
         start_time = time.time()
 
-        # Select all IDs that need to be deleted
         ids_to_delete = (
             session.execute(
                 sa.select(Query.id).where(
@@ -106,21 +103,15 @@ class QueryPruneCommand:
 
         next_logging_threshold = 1
 
-        # Iterate over the IDs in batches
         for i in range(0, total_rows, batch_size):
             batch_ids = ids_to_delete[i : i + batch_size]
 
-            # Delete the selected batch using IN clause
             result = session.execute(sa.delete(Query).where(Query.id.in_(batch_ids)))
-
-            # Update the total number of deleted records
             total_deleted += result.rowcount
 
-            # Explicitly commit the transaction given that if an error occurs, we
-            # want to ensure that the records deleted so far are committed.
+            # Commit per-batch so already-deleted rows survive an error mid-run.
             session.commit()
 
-            # Log the number of deleted records every 1% increase in progress
             percentage_complete = (
                 (total_deleted / total_rows) * 100 if total_rows else 100
             )
@@ -144,7 +135,7 @@ class QueryPruneCommand:
         )
 
     def validate(self) -> None:
-        """No-op validation — kept for API compatibility with the original."""
+        pass
 
 
 __all__ = ["QueryPruneCommand"]

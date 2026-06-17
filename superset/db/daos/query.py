@@ -42,7 +42,6 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
     ) -> None:
         """Extract column metadata from payload and store in query.
 
-        1:1 port of ``superset_old/daos/query.py::QueryDAO.save_metadata``:
         - default for absent ``columns`` key is ``{}`` (not ``[]``)
         - unconditionally overwrites ``column_name`` with ``name`` when present
         - keeps the ``name`` key in the dict (no pop)
@@ -87,8 +86,7 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
         # Eager-load ``Query.database``: ``cancel_query`` reads
         # ``query.database.db_engine_spec`` from a ``to_thread`` worker
         # (no greenlet/event loop there), so a lazy load would raise
-        # ``MissingGreenlet``. The original (superset_old/daos/query.py:75)
-        # relied on the upstream ORM's transparent sync lazy-load.
+        # ``MissingGreenlet``.
         from sqlalchemy.orm import selectinload
 
         stmt = (
@@ -101,10 +99,9 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
         if not query:
             return None
 
-        # Skip if already in terminal state — 1:1 with
-        # ``superset_old/daos/query.py::stop_query``: STOPPED is NOT
-        # included so that a repeated stop retries cancellation against
-        # the driver (potentially raising SupersetCancelQueryException).
+        # Skip if already in terminal state — STOPPED is NOT included so that
+        # a repeated stop retries cancellation against the driver
+        # (potentially raising SupersetCancelQueryException).
         terminal_states = {
             QueryStatus.FAILED,
             QueryStatus.SUCCESS,
@@ -116,11 +113,6 @@ class AsyncQueryDAO(BaseAsyncDAO[Query]):
             )
             return query
 
-        # 1:1 with ``superset_old/daos/query.py::stop_query``: attempt to
-        # cancel via the engine and *raise* ``SupersetCancelQueryException`` if
-        # the cancel fails — only set STOPPED on a successful cancel. The sync
-        # ``cancel_query`` (1:1 port in ``tasks/sql_lab.py``) opens a synchronous
-        # analytical connection, so it runs in a worker thread.
         from superset.exceptions import SupersetCancelQueryException
         from superset.tasks.sql_lab import cancel_query
 

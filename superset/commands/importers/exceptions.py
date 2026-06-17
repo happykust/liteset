@@ -16,9 +16,7 @@
 # under the License.
 """Exception classes for import command-layer errors.
 
-Ported 1:1 from ``superset_old/commands/importers/exceptions.py``.  Translation
-strings flow through :mod:`superset.i18n` (which is the async-safe replacement
-for the upstream translation helper).
+Translation strings flow through :mod:`superset.i18n`.
 """
 
 from __future__ import annotations
@@ -30,9 +28,8 @@ from superset.i18n import gettext as _
 class IncorrectVersionError(CommandException):
     """Raised when the bundle's metadata version does not match the importer."""
 
-    # ``status`` matches the original Marshmallow attribute name; ``status_code``
-    # is the alias every other liteset HTTP error handler reads. Both are kept
-    # in lockstep so frontends parsing either field see the same value.
+    # Both ``status`` and ``status_code`` kept in sync — Marshmallow consumers key
+    # off ``status``; liteset HTTP handlers key off ``status_code``.
     status = 422
     status_code = 422
     message = _("Import has incorrect version")

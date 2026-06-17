@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/query/delete.py``."""
+"""Delete commands for saved queries."""
 
 from __future__ import annotations
 
@@ -46,10 +46,6 @@ class DeleteSavedQueryCommand(AsyncBaseCommand[None]):
         self._query = await self._dao.find_by_id(self._query_id)
         if not self._query:
             raise ObjectNotFoundError("SavedQuery", self._query_id)
-        # Enforce owner-scope (1:1 with the original FAB base_filter, which
-        # applies ``SavedQueryFilter`` to single DELETE by pk → 404 for objects
-        # outside the caller's scope).  See
-        # ``superset_old/queries/saved_queries/api.py::base_filters``.
         if self._security_manager is not None and self._user is not None:
             from superset.db.filters import saved_query_access_filters
             from superset.models.sql_lab import SavedQuery
@@ -67,7 +63,6 @@ class DeleteSavedQueryCommand(AsyncBaseCommand[None]):
     async def run(self) -> None:
         assert self._query is not None
         query_id = self._query.id
-        # Remove implicit tags before deleting (async port of QueryUpdater.after_delete)
         await delete_tagged_objects(self._dao.session, "query", query_id)
         await self._dao.session.delete(self._query)
         await self._dao.session.flush()
@@ -92,14 +87,10 @@ class BulkDeleteSavedQueriesCommand(AsyncBaseCommand[None]):
             raise CommandInvalidError("No saved query IDs provided")
         from superset.models.sql_lab import SavedQuery
 
-        # Scope to the caller's own saved queries — 1:1 with the FAB base_filter
-        # (``SavedQueryFilter``: ``created_by == g.user``, NO admin bypass),
-        # exactly as the single-DELETE command does. ``SavedQuery`` has no
-        # ``owners`` M2M, so the previous ``raise_for_ownership`` evaluated
-        # ``getattr(resource, "owners", [])`` → ``[]`` → returned False for every
-        # non-admin (including the legitimate creator → 403) while silently
-        # passing admins (delete anyone's) — wrong on both ends. Upstream relies
-        # on ``find_by_ids`` applying the base_filter → 404 for out-of-scope ids.
+        # SavedQuery has no ``owners`` M2M, so ownership checks via
+        # ``getattr(resource, "owners", [])`` always return [] — wrong for
+        # every user. Filter by creator (saved_query_access_filters) instead
+        # and return 404 for out-of-scope ids.
         filters: list[Any] = [SavedQuery.id.in_(self._ids)]
         if self._security_manager is not None and self._user_id is not None:
             from types import SimpleNamespace
@@ -114,13 +105,10 @@ class BulkDeleteSavedQueriesCommand(AsyncBaseCommand[None]):
         found_ids = {int(q.id) for q in self._queries}
         missing = set(self._ids) - found_ids
         if missing:
-            # ids that don't exist OR fall outside the caller's scope → 404
             raise ObjectNotFoundError("SavedQuery", str(sorted(missing)))
 
     async def run(self) -> None:
         for q in self._queries:
-            # Remove implicit tags before deleting (async port of
-            # QueryUpdater.after_delete, which fires per-row on bulk delete too)
             await delete_tagged_objects(self._dao.session, "query", q.id)
             await self._dao.session.delete(q)
         await self._dao.session.flush()

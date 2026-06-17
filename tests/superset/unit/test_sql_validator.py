@@ -16,11 +16,6 @@
 # under the License.
 """Pure-logic unit tests for the SQL Lab validators.
 
-Ported 1:1 (in intent) from the vendored upstream integration test
-``tests/integration_tests/sql_validator_tests.py``. The validators live at
-``superset.sql.validators`` in the Liteset port (upstream:
-``superset.sql_validators``).
-
 The validate paths exercised here do not touch the database or the example
 data: the database is a :class:`~unittest.mock.MagicMock`. The original test
 patched ``superset.utils.core.g`` / ``g.user.username`` defensively, but
@@ -64,7 +59,7 @@ class TestPrestoValidator:
 
     @pytest.fixture
     def database(self):
-        """Mirror the original ``setUp``: a MagicMock database wired so that
+        """A MagicMock database wired so that
         ``get_sqla_engine(...).__enter__().raw_connection().cursor()`` returns
         a cursor whose ``poll()`` short-circuits the validation loop."""
         database = MagicMock()

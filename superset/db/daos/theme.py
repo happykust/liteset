@@ -39,14 +39,8 @@ class AsyncThemeDAO(BaseAsyncDAO[Theme]):
         return await self.find_one_or_none(uuid=uuid_val)
 
     async def find_system_default(self) -> Theme | None:
-        """Find the current system default theme.
-
-        First looks for a theme with is_system_default=True.
-        If not found or multiple found, falls back to is_system=True theme
-        with name 'THEME_DEFAULT'.
-
-        1:1 with superset_old/daos/theme.py::ThemeDAO.find_system_default.
-        """
+        """Find the system default theme (``is_system_default=True``),
+        falling back to the ``THEME_DEFAULT`` system theme."""
         stmt = select(Theme).where(Theme.is_system_default.is_(True))
         result = await self.session.execute(stmt)
         system_defaults = list(result.scalars().all())
@@ -61,7 +55,6 @@ class AsyncThemeDAO(BaseAsyncDAO[Theme]):
                 len(system_defaults),
             )
 
-        # Fallback: look for system theme named THEME_DEFAULT
         stmt = select(Theme).where(
             Theme.is_system.is_(True),
             Theme.theme_name == "THEME_DEFAULT",
@@ -70,14 +63,8 @@ class AsyncThemeDAO(BaseAsyncDAO[Theme]):
         return result.scalars().first()
 
     async def find_system_dark(self) -> Theme | None:
-        """Find the current system dark theme.
-
-        First looks for a theme with is_system_dark=True.
-        If not found or multiple found, falls back to is_system=True theme
-        with name 'THEME_DARK'.
-
-        1:1 with superset_old/daos/theme.py::ThemeDAO.find_system_dark.
-        """
+        """Find the system dark theme (``is_system_dark=True``),
+        falling back to the ``THEME_DARK`` system theme."""
         stmt = select(Theme).where(Theme.is_system_dark.is_(True))
         result = await self.session.execute(stmt)
         system_darks = list(result.scalars().all())
@@ -91,7 +78,6 @@ class AsyncThemeDAO(BaseAsyncDAO[Theme]):
                 len(system_darks),
             )
 
-        # Fallback: look for system theme named THEME_DARK
         stmt = select(Theme).where(
             Theme.is_system.is_(True),
             Theme.theme_name == "THEME_DARK",

@@ -139,14 +139,10 @@ class SavedQueryDetailResult(ModelStruct):
 
     @classmethod
     def _resolve_sql_tables(cls, obj: Any) -> list[Any]:
-        """1:1 port of ``SqlTablesMixin.sql_tables``
-        (superset_old/models/sql_lab.py:82-93).
-
-        Parses the saved query's SQL via Jinja + sqlglot and returns the
+        """Parses the saved query's SQL via Jinja + sqlglot and returns the
         referenced tables, falling back to ``[]`` on any parse/security/template
-        error.  This resolver fires when ``from_model`` is called without an
-        explicit ``sql_tables`` override — the controller always passes the
-        override, but this keeps the struct self-consistent for future callers.
+        error.  The controller always passes an explicit ``sql_tables`` override,
+        but this keeps the struct self-consistent for future callers.
         """
         sql = getattr(obj, "sql", None)
         database = getattr(obj, "database", None)

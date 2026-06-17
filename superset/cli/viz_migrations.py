@@ -14,14 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/cli/viz_migrations.py``.
-
-Implements the ``migrate-viz upgrade`` and ``migrate-viz downgrade``
+"""Implements the ``migrate-viz upgrade`` and ``migrate-viz downgrade``
 commands.  Both run synchronously against the metadata DB via the
 sync session helper :func:`superset.db.session.get_sync_session` —
 the migration code in ``superset.migrations.shared.migrate_viz``
-operates on raw SQLAlchemy ``Slice`` rows and is intrinsically blocking
-(matches upstream).
+operates on raw SQLAlchemy ``Slice`` rows and is intrinsically blocking.
 """
 
 from __future__ import annotations
@@ -143,12 +140,7 @@ def downgrade(viz_type: str, ids: tuple[int, ...] | None = None) -> None:
 
 
 def migrate_by_viz_type(viz_type: VizType, is_downgrade: bool = False) -> None:
-    """Migrate every chart of the given viz type.
-
-    The migrate-viz pipeline operates on the sync metadata DB; we open
-    a fresh sync session for the duration of the migration and let the
-    underlying ``paginated_update`` helper drive the commit cadence.
-    """
+    """Migrate every chart of the given viz type."""
     from superset.db.session import get_sync_session
 
     migration: Type[MigrateViz] = MIGRATIONS[viz_type]
@@ -186,7 +178,6 @@ def migrate_by_id(ids: tuple[int, ...], is_downgrade: bool = False) -> None:
 
 
 def setup_logger() -> None:
-    """Attach a stream handler to the alembic logger."""
     console_handler = logging.StreamHandler()
     logger = logging.getLogger("alembic")
     logger.addHandler(console_handler)

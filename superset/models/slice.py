@@ -51,9 +51,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
 # Association tables
-# ---------------------------------------------------------------------------
 
 slice_user = Table(
     "slice_user",
@@ -72,9 +70,7 @@ slice_user = Table(
 )
 
 
-# ---------------------------------------------------------------------------
 # Slice model
-# ---------------------------------------------------------------------------
 
 
 class Slice(AuditMixinNullable, ImportExportMixin, Base):
@@ -103,7 +99,6 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
     external_url = Column(Text, nullable=True)
 
     def __repr__(self) -> str:
-        # 1:1 superset_old/models/slice.py:140 — /related/ dropdown text.
         return self.slice_name or str(self.id)
 
     # -- relationships --------------------------------------------------------
@@ -157,10 +152,7 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
 
     @property
     def form_data(self) -> dict[str, Any]:
-        """Parsed params dict enriched with slice/datasource identifiers.
-
-        Matches the original Slice.form_data property 1:1.
-        """
+        """Parsed params dict enriched with slice/datasource identifiers."""
         form_data: dict[str, Any] = {}
         try:
             parsed = json.loads(self.params) if self.params else {}
@@ -211,10 +203,7 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
 
     @property
     def data(self) -> dict[str, Any]:
-        """Data used to render slice in templates.
-
-        Matches the original Slice.data property.
-        """
+        """Data used to render slice in templates."""
         changed_on_humanized = self.changed_on_delta_humanized or ""
         return {
             "cache_timeout": self.cache_timeout,
@@ -246,7 +235,6 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
 
     @property
     def slice_url(self) -> str:
-        # Matches superset_old/models/slice.py:304-321 get_explore_url().
         # The frontend ``ChartList`` relies on the ``&form_data=...`` suffix
         # to open a chart row in Explore.
         import urllib.parse as _urlparse
@@ -266,11 +254,9 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
     def datasource_url(self) -> str | None:
         """Return the datasource explore URL.
 
-        1:1 with superset_old/models/slice.py:180-185 @renders('datasource_url'):
-        delegates to self.table.explore_url which respects SqlaTable.default_endpoint
-        (superset_old/connectors/sqla/models.py:301-304), then falls back to the
-        standard /explore/ URL.  For non-table datasources falls back to
-        self.datasource.explore_url.
+        Delegates to self.table.explore_url which respects SqlaTable.default_endpoint,
+        then falls back to the standard /explore/ URL.  For non-table datasources
+        falls back to self.datasource.explore_url.
         """
         if self.table:
             # Mirror SqlaTable.explore_url: prefer default_endpoint when set.

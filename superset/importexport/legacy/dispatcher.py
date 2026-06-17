@@ -16,11 +16,6 @@
 # under the License.
 """Version-tolerant dispatchers for dashboard / dataset imports.
 
-Direct port of:
-
-* ``superset_old/commands/dashboard/importers/dispatcher.py``
-* ``superset_old/commands/dataset/importers/dispatcher.py``
-
 The dispatchers iterate over the registered command versions (v1 first,
 v0 last because v0 files are not versioned) and run the first one that
 does NOT raise :class:`IncorrectVersionError` against the supplied
@@ -80,10 +75,6 @@ class ImportDashboardsCommand:
 
     def run(self, session: Any | None = None) -> None:
         """Run the first version that matches the supplied contents."""
-        # ``v1`` is the modern path — since v1 expects ``contents`` as a
-        # dict in its CLI form (matching the original v1 dataset/dashboard
-        # commands), we first try the high-level dispatcher path and only
-        # fall through to v0 on :class:`IncorrectVersionError`.
         try:
             from superset.commands.dashboard.importers.v1 import (  # noqa: PLC0415
                 ImportDashboardsCommand as V1ImportDashboardsCommand,
@@ -105,10 +96,8 @@ class ImportDashboardsCommand:
                 if run_method is not None and not _is_coroutine_method(run_method):
                     run_method()
                     return
-                # Async run() — let the caller handle the coroutine.
-                # This dispatcher only fully implements the sync v0 path;
-                # v1 is the responsibility of the controller layer where
-                # an event loop is already available.
+                # v1 run() is async; the sync dispatcher skips it — the controller
+                # layer handles async v1 imports where an event loop is available.
                 logger.debug("v1 import is async; skipping in sync dispatcher")
             except IncorrectVersionError:
                 logger.debug("File not handled by v1, trying v0")
@@ -119,7 +108,6 @@ class ImportDashboardsCommand:
                 logger.exception("Error running v1 import command")
                 raise
 
-        # v0 fallback — sync, dict-based.
         try:
             v0_cmd = V0ImportDashboardsCommand(self.contents, *self.args, **self.kwargs)
             v0_cmd.run(session=session)
@@ -143,10 +131,7 @@ class ImportDashboardsCommand:
         Wires the v0 fallback into the HTTP import path: tries the async v1
         command first (building a ZIP from the ``{filename: text}`` contents
         the controller parsed) and, on :class:`IncorrectVersionError`, falls
-        back to the sync v0 command (run in a thread).  This mirrors the
-        original ``ImportDashboardsCommand`` dispatcher
-        (``superset_old/commands/dashboard/importers/dispatcher.py``) which
-        the upstream API called directly.
+        back to the sync v0 command (run in a thread).
         """
         try:
             from superset.commands.dashboard.importers.v1 import (  # noqa: PLC0415
@@ -302,8 +287,8 @@ def _contents_to_zip(contents: dict[str, str]) -> io.BytesIO:
     """Pack a ``{filename: text}`` mapping into an in-memory ZIP for v1.
 
     The async v1 import commands consume an :class:`io.BytesIO` ZIP, whereas
-    the dispatcher (mirroring the original) carries the bundle as a dict.  The
-    v1 command's ``_parse_zip`` re-applies ``remove_root``/``is_valid_config``,
+    the dispatcher carries the bundle as a dict.  The v1 command's
+    ``_parse_zip`` re-applies ``remove_root``/``is_valid_config``,
     so a flat ``{name: text}`` round-trips unchanged.
     """
     buf = io.BytesIO()

@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/database/oauth2.py``."""
+"""Commands for handling database OAuth2 token storage."""
 
 from __future__ import annotations
 
@@ -39,8 +39,6 @@ logger = logging.getLogger(__name__)
 
 class OAuth2StoreTokenCommand(AsyncBaseCommand["DatabaseUserOAuth2Tokens"]):
     """Store OAuth2 tokens in ``database_user_oauth2_tokens``.
-
-    Mirrors the behaviour of the original sync command:
 
     * Decode the ``state`` parameter to recover the originating database
       and user.
@@ -86,7 +84,6 @@ class OAuth2StoreTokenCommand(AsyncBaseCommand["DatabaseUserOAuth2Tokens"]):
         if oauth2_config is None:
             raise OAuth2Error("No configuration found for OAuth2")
 
-        # Exchange the authorization code for tokens.
         token_response = await self._database.db_engine_spec.get_oauth2_token(
             oauth2_config,
             self._parameters["code"],
@@ -95,7 +92,6 @@ class OAuth2StoreTokenCommand(AsyncBaseCommand["DatabaseUserOAuth2Tokens"]):
         if "access_token" not in token_response:
             raise OAuth2Error(str(token_response.get("error", "Token exchange failed")))
 
-        # Replace any pre-existing tokens so a second dance always wins.
         if existing := await self._dao.find_one_or_none(
             user_id=int(self._state["user_id"]),
             database_id=int(self._state["database_id"]),
@@ -114,7 +110,5 @@ class OAuth2StoreTokenCommand(AsyncBaseCommand["DatabaseUserOAuth2Tokens"]):
                 "refresh_token": token_response.get("refresh_token"),
             }
         )
-        # Flush so the row has its id populated for any caller reading it
-        # (matches the rest of the create commands).
         await self._dao.session.flush()
         return token

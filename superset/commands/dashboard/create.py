@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dashboard/create.py``."""
+"""Dashboard create command."""
 
 from __future__ import annotations
 
@@ -52,9 +52,6 @@ class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         if slug:
             is_unique = await self._dao.validate_slug_uniqueness(slug)
             if not is_unique:
-                # Field-keyed 422 — 1:1 with upstream
-                # ``DashboardInvalidError(exceptions=[DashboardSlugExists
-                # ValidationError()])`` → ``{"slug": ["Must be unique"]}``.
                 from superset.commands.dashboard.exceptions import (
                     DashboardInvalidError,
                     DashboardSlugExistsValidationError,
@@ -80,10 +77,8 @@ class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         self._dao.session.add(dashboard)
         await self._dao.session.flush()
 
-        # Resolve owners + roles — refresh first to avoid MissingGreenlet
-        # on the lazy-loaded collections in async context. Both are M2M
-        # and the post-flush ``dashboard.<rel> = [...]`` assignment
-        # otherwise triggers SA's diff-load (sync IO → asyncpg crash).
+        # Refresh M2M collections before assignment — without this SA fires a
+        # sync lazy-load on the async session (MissingGreenlet / asyncpg crash).
         await self._dao.session.refresh(dashboard, ["owners", "roles"])
         resolved_owner_ids: list[int] = []
         if self._security_manager is not None:
@@ -96,21 +91,14 @@ class CreateDashboardCommand(AsyncBaseCommand["Dashboard"]):
             dashboard.owners = owners
             resolved_owner_ids = [o.id for o in owners]
 
-        # Resolve roles — 1:1 with upstream
-        # ``superset_old/commands/dashboard/create.py`` which calls
-        # ``populate_roles(roles_ids)`` (raises ``RolesNotFoundValidation
-        # Error`` 422 on a missing id). Previous loop silently dropped
-        # invalid ids, allowing a POST with ``roles=[99999]`` to create
-        # a dashboard with no roles attached at all.
+        # populate_roles raises RolesNotFoundValidationError (422) on unknown ids
+        # rather than silently creating a dashboard with no roles attached.
         role_ids = self._data.get("roles")
         if role_ids:
             from superset.commands.utils import populate_roles
 
             dashboard.roles = await populate_roles(self._dao.session, role_ids)
 
-        # Add implicit type: and owner: tags — 1:1 with
-        # ``DashboardUpdater.after_insert`` which only fires when the
-        # TAGGING_SYSTEM feature flag is enabled (see ``superset_old/app.py:158``).
         if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
             owner_ids = resolved_owner_ids
             await add_implicit_tags_after_insert(

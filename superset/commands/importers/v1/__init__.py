@@ -14,14 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old.commands.importers.v1`` package.
-
-Re-exports :class:`ImportAssetsCommand` (the orchestrator that imports a
-bundle containing every asset type in dependency order) so that callers
-can simply::
-
-    from superset.commands.importers.v1 import ImportAssetsCommand
-"""
+"""v1 asset import command package."""
 
 from __future__ import annotations
 

@@ -16,14 +16,8 @@
 # under the License.
 """File-upload form helpers for ``POST /api/v1/database/{pk}/upload/``.
 
-Mirrors ``superset_old/databases/schemas.py:UploadPostSchema`` field-by-field
-so the controller in ``superset/controllers/database.py`` can build the
-same shape of options dict that :class:`CSVReader` / :class:`ExcelReader`
-/ :class:`ColumnarReader` expect.
-
-The original Superset schema is a Marshmallow ``Schema``; we don't ship
-Marshmallow in liteset, so the fields are parsed off the
-``multipart/form-data`` payload directly inside :func:`parse_upload_form`.
+Fields are parsed off the ``multipart/form-data`` payload directly inside
+:func:`parse_upload_form` (no Marshmallow dependency in this runtime).
 """
 
 from __future__ import annotations
@@ -40,7 +34,6 @@ logger = logging.getLogger(__name__)
 #: (upstream ``validate=OneOf(("fail", "replace", "append"))``).
 _ALREADY_EXISTS_CHOICES: frozenset[str] = frozenset({"fail", "replace", "append"})
 
-
 __all__ = [
     "ALLOWED_UPLOAD_EXTENSIONS",
     "build_reader_options",
@@ -49,11 +42,9 @@ __all__ = [
     "validate_file_extension",
 ]
 
-
-# Default extension allow-list — mirrors the Superset config key
-# ``ALLOWED_EXTENSIONS`` from ``superset_old/config.py``.  When the
-# settings module exposes a custom list we honour it; otherwise we use
-# this conservative default.
+# Default extension allow-list for uploaded files.  When the settings
+# module exposes a custom list we honour it; otherwise we use this
+# conservative default.
 ALLOWED_UPLOAD_EXTENSIONS: frozenset[str] = frozenset(
     {"csv", "tsv", "xls", "xlsx", "parquet", "zip"}
 )
@@ -62,7 +53,6 @@ ALLOWED_UPLOAD_EXTENSIONS: frozenset[str] = frozenset(
 def parse_delimited_list(value: Any) -> list[str] | None:
     """Parse a comma-delimited string into a list of stripped tokens.
 
-    Mirrors ``superset_old/databases/schemas.py:DelimitedListField``.
     Empty strings or falsy inputs return ``None`` so callers can
     distinguish "not provided" from "empty".
     """
@@ -128,12 +118,7 @@ def validate_file_extension(
     return suffix in allowed_set
 
 
-# ---------------------------------------------------------------------------
-# Form-field set: mirrors ``UploadPostSchema`` 1:1
-# ---------------------------------------------------------------------------
-
 #: All form fields accepted by ``POST /database/<pk>/upload/``.
-#: Sourced from ``superset_old/databases/schemas.py:UploadPostSchema``.
 UPLOAD_FORM_FIELDS: frozenset[str] = frozenset(
     {
         # Common
@@ -227,7 +212,7 @@ def parse_upload_form(form: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             except (TypeError, ValueError) as exc:
                 raise ValueError("Invalid JSON format for column_data_types") from exc
 
-    # --- field validation (1:1 with UploadPostSchema Range/OneOf) ----------
+    # --- field validation (Range/OneOf) ------------------------------------
     # Upstream Marshmallow rejects these with a 422 before the value reaches
     # pandas; without the checks ``rows_to_read=0`` silently writes an empty
     # table and a bad ``already_exists`` bubbles to ``to_sql`` as a 500.
@@ -247,9 +232,9 @@ def parse_upload_form(form: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
 def build_reader_options(parsed_form: dict[str, Any]) -> dict[str, Any]:
     """Project the parsed form into the kwargs the readers expect.
 
-    The reader options mirror the original ``CSVReaderOptions`` /
-    ``ExcelReaderOptions`` / ``ColumnarReaderOptions`` typed dicts.
-    Keys that the reader ignores are still safe to include.
+    Compatible with ``CSVReaderOptions`` / ``ExcelReaderOptions`` /
+    ``ColumnarReaderOptions``.  Keys that the reader ignores are still
+    safe to include.
     """
     # We just strip ``type``, ``table_name``, and ``schema`` — those are
     # consumed at the controller level.  Everything else is fair game.

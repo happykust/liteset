@@ -16,9 +16,8 @@
 # under the License.
 """Tests for the Global Async Queries JWT-secret length guard.
 
-1:1 with the original ``AsyncQueryManager.init_app`` check: when
-``GLOBAL_ASYNC_QUERIES`` is enabled the app must refuse to start if the JWT
-secret is shorter than 32 bytes.
+When ``GLOBAL_ASYNC_QUERIES`` is enabled the app must refuse to start if the
+JWT secret is shorter than 32 bytes.
 """
 
 from __future__ import annotations
@@ -48,10 +47,9 @@ def _settings(**kw):
         "global_async_queries": False,
         "global_async_queries_jwt_secret": None,
         "secret_key": "",
-        # Non-null cache backends so the upstream-ordered cache-null guard
-        # (which runs BEFORE the JWT check, 1:1 with
-        # async_query_manager.init_app) passes and these tests reach the
-        # JWT-secret logic they target.
+        # Non-null cache backends so the cache-null guard (which runs BEFORE
+        # the JWT check) passes and these tests reach the JWT-secret logic
+        # they target.
         "cache_config": {"CACHE_TYPE": "RedisCache"},
         "data_cache_config": {"CACHE_TYPE": "RedisCache"},
     }
@@ -60,8 +58,8 @@ def _settings(**kw):
 
 
 def test_gaq_enabled_null_cache_raises():
-    # 1:1 with async_query_manager.init_app: GAQ requires non-null
-    # CACHE_CONFIG/DATA_CACHE_CONFIG; a null cache type refuses to start.
+    # GAQ requires non-null CACHE_CONFIG/DATA_CACHE_CONFIG; a null cache type
+    # refuses to start.
     with pytest.raises(Exception, match="Cache backends"):
         _validate_global_async_queries_config(
             _settings(

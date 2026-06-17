@@ -76,7 +76,7 @@ WS_CLOSE_TOO_MANY_CONNECTIONS = 4429
 # Defaults (overridable via settings)
 MAX_WS_PER_USER = 10
 REDIS_RECONNECT_DELAY_SECONDS = 1
-# Mirrors the original Node sidecar defaults (redisStreamReadBlockMs=5000,
+# Node sidecar defaults (redisStreamReadBlockMs=5000,
 # redisStreamReadCount=100).
 DEFAULT_STREAM_READ_BLOCK_MS = 5000
 DEFAULT_STREAM_READ_COUNT = 100
@@ -192,13 +192,12 @@ class AsyncQueryWebSocket(Controller):
 
             await socket.accept()
             active_ws[socket] = auth_result.user_id
-            # 1:1 with the original sidecar's statsd.increment('ws_connected_client').
+            # Increment the ws_connected_client metric for monitoring.
             stats_logger_manager.incr("ws_connected_client")
 
         # Resolve per-browser channel id.  The JWT ``channel`` claim is the
         # canonical source — it is the uuid4 minted by AsyncTokenMiddleware
-        # when the browser first contacted the server (1:1 with the original
-        # handler which stored it in the session cookie).  If the claim
+        # when the browser first contacted the server.  If the claim
         # is absent (rare: session-cookie-only auth with no async-token cookie)
         # the relay idles harmlessly until the client disconnects.
         channel = auth_result.channel
@@ -283,8 +282,7 @@ class AsyncQueryWebSocket(Controller):
     ) -> None:
         """Read the channel Redis Stream via ``XREAD BLOCK`` and forward events.
 
-        Mirrors the original Node ``subscribeToGlobalStream`` loop, but reads
-        the per-channel stream so no in-process channel registry is required.
+        Reads the per-channel stream so no in-process channel registry is required.
         Each delivered frame carries the stream entry ``id`` (via
         :func:`~superset.async_events.manager.parse_event`), which the frontend
         persists as ``last_async_event_id`` and replays on reconnection.

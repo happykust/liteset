@@ -86,9 +86,7 @@ _FORM_BODY_METHODS: frozenset[str] = frozenset({"POST", "PUT", "PATCH"})
 # Cap on how much of an unexpectedly-large body we pull into memory for
 # the form_data ContextVar.  Beyond this we silently drop the form_data
 # binding rather than risk a 100 MB JSON upload turning into 100 MB of
-# RAM in the audit-log context.  Mirrors the original behaviour
-# where ``MAX_CONTENT_LENGTH`` capped what the upstream stack would parse
-# out of the request.
+# RAM in the audit-log context.
 _MAX_PARSED_BODY_BYTES: int = 4 * 1024 * 1024  # 4 MiB
 
 
@@ -109,8 +107,7 @@ class RequestContextMiddleware(ASGIMiddleware):
     * ``_form_data_ctx`` (in :mod:`superset.jinja_context`) — a parsed
       copy of the request body for ``POST``/``PUT``/``PATCH`` requests
       whose body is JSON / form-urlencoded and within the
-      :data:`_MAX_PARSED_BODY_BYTES` limit.  This mirrors the original
-      ``g.form_data`` populated by the upstream ``set_form_data`` helper.
+      :data:`_MAX_PARSED_BODY_BYTES` limit.
       Multipart, oversized, and partially-received bodies are passed
       through without parsing.
 
@@ -133,31 +130,15 @@ class RequestContextMiddleware(ASGIMiddleware):
         next_app: ASGIApp,
     ) -> None:
         if scope["type"] != "http":
-            # Lifespan / websocket scopes — pass through.  We don't
-            # populate the request ContextVar for non-HTTP scopes
-            # because the audit-logging / jinja-templating code that
-            # reads it only ever runs on HTTP request paths.
             await next_app(scope, receive, send)
             return
 
         method = str(scope.get("method") or "GET").upper()
 
-        # ----------------------------------------------------------
-        # Fast paths that DON'T parse the body.
-        # ----------------------------------------------------------
-        # Methods that historically never carried a form body upstream
-        # (GET / HEAD / DELETE / OPTIONS) — bind the request ContextVar
-        # but skip everything body-related.  ``form_data`` stays at its
-        # default (empty dict) for these requests.
         if method not in _FORM_BODY_METHODS:
             await self._dispatch_no_body(scope, receive, send, next_app)
             return
 
-        # Multipart / oversized bodies short-circuit body buffering to
-        # avoid pulling potentially-huge file uploads into RAM.  The
-        # route handler still receives the unmodified ``receive`` so
-        # streaming readers (``request.stream()``, ``request.form()``)
-        # work normally.  ``form_data`` is left empty.
         headers = self._headers_dict(scope)
         content_type = headers.get(b"content-type", b"").lower()
         is_multipart = content_type.startswith(b"multipart/")
@@ -172,14 +153,9 @@ class RequestContextMiddleware(ASGIMiddleware):
             await self._dispatch_no_body(scope, receive, send, next_app)
             return
 
-        # ----------------------------------------------------------
-        # Body-parsing path: drain → seed cache → parse → dispatch.
-        # ----------------------------------------------------------
         body_bytes, wrapped_receive = await self._drain_body(receive)
 
         if body_bytes is not None:
-            # Seed Litestar's connection-state body cache so every
-            # Request derived from ``scope`` shares one body buffer.
             self._seed_scope_body(scope, body_bytes)
 
         await self._dispatch_with_body(
@@ -191,10 +167,6 @@ class RequestContextMiddleware(ASGIMiddleware):
             content_type=content_type.decode("latin-1", errors="replace"),
         )
 
-    # ------------------------------------------------------------------
-    # dispatch helpers
-    # ------------------------------------------------------------------
-
     async def _dispatch_no_body(
         self,
         scope: Scope,
@@ -202,12 +174,7 @@ class RequestContextMiddleware(ASGIMiddleware):
         send: Send,
         next_app: ASGIApp,
     ) -> None:
-        """Bind the Request ContextVar without touching the body.
-
-        Used for methods that don't carry a form body (GET/HEAD/...)
-        and for the multipart / oversized short-circuits.  ``form_data``
-        is left at its default (empty dict).
-        """
+        """Bind the Request ContextVar without parsing the body."""
         request_token = None
         try:
             request: Request[Any, Any, Any] | None = Request(
@@ -238,14 +205,6 @@ class RequestContextMiddleware(ASGIMiddleware):
         body_bytes: bytes | None,
         content_type: str,
     ) -> None:
-        """Build the Request, populate ContextVars, dispatch downstream.
-
-        ``body_bytes`` is ``None`` when the body could not be safely
-        materialised (incomplete stream, oversized post-drain, etc.).
-        In that case we still bind the Request ContextVar but leave
-        ``form_data`` empty — exactly the behaviour the original
-        code took when ``request.form == {}``.
-        """
         request_token = None
         form_data_token = None
         try:
@@ -261,9 +220,6 @@ class RequestContextMiddleware(ASGIMiddleware):
 
         if request is not None:
             if body_bytes is not None:
-                # Prime the Request's per-instance body cache so
-                # ``await request.body()`` returns immediately without
-                # touching the receive at all.
                 try:
                     request._body = body_bytes
                 except (AttributeError, TypeError):
@@ -287,50 +243,20 @@ class RequestContextMiddleware(ASGIMiddleware):
             if form_data_token is not None:
                 self._reset_form_data_ctx(form_data_token)
 
-    # ------------------------------------------------------------------
-    # body parsing helpers
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _headers_dict(scope: Scope) -> dict[bytes, bytes]:
-        """Return a lower-cased ``bytes -> bytes`` view of scope headers.
-
-        ASGI delivers headers as a list of ``(name, value)`` pairs with
-        lowercase names; we materialise once per request and reuse the
-        dict for content-type / content-length lookups so the
-        per-request cost stays at one ``dict()`` call.
-        """
         return dict(scope.get("headers", []))
 
     @staticmethod
     def _seed_scope_body(scope: Scope, body: bytes) -> None:
-        """Pre-populate Litestar's connection-state body cache.
+        """Pre-populate Litestar's ScopeState body cache from the
+        already-drained buffer.
 
-        Litestar lazily reads the request body on the *first*
-        ``await request.body()`` call and stores the bytes on
-        :class:`~litestar.utils.scope.state.ScopeState` (keyed under
-        ``scope["state"]["_ls_connection_state"]``) so subsequent reads
-        through the same scope never touch the ASGI receive again.
-        We seed this cache from the buffer we already drained in
-        :meth:`_drain_body` for two reasons:
-
-        1. The ContextVar Request we expose for audit-logging code paths
-           may be read AFTER the route handler has fully consumed (and
-           replayed) the receive — without the seed those late reads
-           would observe an exhausted stream.
-        2. Litestar internally builds *its own* Request inside route
-           dispatch; without the seed it would re-stream the replayed
-           receive.  Seeding makes the body read O(1) regardless of how
-           many Request instances are spawned over the same scope.
-
-        Defensive: if Litestar changes its internal scope-state shape
-        in a future release, the import-fail branch logs at debug and
-        otherwise leaves the request to fall back to its normal
-        receive-stream path.  No exception ever escapes.
+        Without this, the audit-logging ContextVar Request may read an exhausted
+        stream, and Litestar's internal route-dispatch Request would re-stream the
+        replayed receive instead of reading O(1) from cache.
         """
         try:
-            # Public-by-convention internal helper — exposed at
-            # ``litestar.utils.scope.state.ScopeState.from_scope``.
             from litestar.utils.scope.state import ScopeState
         except ImportError:  # pragma: no cover — version drift
             logger.debug(
@@ -351,26 +277,11 @@ class RequestContextMiddleware(ASGIMiddleware):
     async def _drain_body(
         receive: Receive,
     ) -> tuple[bytes | None, Receive]:
-        """Drain ``http.request`` chunks from ``receive`` into a buffer.
+        """Drain http.request chunks into a buffer and return (body, replay_receive).
 
-        Returns ``(body, replay_receive)`` where ``body`` is one of:
-
-        * the consolidated body when the stream completed cleanly and
-          stayed within :data:`_MAX_PARSED_BODY_BYTES`;
-        * ``None`` when the body exceeded the cap mid-stream — we keep
-          draining so the server doesn't hang on stuck producers, but
-          discard the chunks we've already buffered to free the RAM,
-          and the replay falls through to the original ``receive`` so
-          downstream handlers still see the rest of the upload;
-        * ``None`` when the client disconnected before the body
-          finished — partial bodies are unsafe to feed to JSON parsing,
-          so we leave ``form_data`` empty.
-
-        ``replay_receive`` is an ASGI-compatible callable that yields
-        whatever the middleware did capture back to downstream
-        middleware / the route handler so request semantics aren't
-        broken.  See :class:`_ReplayReceive` for the one-shot replay
-        contract.
+        body is None when the stream exceeded _MAX_PARSED_BODY_BYTES or the client
+        disconnected mid-body (partial data is unsafe to parse). replay_receive
+        re-emits the captured bytes to downstream handlers.
         """
         chunks: list[bytes] = []
         total = 0
@@ -388,12 +299,9 @@ class RequestContextMiddleware(ASGIMiddleware):
                     total += len(chunk)
                     chunks.append(chunk)
                 if total > _MAX_PARSED_BODY_BYTES:
-                    # Too large to PARSE for request context, but the handler
-                    # must still receive the FULL body.  Stop draining here,
-                    # keep what we've buffered, and let the replay emit those
-                    # bytes and then delegate the rest of the stream straight
-                    # to the original ``receive`` (so large non-multipart
-                    # uploads aren't truncated to an empty body).
+                    # Too large to parse, but the replay must still deliver
+                    # the full body — emit the buffered prefix then delegate
+                    # the rest to the original receive.
                     oversized = True
                     oversized_more_body = bool(event.get("more_body"))
                     break
@@ -402,14 +310,8 @@ class RequestContextMiddleware(ASGIMiddleware):
                     break
                 continue
             if event_type == "http.disconnect":
-                # Client cut the connection mid-body.  We pass the
-                # disconnect event through to the handler (which will
-                # bail with a normal ASGI disconnection) but signal
-                # "no parseable body" via ``None``.
                 trailing_event = cast("dict[str, Any]", event)
                 break
-            # Unknown event ordering — treat as end-of-body, forward
-            # the trailing event downstream, but don't try to parse.
             trailing_event = cast("dict[str, Any]", event)
             break
 
@@ -419,10 +321,6 @@ class RequestContextMiddleware(ASGIMiddleware):
         else:
             body = b"".join(chunks)
 
-        # Replay payload: the bytes we captured.  In the oversized case we
-        # keep the buffered prefix and flag ``more_body`` so the replay
-        # streams it, then delegates the remaining real chunks to the
-        # original ``receive`` — the handler still sees the complete upload.
         replay_payload = b"".join(chunks)
         replay = _ReplayReceive(
             body=replay_payload,
@@ -434,16 +332,13 @@ class RequestContextMiddleware(ASGIMiddleware):
 
     @staticmethod
     def _parse_body(body_bytes: bytes, content_type: str) -> dict[str, Any] | None:
-        """Parse ``body_bytes`` into a flat dict according to
-        ``content_type``.  Returns ``None`` for content-types we
-        deliberately don't parse (e.g. multipart uploads).
-        """
+        """Parse body into a flat dict for JSON and form-urlencoded
+        content; None for multipart."""
         if not body_bytes:
             return {}
 
         ct = content_type.lower()
 
-        # ---- application/json ----
         if "json" in ct:
             try:
                 decoded = _json.loads(body_bytes.decode("utf-8"))
@@ -451,11 +346,8 @@ class RequestContextMiddleware(ASGIMiddleware):
                 return {}
             if isinstance(decoded, dict):
                 return decoded
-            # JSON arrays / scalars don't map to form_data — the upstream
-            # never accepted those either.
             return {}
 
-        # ---- application/x-www-form-urlencoded ----
         if "application/x-www-form-urlencoded" in ct:
             try:
                 parsed = parse_qs(
@@ -464,27 +356,14 @@ class RequestContextMiddleware(ASGIMiddleware):
                 )
             except Exception:  # noqa: BLE001
                 return {}
-            # parse_qs returns ``list[str]`` per key; flatten single-value
-            # keys to match the upstream ``request.form.to_dict()`` semantics.
             return {k: (v[0] if len(v) == 1 else v) for k, v in parsed.items()}
 
-        # ---- multipart/form-data ----
-        # Should never reach here — multipart short-circuits earlier in
-        # :meth:`handle` — but keep the explicit ``None`` so the
-        # contract stays clear: any caller that *does* push a multipart
-        # body through this method ends up with no form_data binding.
         return None
-
-    # ------------------------------------------------------------------
-    # form_data ContextVar plumbing
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _set_form_data_ctx(form_data: dict[str, Any]) -> Any:
-        """Set the form_data ContextVar and return a reset token."""
-        # ``set_form_data`` returns ``None`` because it's the public
-        # contract (controllers call it without caring about the token);
-        # we set the ContextVar directly here to capture the token.
+        # Set the ContextVar directly (not via the public set_form_data helper)
+        # so we capture the reset token for cleanup in the finally block.
         from superset.jinja_context import _form_data_ctx
 
         return _form_data_ctx.set(form_data)
@@ -499,40 +378,16 @@ class RequestContextMiddleware(ASGIMiddleware):
             _form_data_ctx.set(None)
 
 
-# ---------------------------------------------------------------------------
-# _ReplayReceive — re-emits a previously-drained body to downstream ASGI.
-# ---------------------------------------------------------------------------
-
-
 class _ReplayReceive:
-    """ASGI ``receive`` callable that replays a buffered body once.
+    """ASGI receive that replays a pre-drained body buffer.
 
-    Usage contract — important for downstream consumers:
+    State machine: 0 → emit buffered body (more_body=False, or True when oversized);
+    1 → emit trailing event; 2 → delegate to fallback_receive.
 
-    * **First call** yields a single ``http.request`` event with the
-      full buffered body and ``more_body=False``.  This means handlers
-      that read via ``await request.body()`` (one read) get the
-      consolidated body in one shot.
-    * **Second call** yields the trailing event captured during drain
-      (typically ``http.disconnect``) when one was recorded; otherwise
-      it falls through to ``fallback_receive``.
-    * **Third and subsequent calls** delegate to ``fallback_receive``
-      so disconnect-after-handler-runs flows still work.
-
-    Handlers that *stream* a request body in chunks via
-    ``request.stream()`` will therefore see one chunk + EOF rather
-    than the original wire-level chunking — buffer fidelity is not
-    preserved, only payload fidelity.  None of the Liteset controllers
-    actually need wire-level chunk fidelity (we read JSON / form
-    bodies wholesale), and Litestar's own ``Request.body()`` is
-    chunk-agnostic, so this is safe.
-
-    When the middleware drained an oversized body and dropped the
-    buffer, ``body`` is empty (``b""``).  The first call still emits
-    the empty ``http.request`` event so downstream code that calls
-    ``await receive()`` doesn't hang waiting for a body that already
-    streamed past — but the *real* upload bytes are then re-streamed
-    from ``fallback_receive`` on subsequent calls.
+    Payload fidelity is preserved but not wire-level chunking — controllers
+    read JSON/form bodies wholesale so chunk boundaries do not matter.
+    For oversized bodies the buffer is empty and the real upload bytes come
+    from fallback_receive on subsequent calls.
     """
 
     __slots__ = ("_body", "_trailing", "_fallback", "_state", "_more_body")
@@ -547,19 +402,12 @@ class _ReplayReceive:
         self._body = body
         self._trailing = trailing_event
         self._fallback = fallback_receive
-        # When ``more_body`` is set (oversized stream), the buffered prefix is
-        # emitted with ``more_body=True`` and every subsequent event is pulled
-        # straight from the original ``receive`` so the handler gets the rest
-        # of the upload verbatim.
         self._more_body = more_body
-        # 0 → emit body; 1 → emit trailing (if any); 2 → delegate.
         self._state = 0
 
     async def __call__(self) -> Any:
         if self._state == 0:
             if self._more_body:
-                # Emit the buffered prefix, then delegate the remaining real
-                # chunks to the original receive.
                 self._state = 2
                 return {
                     "type": "http.request",
@@ -576,7 +424,6 @@ class _ReplayReceive:
             self._state = 2
             if self._trailing is not None:
                 return self._trailing
-        # Delegate any further events back to the original receive.
         return await self._fallback()
 
 

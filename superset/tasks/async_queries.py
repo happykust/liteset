@@ -17,7 +17,6 @@
 # mypy: ignore-errors
 """Async query execution Celery tasks for Superset.
 
-Ported 1:1 from the original ``superset/tasks/async_queries.py``.
 Uses :func:`superset.db.session.get_sync_session` for synchronous DB
 access inside Celery workers, and ``redis.Redis`` (sync) for job status
 updates via Redis Streams (matching AsyncEventManager's data model).
@@ -41,18 +40,10 @@ from superset.tasks.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# soft_time_limit resolution
-# ---------------------------------------------------------------------------
-# Mirrors the original ``query_timeout = current_app.config[
-# "SQLLAB_ASYNC_TIME_LIMIT_SEC"]`` evaluated at module load: Celery binds
-# ``soft_time_limit`` when the ``@celery_app.task`` decorator runs, so we
-# need a value at import time.  We attempt to instantiate
-# :class:`SupersetSettings` (which reads env / superset_config.py) and
-# fall back to the same default the model declares (21600s = 6h) when
-# the worker process imports this module before settings are present —
-# matching the original which crashed at import on missing config but
-# letting the module import cleanly in unit tests / worker bootstrap.
+# ``soft_time_limit`` is bound when the ``@celery_app.task`` decorator runs, so we
+# need a value at import time.  We fall back to the same default the model
+# declares (21600s = 6h) when the worker imports this module before settings
+# are present — letting the module import cleanly in unit tests / worker bootstrap.
 def _resolve_query_timeout() -> int:
     try:
         from superset.config import SupersetSettings
@@ -70,10 +61,6 @@ def _resolve_query_timeout() -> int:
 
 query_timeout = _resolve_query_timeout()
 
-
-# ---------------------------------------------------------------------------
-# Redis Streams sync helpers (mirrors AsyncEventManager.update_job)
-# ---------------------------------------------------------------------------
 
 _sync_redis: Any = None
 
@@ -153,17 +140,15 @@ def _update_job(
     """Update async job status via Redis Streams (sync).
 
     Writes to both the channel-specific stream and the global firehose
-    stream, matching the data model used by
-    :class:`superset.async_events.manager.AsyncEventManager`.
+    stream, matching the data model used by AsyncEventManager.
     """
     r = _get_sync_redis()
     # Stream prefix MUST be read from config, not hardcoded: every reader
-    # (app.py polling, the WS relay, AsyncEventManager) keys off
-    # ``global_async_queries_redis_stream_prefix``. With a non-default prefix a
-    # hardcoded worker would write status events to ``async-events-{channel}``
-    # while readers listen on ``{custom}{channel}`` → "done"/"error" events
-    # never arrive → async queries hang forever. Resolved below alongside the
-    # maxlen limits (defaults preserved on any lookup failure).
+    # (app.py polling, WS relay, AsyncEventManager) keys off
+    # ``global_async_queries_redis_stream_prefix``. A hardcoded prefix would
+    # write to ``async-events-{channel}`` while readers listen on
+    # ``{custom}{channel}`` → "done"/"error" events never arrive → async
+    # queries hang forever.
     stream_prefix = "async-events-"
 
     channel_id = job_metadata.get("channel_id", "")
@@ -180,13 +165,8 @@ def _update_job(
     }
     payload = {"data": json.dumps(event)}
 
-    # Trim each stream on write via ``maxlen`` (1:1 with the original
-    # ``AsyncQueryManager.update_job`` which passed ``self._stream_limit`` /
-    # ``self._stream_limit_firehose`` to every ``xadd``; the web-process
-    # ``AsyncEventManager`` already does this).  Resolve the same settings the
-    # manager / ``_get_sync_redis`` use; a lookup failure must NOT break status
-    # publishing on this hot worker path, so we fall back to the model defaults
-    # (channel=1000, firehose=1000000).
+    # Trim each stream on write. A lookup failure must NOT break status
+    # publishing on this hot worker path — fall back to the model defaults.
     channel_maxlen = 1000
     firehose_maxlen = 1_000_000
     try:
@@ -220,8 +200,6 @@ def _update_job(
             exc_info=True,
         )
 
-    # Firehose key derived from the prefix — 1:1 with upstream
-    # ``f"{self._stream_prefix}full"``.
     global_stream_key = f"{stream_prefix}full"
     scoped_stream = f"{stream_prefix}{channel_id}"
     r.xadd(scoped_stream, payload, maxlen=channel_maxlen, approximate=True)
@@ -230,17 +208,8 @@ def _update_job(
     logger.debug("Updated job %s on channel %s: status=%s", job_id, channel_id, status)
 
 
-# ---------------------------------------------------------------------------
-# Status constants (match original AsyncQueryManager)
-# ---------------------------------------------------------------------------
-
 STATUS_DONE = "done"
 STATUS_ERROR = "error"
-
-
-# ---------------------------------------------------------------------------
-# User loading helpers
-# ---------------------------------------------------------------------------
 
 
 async def _load_user_from_job_metadata(
@@ -250,47 +219,28 @@ async def _load_user_from_job_metadata(
 ) -> Any:
     """Resolve the request user from ``job_metadata``.
 
-    Ports the original ``_load_user_from_job_metadata`` which dispatched
-    on ``user_id`` (logged-in user via ``security_manager.get_user_by_id``)
-    or ``guest_token`` (embedded guest user via
-    ``security_manager.get_guest_user_from_token``), falling through to
-    ``security_manager.get_anonymous_user()`` — an
-    :class:`AnonymousUserMixin` instance with ``is_authenticated=False``.
-
-    Runs against the live :class:`AsyncSession` so the returned object
-    can be reused inside the same task pipeline (RLS, permissions, audit
-    logging) without lazy-loading errors.
+    Dispatches on ``user_id`` (logged-in user), ``guest_token`` (embedded
+    guest user), or falls through to ``UnauthenticatedUser``.
 
     Mutates ``job_metadata`` in place: the guest token is removed once
-    consumed so it is not re-broadcast on the Redis status update,
-    matching the original behaviour.
+    consumed so it is not re-broadcast on the Redis status update.
     """
     from superset.middleware.auth import UnauthenticatedUser
     from superset.security.dao import AsyncSecurityDAO
 
     dao = AsyncSecurityDAO(async_session)
 
-    # 1. Logged-in user --------------------------------------------------
     if user_id := job_metadata.get("user_id"):
         user = await dao.get_user_by_id(user_id)
         if user is not None:
             return user
 
-    # 2. Embedded guest user (JWT) --------------------------------------
     guest_token = job_metadata.pop("guest_token", None)
     if guest_token:
         guest = await _load_guest_user_from_token(guest_token, settings, dao)
         if guest is not None:
             return guest
 
-    # 3. Anonymous — port of ``security_manager.get_anonymous_user()``.
-    # The original returned an ``AnonymousUserMixin`` instance
-    # (``is_authenticated=False``, ``is_anonymous=True``).  Liteset's
-    # equivalent is :class:`UnauthenticatedUser`, which the auth
-    # middleware (``_build_anonymous_user``) hands out for unauthenticated
-    # HTTP requests; we reuse it here so that downstream code observes
-    # the same shape regardless of whether it ran inside a request or
-    # inside this Celery task.
     return UnauthenticatedUser()
 
 
@@ -299,20 +249,12 @@ async def _load_guest_user_from_token(
     settings: Any,
     dao: Any,
 ) -> Any | None:
-    """Decode a guest JWT token and build a :class:`GuestUser`.
+    """Decode a guest JWT token and build a GuestUser.
 
-    Mirrors :meth:`SupersetAuthMiddleware._resolve_guest_from_jwt`:
-
-    1. Parse the token with the dedicated guest secret/algo if configured,
-       otherwise the application secret key.
-    2. Validate the required ``user`` / ``resources`` / ``rls_rules``
-       claims.
-    3. Look up the configured ``GUEST_ROLE_NAME`` role and merge its
-       permissions into the resulting :class:`GuestUser` so RBAC checks
-       behave identically to the live request path.
-
-    Returns ``None`` when the token is invalid, expired, or missing
-    required claims (anonymous-equivalent fall-through).
+    Validates the required ``user`` / ``resources`` / ``rls_rules`` claims
+    and merges the ``GUEST_ROLE_NAME`` role permissions so RBAC checks
+    behave identically to the live request path.
+    Returns ``None`` when the token is invalid, expired, or missing claims.
     """
     from superset.security.guest import GuestUser, parse_guest_token
 
@@ -337,7 +279,6 @@ async def _load_guest_user_from_token(
     if payload is None:
         return None
 
-    # Required claims (match middleware ``_resolve_guest_from_jwt``)
     if (
         payload.get("user") is None
         or payload.get("resources") is None
@@ -372,19 +313,8 @@ def _resolve_secret(settings: Any) -> str:
     return str(secret_key) if secret_key else ""
 
 
-# ---------------------------------------------------------------------------
-# QueryContext construction helper
-# ---------------------------------------------------------------------------
-
-
 def _create_query_context_from_form(form_data: dict[str, Any]) -> Any:
-    """Deserialize form_data into an AsyncQueryContext.
-
-    The original used ``ChartDataQueryContextSchema().load(form_data)``
-    (Marshmallow). In Liteset the QueryContext is a dataclass; we build
-    it from form_data using the same deserialization path as the
-    controller layer.
-    """
+    """Deserialize form_data into an AsyncQueryContext."""
     from superset.common.query_context import AsyncQueryContext
     from superset.common.query_object import AsyncQueryObject
 
@@ -405,7 +335,6 @@ def _create_query_context_from_form(form_data: dict[str, Any]) -> Any:
     queries_raw = form_data.get("queries") or []
     queries = []
     for q in queries_raw:
-        # Use per-query datasource if present, else top-level
         q_ds = q.get("datasource", datasource_dict)
         if isinstance(q_ds, str) and "__" in q_ds:
             q_parts = q_ds.split("__")
@@ -414,13 +343,9 @@ def _create_query_context_from_form(form_data: dict[str, Any]) -> Any:
             except (ValueError, IndexError):
                 q_ds = datasource_dict
 
-        # ``from_request`` — the SAME deserialization path the controller
-        # layer uses.  The previous hand-picked subset dropped time_shift /
-        # applied_time_extras / is_rowcount / group_others_when_limit_reached
-        # / from_dttm / to_dttm, so GAQ (Celery) results diverged from the
-        # sync path for time-comparison / rowcount charts (upstream's
-        # ``ChartDataQueryContextSchema().load(form_data)`` deserialised the
-        # COMPLETE query object).
+        # Use ``from_request`` — the same deserialization path the controller
+        # uses — so GAQ results include time_shift, applied_time_extras,
+        # is_rowcount, etc., matching the sync path.
         queries.append(
             AsyncQueryObject.from_request(
                 q, q_ds if isinstance(q_ds, dict) else datasource_dict
@@ -439,14 +364,11 @@ def _create_query_context_from_form(form_data: dict[str, Any]) -> Any:
 
 
 def _resolve_datasource_id(form_data: dict[str, Any]) -> int | None:
-    """Return the datasource id referenced by a chart-data ``form_data``.
+    """Return the datasource id from ``form_data``.
 
-    The chart-data query context serialises ``datasource`` as a dict
-    ``{"id": N, "type": "table"}`` (msgspec ``ChartDataQueryContext`` →
-    ``to_builtins``), while legacy/explore payloads use the ``"N__table"``
-    string form.  Both must be handled — otherwise the worker loads no
-    datasource and the processor receives ``datasource=None``, which makes
-    RLS composition fail with ``'NoneType' object has no attribute 'id'``.
+    Handles both the dict form ``{"id": N, "type": "table"}`` (msgspec
+    ChartDataQueryContext) and the legacy ``"N__table"`` string form.
+    Both must be handled to avoid ``datasource=None`` → RLS failure.
     """
     ref = form_data.get("datasource", "")
     if isinstance(ref, dict):
@@ -463,11 +385,6 @@ def _resolve_datasource_id(form_data: dict[str, Any]) -> int | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Celery tasks
-# ---------------------------------------------------------------------------
-
-
 @celery_app.task(
     name="load_chart_data_into_cache",
     soft_time_limit=query_timeout,
@@ -476,12 +393,7 @@ def load_chart_data_into_cache(
     job_metadata: dict[str, Any],
     form_data: dict[str, Any],
 ) -> None:
-    """Execute chart query and store result in cache.
-
-    Ported from the original ``load_chart_data_into_cache`` task.
-    Creates an AsyncQueryContext from form_data, runs the ChartDataCommand
-    with ``cache=True``, and updates the job status via Redis Streams.
-    """
+    """Execute chart query and store result in cache."""
     from superset.commands.chart.data.get_data_command import ChartDataCommand
     from superset.common.query_context_processor import AsyncQueryContextProcessor
     from superset.config import SupersetSettings
@@ -494,19 +406,14 @@ def load_chart_data_into_cache(
     )
 
     session = get_sync_session()
-    # Bind form_data to the current task context so that
-    # ``jinja_context.get_dataset_id_from_context`` (and any other
-    # template helper that falls back to ``g.form_data`` in the
-    # original) can resolve the dataset from this task's payload.
+    # Expose form_data to template helpers (jinja_context.get_dataset_id_from_context
+    # etc.) for the duration of this task, then reset to prevent cross-task leakage.
     form_data_token = set_form_data(form_data)
     try:
         settings = SupersetSettings()  # type: ignore[call-arg]
 
         query_context = _create_query_context_from_form(form_data)
 
-        # Load the datasource (SqlaTable) referenced by the query context.
-        # Handles both the dict form ``{"id": N, "type": "table"}`` and the
-        # legacy ``"N__table"`` string form (see _resolve_datasource_id).
         datasource = None
         ds_id = _resolve_datasource_id(form_data)
         if ds_id is not None:
@@ -520,36 +427,17 @@ def load_chart_data_into_cache(
                 .one_or_none()
             )
 
-        # Build the processor and command using async wrappers run
-        # synchronously via asyncio.run().  User identity (regular user
-        # or :class:`GuestUser`) is resolved inside the async block and
-        # bound to the request-scoped :class:`ContextVar` so that RLS,
-        # permissions and audit logging see the right principal — the
-        # async port of the original ``override_user(...)`` wrapper.
         async def _execute() -> dict[str, Any]:
             from superset.db.session import create_session_factory, get_engine
 
             engine = get_engine()
             factory = create_session_factory(engine)
-            # Build a per-loop async cache manager bound to a Redis client
-            # created *inside* this event loop. ``asyncio.run`` creates a
-            # fresh loop per task, and ``redis.asyncio`` clients cannot be
-            # shared across loops, so we cannot reuse the module-global
-            # ``extensions.cache_manager`` (which the worker never inits via
-            # ``init_app`` anyway). This cache manager writes both the
-            # per-query RESULT and the ``qc-`` query-context FORM to the same
-            # Redis the web process reads from, so ``data_from_cache`` is a
-            # cache hit. 1:1 with the original which used the process-global
-            # ``cache_manager.cache`` inside the task body.
             cache_manager = _build_async_cache_manager(settings)
             async with factory() as async_session:
                 user = await _load_user_from_job_metadata(
                     job_metadata, async_session, settings
                 )
                 set_current_user(user)
-                # Build the manager via the shared factory so its role-name /
-                # dashboard-RBAC / embedded config matches the web process —
-                # otherwise the chart-data async RLS could diverge from sync.
                 sec_mgr = build_async_security_manager(async_session, settings)
                 processor = AsyncQueryContextProcessor(
                     datasource=datasource,
@@ -565,10 +453,6 @@ def load_chart_data_into_cache(
                 )
                 await command.validate()
                 try:
-                    # ``cache=True`` → ``get_payload(cache_query_context=True)``
-                    # generates the ``qc-`` cache_key, caches the form, and
-                    # returns the key in the result. 1:1 with the original
-                    # ``command.run(cache=True)``.
                     return await command.run(cache=True)
                 finally:
                     close_fn = getattr(cache_manager, "close", None)
@@ -608,13 +492,7 @@ def load_explore_json_into_cache(  # noqa: C901
     response_type: str | None = None,
     force: bool = False,
 ) -> None:
-    """Load explore JSON data into cache for async retrieval.
-
-    Ported from the original ``load_explore_json_into_cache`` task.
-    Creates a viz object from form_data, calls ``get_payload()``,
-    caches the original form_data for later retrieval, and updates
-    the job status via Redis Streams.
-    """
+    """Load explore JSON data into cache for async retrieval."""
     from superset.config import SupersetSettings
     from superset.db.session import get_sync_session
     from superset.utils.core import (
@@ -628,14 +506,10 @@ def load_explore_json_into_cache(  # noqa: C901
     cache_key_prefix = "ejr-"  # ejr: explore_json request
 
     session = get_sync_session()
-    # Same rationale as ``load_chart_data_into_cache``: expose form_data
-    # to template helpers (``g.form_data`` equivalent) for the duration
-    # of this task, then reset on exit to prevent cross-task leakage.
     form_data_token = set_form_data(form_data)
     try:
         settings = SupersetSettings()  # type: ignore[call-arg]
 
-        # Resolve datasource from form_data
         datasource_ref = form_data.get("datasource", "")
         datasource_id: int | None = None
         datasource_type: str | None = None
@@ -650,7 +524,6 @@ def load_explore_json_into_cache(  # noqa: C901
         if datasource_id is None:
             raise ValueError("The dataset associated with this chart no longer exists")
 
-        # Load datasource from DB
         from sqlalchemy import select as sa_select
 
         from superset.models.connectors import SqlaTable
@@ -666,14 +539,8 @@ def load_explore_json_into_cache(  # noqa: C901
                 f"Datasource {datasource_id} ({datasource_type}) not found"
             )
 
-        # Deep copy form_data before viz modifies it
         original_form_data = copy.deepcopy(form_data)
 
-        # Build viz object and run query (async, via asyncio.run).
-        # Resolve user identity inside the async block (regular user via
-        # ``user_id`` or :class:`GuestUser` via ``guest_token``) and bind
-        # it to the request-scoped :class:`ContextVar` — the async port
-        # of the original ``override_user(...)`` wrapper around the body.
         async def _execute() -> dict[str, Any]:
             from superset.db.session import create_session_factory, get_engine
             from superset.viz import get_viz as _get_viz
@@ -687,11 +554,9 @@ def load_explore_json_into_cache(  # noqa: C901
                 )
                 set_current_user(user)
 
-                # Compute the submitting user's RLS cache key in the same
-                # session (where ``user`` is bound), so the cached DataFrame is
-                # RLS-isolated — the web process recomputes the same key on read.
-                # Mirrors ``security_manager.get_rls_cache_key`` which the
-                # original folded into ``BaseViz.cache_key``.
+                # Compute the RLS cache key so the cached DataFrame is
+                # RLS-isolated — the web process recomputes the same key on read,
+                # matching the original ``BaseViz.cache_key`` behaviour.
                 try:
                     from superset.security.manager import (
                         build_async_security_manager,
@@ -726,7 +591,6 @@ def load_explore_json_into_cache(  # noqa: C901
 
         asyncio.run(_execute())
 
-        # Cache the original form_data value for async retrieval
         cache_value = {
             "form_data": original_form_data,
             "response_type": response_type,
@@ -734,11 +598,8 @@ def load_explore_json_into_cache(  # noqa: C901
         hash_str = md5_sha_from_dict(cache_value, default=json_int_dttm_ser)
         cache_key = f"{cache_key_prefix}{hash_str}"
 
-        # Store the {form_data, response_type} entry in the CACHE_CONFIG slot —
-        # the same slot the web process reads via ``cache_manager.cache``
-        # (``load_cached_explore_form``).  The original wrote to
-        # ``cache_manager.cache``; here we use a sync adapter so the Celery task
-        # (and its per-task event loop) hits the right Redis DB + key prefix.
+        # Store in the CACHE_CONFIG slot so the web process reads it via
+        # ``cache_manager.cache`` (``load_cached_explore_form``).
         try:
             cache_timeout = getattr(settings, "cache_default_timeout", 300) or 300
             ejr_cache = build_sync_viz_cache(

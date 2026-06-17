@@ -259,8 +259,7 @@ class TestSearchRolesLogic:
     async def test_search_roles_invalid_order_column_defaults_to_id(
         self, mock_role_dao: AsyncMock
     ) -> None:
-        """Invalid order_column raises 400 (1:1 with original
-        security/api.py:289-292)."""
+        """Invalid order_column raises HTTP 400."""
         from litestar.exceptions import HTTPException
 
         fn = self._call_search_roles()
@@ -323,11 +322,7 @@ class TestSearchRolesLogic:
 
 
 class TestRoleControllerGetList:
-    """Test RoleController.get_list — focuses on page_size default of 10.
-
-    Original: superset_old/security/api.py:298
-        page_size = args.get("page_size", 10)
-    """
+    """Test RoleController.get_list — focuses on page_size default of 10."""
 
     @staticmethod
     def _get_list_fn() -> Any:
@@ -401,7 +396,7 @@ class TestRoleControllerGetList:
 
     @pytest.mark.asyncio
     async def test_get_list_invalid_order_column_raises_400(self) -> None:
-        """Invalid order_column raises HTTP 400 (mirrors original)."""
+        """Invalid order_column raises HTTP 400."""
         from litestar.exceptions import HTTPException
 
         dao = AsyncMock()

@@ -16,8 +16,7 @@
 # under the License.
 """``port`` advanced data type plugin.
 
-Direct port of superset_old/advanced_data_type/plugins/internet_port.py
-— translates port names (``http``, ``ssh``, ...) and numeric ports into
+Translates port names (``http``, ``ssh``, ...) and numeric ports into
 a standard AdvancedDataTypeResponse.
 """
 
@@ -115,10 +114,6 @@ def port_translation_func(
 def port_translate_filter_func(  # noqa: C901
     col: Column[Any], operator: FilterOperator, values: list[Any]
 ) -> Any:
-    """
-    Convert a passed in column, FilterOperator
-    and list of values into an sqlalchemy expression
-    """
     return_expression: Any
     if operator in (FilterOperator.IN, FilterOperator.NOT_IN):
         vals_list = itertools.chain.from_iterable(values)

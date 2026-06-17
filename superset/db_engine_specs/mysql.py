@@ -15,11 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""MySQL engine spec -- sync-compatible.
-
-Ported 1:1 from ``superset_old/db_engine_specs/mysql.py`` with legacy
-imports removed.  Only overridden methods and attributes are included.
-"""
+"""MySQL database engine spec."""
 
 from __future__ import annotations
 
@@ -56,10 +52,6 @@ from superset.typing import GenericDataType
 
 if TYPE_CHECKING:
     from superset.models.sql_lab import Query
-
-# ---------------------------------------------------------------------------
-# Regular expressions to catch custom errors
-# ---------------------------------------------------------------------------
 
 CONNECTION_ACCESS_DENIED_REGEX = re.compile(
     "Access denied for user '(?P<username>.*?)'@'(?P<hostname>.*?)'"
@@ -254,16 +246,12 @@ class MySQLEngineSpec(BasicParametersMixin, BaseEngineSpec):
         sqlalchemy_uri: URL,
         connect_args: dict[str, Any],
     ) -> str | None:
-        """Return the configured schema.
-
-        A MySQL database is a SQLAlchemy schema.
-        """
+        # A MySQL database maps 1:1 to a SQLAlchemy schema.
         return parse.unquote(sqlalchemy_uri.database)
 
     @classmethod
     def get_datatype(cls, type_code: Any) -> str | None:
         if not cls.type_code_map:
-            # only import and store if needed at least once
             import MySQLdb  # noqa: I001
 
             ft = MySQLdb.constants.FIELD_TYPE
@@ -283,7 +271,6 @@ class MySQLEngineSpec(BasicParametersMixin, BaseEngineSpec):
 
     @classmethod
     def _extract_error_message(cls, ex: Exception) -> str:
-        """Extract error message for queries."""
         message = str(ex)
         with contextlib.suppress(AttributeError, KeyError):
             if isinstance(ex.args, tuple) and len(ex.args) > 1:
@@ -292,25 +279,12 @@ class MySQLEngineSpec(BasicParametersMixin, BaseEngineSpec):
 
     @classmethod
     def get_cancel_query_id(cls, cursor: Any, query: Query) -> str | None:
-        """Get MySQL connection ID for query cancellation.
-
-        :param cursor: Cursor instance in which the query will be executed
-        :param query: Query instance
-        :return: MySQL Connection ID
-        """
         cursor.execute("SELECT CONNECTION_ID()")
         row = cursor.fetchone()
         return row[0]
 
     @classmethod
     def cancel_query(cls, cursor: Any, query: Query, cancel_query_id: str) -> bool:
-        """Cancel query in the underlying database.
-
-        :param cursor: New cursor instance to the db of the query
-        :param query: Query instance
-        :param cancel_query_id: MySQL Connection ID
-        :return: True if query cancelled successfully, False otherwise
-        """
         try:
             cursor.execute(f"KILL CONNECTION {cancel_query_id}")
         except Exception:  # noqa: BLE001

@@ -14,13 +14,8 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""PermissionView controller — CRUD for upstream permission-view mappings.
-
-Mirrors the upstream ``PermissionViewMenuApi`` which is a
-``ModelRestApi`` with all default route methods enabled.
-
-Original: the upstream permission-view-menu security API.
-"""
+"""PermissionView controller — CRUD for permission-view mappings
+(ab_permission_view)."""
 
 from __future__ import annotations
 
@@ -84,14 +79,9 @@ def _pv_to_response(pv: Any) -> PermissionViewResponse:
 
 
 class PermissionViewController(Controller):
-    """Full CRUD controller for upstream permission-view entries
-    (ab_permission_view).
+    """Full CRUD controller for permission-view entries (ab_permission_view).
 
-    Mirrors the original upstream ``PermissionViewMenuApi(ModelRestApi)`` which
-    exposes all default CRUD methods.
-
-    Used by the frontend to populate permission dropdowns in the
-    role edit modal.
+    Used by the frontend to populate permission dropdowns in the role edit modal.
     """
 
     path = "/api/v1/security/permissions-resources"
@@ -116,12 +106,8 @@ class PermissionViewController(Controller):
         """GET /api/v1/security/permissions-resources/ — list all permission-views.
 
         Supports Rison query parameters for pagination, ordering, and filtering.
-        Matches the upstream ``PermissionViewMenuApi.get_list`` with
-        ``list_columns = ["id", "permission.name", "view_menu.name"]``.
-
-        Searchable columns: ``id``, ``permission_id``, ``view_menu_id``
-        (matches the FK columns used by the frontend to filter permission-views
-        when editing roles).
+        List columns: ``id``, ``permission.name``, ``view_menu.name``.
+        Searchable columns: ``id``, ``permission_id``, ``view_menu_id``.
         """
         from superset.models.security import PermissionView
 
@@ -209,9 +195,6 @@ class PermissionViewController(Controller):
     ) -> dict[str, Any]:
         """POST /api/v1/security/permissions-resources/ — create mapping.
 
-        Mirrors the upstream ``PermissionViewMenuApi.post`` with
-        ``add_columns = ["permission_id", "view_menu_id"]``.
-
         Returns 201 with ``{id, result}`` on success.
         Returns 422 on database error (e.g., duplicate pair).
         """
@@ -251,9 +234,6 @@ class PermissionViewController(Controller):
         data: PermissionViewPutBody,
     ) -> dict[str, Any]:
         """PUT /api/v1/security/permissions-resources/{pk} — update mapping.
-
-        Mirrors the upstream ``PermissionViewMenuApi.put`` with
-        ``edit_columns = ["permission_id", "view_menu_id"]``.
 
         Returns 200 with ``{result}`` on success.
         Returns 404 if not found.
@@ -300,8 +280,6 @@ class PermissionViewController(Controller):
         pk: int,
     ) -> dict[str, str]:
         """DELETE /api/v1/security/permissions-resources/{pk} — delete mapping.
-
-        Mirrors the upstream ``PermissionViewMenuApi.delete``.
 
         Returns 200 with ``{message: "OK"}`` on success.
         Returns 404 if not found.

@@ -58,11 +58,6 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
         self._ssh_tunnel_private_key_passwords = ssh_tunnel_private_key_passwords or {}
         self._overwrite = overwrite
         self._configs: dict[str, dict[str, Any]] | None = None
-        # Existing-DB secret caches keyed by UUID, used as the fallback when
-        # the request supplied no file-name-keyed password.  Mirrors the four
-        # ``db.session.query(...)`` look-ups in
-        # ``superset_old/commands/importers/v1/utils.py:load_configs``.  Lazily
-        # populated by :meth:`validate` (subclasses that wire a DAO/session).
         self._db_passwords: dict[str, str] = {}
         self._db_ssh_tunnel_passwords: dict[str, str] = {}
         self._db_ssh_tunnel_private_keys: dict[str, str] = {}
@@ -86,8 +81,6 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
 
     def _parse_zip(self) -> dict[str, dict[str, Any]]:
         """Parse ZIP file into ``{filename: parsed_yaml_dict}``.
-
-        Mirrors the original ``commands.importers.v1.utils.get_contents_from_bundle``:
 
         * Skip system files (names starting with ``.`` or ``_``) and any
           entry that isn't a ``.yaml`` / ``.yml`` file — the original
@@ -170,14 +163,12 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
         self._contents.seek(0)
         self._configs = await asyncio.to_thread(self._parse_zip)
 
-        # Validate metadata.yaml presence and version
         metadata = self._configs.get("metadata.yaml")
         if metadata is None:
             raise CommandInvalidError("Missing metadata.yaml in import bundle")
         version = metadata.get("version") if isinstance(metadata, dict) else None
         if version != "1.0.0":
             raise CommandInvalidError(f"Unsupported import version: {version}")
-        # Validate metadata type if subclass specifies expected type
         if self._expected_type and isinstance(metadata, dict):
             meta_type = metadata.get("type")
             if meta_type and meta_type != self._expected_type:
@@ -185,34 +176,20 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
                     f"Expected type '{self._expected_type}', got '{meta_type}'"
                 )
 
-        # Load existing DB / SSH-tunnel secrets so ``_apply_password`` can fall
-        # back to them by UUID (matches ``load_configs``).
         await self._load_existing_secrets()
 
-        # Filter metadata.yaml before validation to match run() behavior
         validatable = {k: v for k, v in self._configs.items() if k != "metadata.yaml"}
 
-        # Note: UUID-existence checking is NOT done here.  The orchestrated
+        # NOTE: UUID-existence checking is NOT done here.  The orchestrated
         # import commands (ImportChartsCommand, ImportDashboardsCommand) handle
         # dedup themselves because dependencies (databases, datasets) should be
         # reused when they already exist, while only the primary resource type
         # respects the user's overwrite flag.  Subclasses that need a blanket
         # pre-check can implement it in their _validate() override.
-
-        # Apply password substitutions before subclass validation
         for file_name, content in validatable.items():
             if isinstance(content, dict):
                 self._apply_password(content, file_name)
 
-        # Per-entry schema validation — restores the ``schema.load(config)``
-        # step that ``superset_old/commands/importers/v1/utils.py:load_configs``
-        # runs for EVERY bundle entry (the base ``ImportModelsCommand.validate``
-        # called ``load_configs`` with the command's schema map). Without it a
-        # malformed nested YAML (e.g. a chart missing ``slice_name`` or a
-        # database with a non-string ``sqlalchemy_uri``) slipped past validate()
-        # and blew up mid-import with a non-422 error. Errors are collected and
-        # surfaced as a single field-keyed 422, ``{<file>: {<field>: [<msg>]}}``,
-        # exactly like the original Marshmallow ``ex.messages = {file_name: ...}``.
         self._validate_entry_schemas(validatable)
 
         await self._validate(validatable)
@@ -255,8 +232,6 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
             raise CommandInvalidError(errors)
 
     async def run(self) -> None:
-        # Ensure validate() was called first — it parses the ZIP and runs
-        # security/overwrite checks.  Silently re-parsing would bypass those.
         if self._configs is None:
             raise CommandInvalidError("validate() must be called before run()")
         configs = self._configs
@@ -270,9 +245,7 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
     async def _load_existing_secrets(self) -> None:
         """Cache existing DB / SSH-tunnel secrets keyed by UUID.
 
-        Mirrors the four ``db.session.query(...)`` look-ups at the top of
-        ``superset_old/commands/importers/v1/utils.py:load_configs`` — they
-        provide the UUID fallback when the request didn't pass a
+        Provides the UUID fallback when the request didn't pass a
         file-name-keyed secret.  Best-effort: subclasses without a DAO/session
         leave the caches empty (the file-name keying still works).
         """
@@ -301,8 +274,7 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
     ) -> dict[str, Any]:
         """Splice in masked passwords / SSH-tunnel secrets.
 
-        1:1 port of ``superset_old/commands/importers/v1/utils.py:load_configs``
-        (lines 151-191): each secret is matched **by file name first**
+        Each secret is matched **by file name first**
         (``{"databases/MyDatabase.yaml": "pw"}``), then falls back to the
         secret of an existing database with the same UUID.  The value is
         written to ``config["password"]`` / ``config["ssh_tunnel"][...]``
@@ -312,13 +284,11 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
         uuid = content.get("uuid", "")
         is_database = bool(file_name) and str(file_name).startswith("databases/")
 
-        # populate password from the request (by file name) or existing DBs
         if file_name is not None and file_name in self._passwords:
             content["password"] = self._passwords[file_name]
         elif is_database and uuid and uuid in self._db_passwords:
             content["password"] = self._db_passwords[uuid]
 
-        # populate ssh_tunnel password from the request or from existing DBs
         if file_name is not None and file_name in self._ssh_tunnel_passwords:
             content.setdefault("ssh_tunnel", {})
             content["ssh_tunnel"]["password"] = self._ssh_tunnel_passwords[file_name]
@@ -330,7 +300,6 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
         ):
             content["ssh_tunnel"]["password"] = self._db_ssh_tunnel_passwords[uuid]
 
-        # populate ssh_tunnel private_key from the request or from existing DBs
         if file_name is not None and file_name in self._ssh_tunnel_private_keys:
             content.setdefault("ssh_tunnel", {})
             content["ssh_tunnel"]["private_key"] = self._ssh_tunnel_private_keys[
@@ -346,7 +315,6 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
                 uuid
             ]
 
-        # populate ssh_tunnel private_key_password from request or existing DBs
         priv_key_pw = self._ssh_tunnel_private_key_passwords
         if file_name is not None and file_name in priv_key_pw:
             content.setdefault("ssh_tunnel", {})

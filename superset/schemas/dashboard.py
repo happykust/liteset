@@ -25,9 +25,7 @@ import msgspec
 
 from superset.schemas.base import ApiListResponse, ApiResponse, ModelStruct
 
-# ---------------------------------------------------------------------------
 # Request bodies
-# ---------------------------------------------------------------------------
 
 
 def _sanitize_slug(slug: str | None) -> str | None:
@@ -48,11 +46,9 @@ def _validate_json_string(
 ) -> None:
     """Raise ``msgspec.ValidationError`` if value is not parseable JSON.
 
-    Mirrors upstream's ``validate_json`` /  ``validate_json_metadata`` at
-    superset_old/dashboards/schemas.py:99-115. Empty string is rejected
-    when ``allow_empty=False`` (matches marshmallow's ``validate_json``
-    on required fields like temporary-cache ``value``); for nullable
-    update fields (``json_metadata``, ``position_json``) we accept empty
+    Empty string is rejected when ``allow_empty=False`` (matches marshmallow's
+    ``validate_json`` on required fields like temporary-cache ``value``); for
+    nullable update fields (``json_metadata``, ``position_json``) we accept empty
     as "no change" — the controller layer translates it to None.
     """
     if value is None or value is msgspec.UNSET:
@@ -74,14 +70,10 @@ def _validate_json_string(
 def _validate_json_object(field_name: str, value: Any) -> None:
     """Reject a ``json_metadata`` value that isn't a JSON *object*.
 
-    Mirrors upstream's ``validate_json_metadata``
-    (superset_old/dashboards/schemas.py:106) which runs the parsed value
-    through ``DashboardJSONMetadataSchema().validate(...)`` — a non-mapping
-    (``[]`` / ``"str"`` / ``5``) yields ``{"_schema": ["Invalid input
-    type."]}`` → 422. Without this, a valid-but-non-object json_metadata
-    sails past ``_validate_json_string`` and later crashes
-    ``DashboardDAO.set_dash_metadata`` (``md.pop`` / ``md.setdefault`` on a
-    list/str) → HTTP 500.
+    A non-mapping (``[]`` / ``"str"`` / ``5``) yields 422. Without this, a
+    valid-but-non-object json_metadata sails past ``_validate_json_string`` and
+    later crashes ``DashboardDAO.set_dash_metadata`` (``md.pop`` /
+    ``md.setdefault`` on a list/str) → HTTP 500.
     """
     if value is None or value is msgspec.UNSET:
         return
@@ -184,9 +176,8 @@ class DashboardCopySchema(msgspec.Struct):
     """POST /api/v1/dashboard/<pk>/copy/"""
 
     json_metadata: str
-    # Optional + nullable — 1:1 with the original (no ``required=True``,
-    # ``allow_none=True``); the command rejects a falsy title with its own
-    # CommandInvalidError (422), matching the upstream layering.
+    # Optional + nullable; the command rejects a falsy title with its own
+    # CommandInvalidError (422).
     dashboard_title: str | None = None
     css: str | None = None
     duplicate_slices: bool = False
@@ -218,11 +209,9 @@ class DashboardColorsUpdateSchema(msgspec.Struct):
     color_scheme_domain: list[str] = []
 
     def __post_init__(self) -> None:
-        # 1:1 with ``SharedLabelsColorsField._deserialize``
-        # (superset_old/dashboards/schemas.py:130-135): when the value is a
-        # dict (backward-compat format), coerce to an empty list so downstream
-        # consumers always see a list.  When it's a list with non-string items
-        # raise a ValidationError.
+        # When the value is a dict (backward-compat format), coerce to an empty list
+        # so downstream consumers always see a list.  When it's a list with
+        # non-string items raise a ValidationError.
         if isinstance(self.shared_label_colors, dict):
             self.shared_label_colors = []
         elif isinstance(self.shared_label_colors, list):
@@ -255,13 +244,10 @@ class DashboardPermalinkSchema(msgspec.Struct, rename="camel"):
 class FilterStateSchema(msgspec.Struct):
     """POST/PUT filter state value.
 
-    1:1 with upstream ``TemporaryCachePostSchema`` /
-    ``TemporaryCachePutSchema``
-    (superset_old/temporary_cache/schemas.py:22-37): ``value`` is
-    required, non-empty, and must be parseable JSON (``validate=
-    validate_json``). The temporary-cache store doesn't enforce JSON at
-    the DB layer, but the frontend loads the value with ``JSON.parse``
-    on retrieval — a malformed payload poisons the dashboard URL.
+    ``value`` is required, non-empty, and must be parseable JSON. The
+    temporary-cache store doesn't enforce JSON at the DB layer, but the frontend
+    loads the value with ``JSON.parse`` on retrieval — a malformed payload poisons
+    the dashboard URL.
 
     Note: ``tab_id`` is NOT part of the body schema — the original reads
     it from the query string (``request.args.get("tab_id")``). See the
@@ -274,9 +260,7 @@ class FilterStateSchema(msgspec.Struct):
         _validate_json_string("value", self.value, allow_empty=False)
 
 
-# ---------------------------------------------------------------------------
 # Metadata schemas
-# ---------------------------------------------------------------------------
 
 
 class DashboardJSONMetadata(msgspec.Struct):
@@ -306,18 +290,13 @@ class DashboardJSONMetadata(msgspec.Struct):
     native_filter_migration: dict[str, Any] = {}
 
     def __post_init__(self) -> None:
-        # 1:1 with ``SharedLabelsColorsField._deserialize``
-        # (superset_old/dashboards/schemas.py:130-135): when the value is a
-        # dict (backward-compat format), coerce to an empty list so downstream
-        # consumers always see a list.  When it's a list with non-string items
-        # raise a ValidationError.
+        # When the value is a dict (backward-compat format), coerce to an empty list
+        # so downstream consumers always see a list.
         if isinstance(self.shared_label_colors, dict):
             self.shared_label_colors = []
 
 
-# ---------------------------------------------------------------------------
 # Embedded dashboard
-# ---------------------------------------------------------------------------
 
 
 class EmbeddedDashboardConfig(msgspec.Struct):
@@ -336,9 +315,7 @@ class EmbeddedDashboardResponse(msgspec.Struct):
     changed_by: dict[str, Any] | None = None
 
 
-# ---------------------------------------------------------------------------
 # Response ref structs (local; consolidate to schemas/base.py later)
-# ---------------------------------------------------------------------------
 
 
 class UserRef(ModelStruct):
@@ -372,9 +349,7 @@ class ThemeRef(ModelStruct):
     json_data: str | None = None
 
 
-# ---------------------------------------------------------------------------
 # Response result structs
-# ---------------------------------------------------------------------------
 
 
 class DashboardDetailResult(ModelStruct):
@@ -443,18 +418,14 @@ class DashboardDetailResult(ModelStruct):
         )
 
 
-# ---------------------------------------------------------------------------
 # Response wrappers
-# ---------------------------------------------------------------------------
 
 
 DashboardGetResponse = ApiResponse
 DashboardListResponse = ApiListResponse
 
 
-# ---------------------------------------------------------------------------
 # Utility schemas
-# ---------------------------------------------------------------------------
 
 
 class TabInfo(msgspec.Struct):
@@ -474,9 +445,7 @@ class DashboardDataset(msgspec.Struct):
     verbose_map: dict[str, str] = {}
 
 
-# ---------------------------------------------------------------------------
 # Import / export
-# ---------------------------------------------------------------------------
 
 
 class ImportV1Dashboard(msgspec.Struct):

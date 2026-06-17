@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dashboard/importers/v1/utils.py``."""
+"""Dashboard import utilities (v1 bundle format)."""
 
 from __future__ import annotations
 
@@ -35,7 +35,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# JSON keys that are stored as JSON strings in the DB but exported as dicts
 _JSON_KEYS_EXPORT = {"position_json": "position", "json_metadata": "metadata"}
 _JSON_KEYS_IMPORT = {"position": "position_json", "metadata": "json_metadata"}
 
@@ -133,21 +132,14 @@ def update_id_refs(  # noqa: C901
     chart_ids: dict[str, int],
     dataset_info: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    """Update dashboard metadata to use new IDs.
-
-    Ported 1:1 from superset_old/commands/dashboard/importers/v1/utils.py.
-    """
+    """Update dashboard metadata to use new IDs."""
     fixed = config.copy()
 
-    # Build map old_id => new_id
     old_ids = _build_uuid_to_id_map(fixed.get("position", {}))
     id_map: dict[int, int] = {
         old_id: chart_ids[uuid] for uuid, old_id in old_ids.items() if uuid in chart_ids
     }
 
-    # Fix metadata — match the original 1:1 (no extra ``if old_id in id_map``
-    # guards on these lookups; missing entries surface as KeyError so callers
-    # see a stale bundle.)
     metadata = fixed.get("metadata", {})
     if "timed_refresh_immune_slices" in metadata:
         metadata["timed_refresh_immune_slices"] = [
@@ -155,15 +147,13 @@ def update_id_refs(  # noqa: C901
         ]
 
     if "filter_scopes" in metadata:
-        # in filter_scopes the key is the chart ID as a string; we need to update
-        # them to be the new ID as a string:
+        # filter_scopes keys are chart IDs as strings; remap to new IDs.
         metadata["filter_scopes"] = {
             str(id_map[int(old_id)]): columns
             for old_id, columns in metadata["filter_scopes"].items()
             if int(old_id) in id_map
         }
 
-        # now update columns to use new IDs:
         for columns in metadata["filter_scopes"].values():
             for attributes in columns.values():
                 attributes["immune"] = [
@@ -188,7 +178,6 @@ def update_id_refs(  # noqa: C901
             }
         )
 
-    # Fix position — update chartId in each CHART component
     position = fixed.get("position", {})
     for child in position.values():
         if (
@@ -199,7 +188,6 @@ def update_id_refs(  # noqa: C901
         ):
             child["meta"]["chartId"] = chart_ids[child["meta"]["uuid"]]
 
-    # Fix native filter references
     native_filter_configuration = fixed.get("metadata", {}).get(
         "native_filter_configuration", []
     )
@@ -224,10 +212,7 @@ def _update_cross_filter_scoping(
     config: dict[str, Any],
     id_map: dict[int, int],
 ) -> dict[str, Any]:
-    """Fix cross-filter references in dashboard metadata.
-
-    Ported 1:1 from superset_old/commands/dashboard/importers/v1/utils.py.
-    """
+    """Fix cross-filter references in dashboard metadata."""
     fixed = config.copy()
 
     cross_filter_global_config = fixed.get("metadata", {}).get(
@@ -276,29 +261,19 @@ async def _import_dashboard(  # noqa: C901
     security_manager: Any | None = None,
     current_user: Any | None = None,
 ) -> Dashboard:
-    """Import a single dashboard from config dict.
-
-    Ported 1:1 from superset_old/commands/dashboard/importers/v1/utils.py.
-    Handles UUID-based dedup, JSON serialization, and owner management.
-    """
+    """Import a single dashboard from config dict."""
     from sqlalchemy import or_ as sa_or, select as sa_select
 
     from superset.models.dashboard import Dashboard
 
-    # ``AsyncSecurityManager.can_access`` takes the user explicitly
-    # (keyword-only) — the upstream manager reads the request-scoped current
-    # user internally. No user in context → deny, like upstream (1:1 with the
-    # chart-importer fix).
     can_write = True
     if security_manager is not None:
         can_write = current_user is not None and await security_manager.can_access(
             "can_write", "Dashboard", user=current_user
         )
 
-    # Dedup by all unique columns (uuid OR slug), 1:1 with upstream
-    # ``import_from_dict`` which filters on every unique constraint — a
-    # bundle carrying a NEW uuid but an EXISTING slug must update that row,
-    # not INSERT and trip the unique ``slug`` constraint (IntegrityError 500).
+    # Dedup by uuid OR slug: a new uuid with an existing slug must UPDATE, not
+    # INSERT, to avoid tripping the unique slug constraint (IntegrityError → 500).
     dedup_clauses = [Dashboard.uuid == _UUID(str(config["uuid"]))]
     slug = config.get("slug")
     if slug:
@@ -310,14 +285,8 @@ async def _import_dashboard(  # noqa: C901
     if existing:
         if overwrite and can_write and current_user:
             if security_manager is not None:
-                # ``can_access_dashboard`` walks owners/roles/slices and
-                # ``is_owner`` reads ``owners`` synchronously — pre-load both
-                # so the bare-fetched dashboard doesn't trip MissingGreenlet.
-                # ``can_access_dashboard``/``is_admin`` are user-explicit
-                # (keyword-only / positional); ``is_admin`` is SYNC — the
-                # previous ``can_access_dashboard(existing)`` /
-                # ``await is_admin()`` raised TypeError (1:1 with the
-                # chart-importer fix).
+                # Pre-load owners so can_access_dashboard/is_owner don't trigger
+                # a sync lazy-load (MissingGreenlet) on the async session.
                 await session.refresh(existing, ["owners"])
                 can_access = await security_manager.can_access_dashboard(
                     existing, user=current_user
@@ -341,11 +310,9 @@ async def _import_dashboard(  # noqa: C901
 
     config = config.copy()
 
-    # Remove deprecated show_native_filters
     if "metadata" in config and "show_native_filters" in config.get("metadata", {}):
         del config["metadata"]["show_native_filters"]
 
-    # Serialize position/metadata dicts to JSON strings for DB storage
     for key, new_name in _JSON_KEYS_IMPORT.items():
         if config.get(key) is not None:
             value = config.pop(key)
@@ -354,7 +321,6 @@ async def _import_dashboard(  # noqa: C901
             except TypeError:
                 logger.info("Unable to encode `%s` field: %s", key, value)
 
-    # Build the dashboard model
     dashboard_id = config.pop("id", None)
     _NON_MODEL_FIELDS = {  # noqa: N806
         "dataset_uuid",
@@ -377,14 +343,12 @@ async def _import_dashboard(  # noqa: C901
         dashboard = Dashboard(
             **{k: v for k, v in model_data.items() if hasattr(Dashboard, k)}
         )
-        # Preserve the bundle's UUID if provided.
         if config.get("uuid"):
             dashboard.uuid = _UUID(str(config["uuid"]))  # type: ignore[assignment]
         session.add(dashboard)
 
     await session.flush()
 
-    # Owner management
     if current_user is not None:
         await session.refresh(dashboard, ["owners"])
         if current_user not in dashboard.owners:

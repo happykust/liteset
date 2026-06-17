@@ -106,11 +106,7 @@ def test_command_exception_with_nested():
 
 
 def test_command_invalid_append_normalized_messages():
-    """append() must update normalized_messages() — uses self._exceptions.
-
-    Mirrors original CommandInvalidError behaviour in
-    superset_old/commands/exceptions.py:67-79.
-    """
+    """append() must update normalized_messages() — uses self._exceptions."""
 
     class _FakeValidationError(Exception):
         def normalized_messages(self) -> dict:
@@ -140,11 +136,7 @@ def test_command_invalid_append_reflected_in_exceptions_and_sip40():
 
 
 def test_command_invalid_extend_normalized_messages():
-    """extend() must update normalized_messages() for multiple exceptions.
-
-    Mirrors original CommandInvalidError.extend() in
-    superset_old/commands/exceptions.py:70-71.
-    """
+    """extend() must update normalized_messages() for multiple exceptions."""
 
     class _FakeValidationError(Exception):
         def __init__(self, field: str) -> None:
@@ -160,11 +152,7 @@ def test_command_invalid_extend_normalized_messages():
 
 
 def test_command_invalid_get_list_classnames():
-    """get_list_classnames() returns deduplicated sorted class names.
-
-    Mirrors original CommandInvalidError.get_list_classnames() in
-    superset_old/commands/exceptions.py:73-74.
-    """
+    """get_list_classnames() returns deduplicated sorted class names."""
 
     class _ErrAError(Exception):
         pass

@@ -17,7 +17,6 @@
 # mypy: ignore-errors
 """Alert condition evaluation command.
 
-Ported 1:1 from ``superset_old/commands/report/alert.py``.
 Runs **synchronously** inside a Celery worker.  Uses a plain
 :class:`~sqlalchemy.orm.Session` (not async) obtained from
 :func:`superset.db.session.get_sync_session` or passed directly.
@@ -59,8 +58,6 @@ logger = logging.getLogger(__name__)
 
 ALERT_SQL_LIMIT = 2
 
-# All sql statements have an applied LIMIT,
-# to avoid heavy loads done by a user mistake
 OPERATOR_FUNCTIONS: dict[str, Any] = {
     ">=": ge,
     ">": gt,
@@ -79,11 +76,7 @@ def _get_settings() -> Any:
 
 
 class AlertCommand:
-    """Evaluate an alert SQL query and check whether it triggers.
-
-    Ported 1:1 from ``:AlertCommand`` in
-    ``superset_old/commands/report/alert.py``.
-    """
+    """Evaluate an alert SQL query and check whether it triggers."""
 
     def __init__(
         self,
@@ -125,24 +118,18 @@ class AlertCommand:
         except (KeyError, json.JSONDecodeError) as ex:
             raise AlertValidatorConfigError() from ex
 
-    # ------------------------------------------------------------------
-    # Validation helpers
-    # ------------------------------------------------------------------
-
     def _validate_not_null(self, rows: np.recarray[Any, Any]) -> None:
         self._validate_result(rows)
         self._result = rows[0][1]
 
     @staticmethod
     def _validate_result(rows: np.recarray[Any, Any]) -> None:
-        # check if query returned more than one row
         if len(rows) > 1:
             raise AlertQueryMultipleRowsError(
                 message=(
                     f"Alert query returned more than one row. {len(rows)} rows returned"
                 ),
             )
-        # check if query returned more than one column
         if len(rows[0]) > 2:
             raise AlertQueryMultipleColumnsError(
                 # len is subtracted by 1 to discard pandas index column
@@ -158,7 +145,6 @@ class AlertCommand:
             self._result = 0.0
             return
         try:
-            # Check if it's float or if we can convert it
             self._result = float(rows[0][1])
             return
         except (AssertionError, TypeError, ValueError) as ex:
@@ -176,17 +162,11 @@ class AlertCommand:
             self._report_schedule.validator_type == ReportScheduleValidatorType.OPERATOR
         )
 
-    # ------------------------------------------------------------------
-    # Query execution
-    # ------------------------------------------------------------------
-
     def _find_user(self, username: str | None) -> Any | None:
         """Resolve the executor user by username via the sync session.
 
-        Mirrors ``ExecuteReportScheduleCommand._find_user``; returns
-        ``None`` when no session/username is available, in which case
-        ``override_user(None)`` simply leaves the user context unset
-        (matching the original's tolerance of a missing user).
+        Returns ``None`` when no session/username is available, in which case
+        ``override_user(None)`` simply leaves the user context unset.
         """
         if not username or self._session is None:
             return None
@@ -197,13 +177,10 @@ class AlertCommand:
     def _execute_query(self) -> pd.DataFrame:
         """Execute the actual alert SQL query template.
 
-        1:1 with ``superset_old/commands/report/alert.py::_execute_query``:
-        renders the SQL through the **sandboxed** Jinja processor
-        (``superset.jinja_context``), applies the engine-spec-aware
+        Renders the SQL through the sandboxed Jinja processor, applies
         ``Database.apply_limit_to_sql`` (LIMIT 2), optionally mutates it
-        (``MUTATE_ALERT_QUERY`` → ``mutate_sql_based_on_config``), then runs
-        it through ``Database.get_df`` under the resolved executor user
-        (``override_user``) so RLS and Jinja ``current_user`` apply.
+        via ``MUTATE_ALERT_QUERY``, then runs it under the resolved executor
+        user so RLS and Jinja ``current_user`` apply.
 
         :return: A pandas DataFrame with query results.
         :raises AlertQueryError: SQL query is not valid.
@@ -251,8 +228,8 @@ class AlertCommand:
             raise AlertQueryTimeout() from ex
         except Exception as ex:
             logger.warning("An error occurred when running alert query")
-            # The exception message here can reveal too much information to
-            # malicious users, so we raise a generic message.
+            # Exception message can reveal internal details to malicious
+            # users; raise generic.
             raise AlertQueryError(
                 message="An error occurred when running alert query"
             ) from ex
@@ -261,8 +238,6 @@ class AlertCommand:
         """Validate the query result as a Pandas DataFrame."""
         settings = _get_settings()
 
-        # When there are transient errors when executing queries, users will get
-        # notified with the error stacktrace which can be avoided by retrying
         df = retry_call(
             self._execute_query,
             exception=AlertQueryError,

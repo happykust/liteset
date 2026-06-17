@@ -15,11 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 """
-superset.utils.core — public API surface for the Liteset port.
+superset.utils.core — shared utilities, enums, and type aliases.
 
-All symbols from superset_old/utils/core.py that are referenced by the
-rest of the codebase are defined or re-exported here.  This module has
-NO legacy WSGI imports and NO synchronous DB calls in the request path.
+All symbols referenced by the rest of the codebase are defined or
+re-exported here.  This module has NO legacy WSGI imports and NO
+synchronous DB calls in the request path.
 """
 
 from __future__ import annotations
@@ -61,25 +61,15 @@ from superset.utils.hashing import md5_sha_from_dict, md5_sha_from_str
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# JS_MAX_INTEGER — largest integer JavaScript can handle (2^53-1)
-# Ported 1:1 from superset_old/utils/core.py:126
-# ---------------------------------------------------------------------------
-JS_MAX_INTEGER = 9007199254740991  # Largest int JavaScript can handle 2^53-1
+JS_MAX_INTEGER = 9007199254740991
 
-# ---------------------------------------------------------------------------
-# Type aliases (originally from superset.superset_typing / superset.utils.core)
-# ---------------------------------------------------------------------------
 FormData = dict[str, Any]
 
 T = TypeVar("T")
 
 
 class AdhocFilterClause(TypedDict, total=False):
-    """TypedDict for adhoc filter clauses.
-
-    Ported 1:1 from superset_old/utils/core.py:216.
-    """
+    """TypedDict for adhoc filter clauses."""
 
     clause: str
     expressionType: str
@@ -92,10 +82,7 @@ class AdhocFilterClause(TypedDict, total=False):
 
 
 class QueryObjectFilterClause(TypedDict, total=False):
-    """TypedDict for query object filter clauses.
-
-    Ported 1:1 from superset_old/utils/core.py:227.
-    """
+    """TypedDict for query object filter clauses."""
 
     col: Any
     op: str
@@ -104,16 +91,12 @@ class QueryObjectFilterClause(TypedDict, total=False):
     isExtra: Optional[bool]
 
 
-# ---------------------------------------------------------------------------
-# generic_find_constraint_name  (uses the upstream ORM db object)
-# ---------------------------------------------------------------------------
 def apply_max_row_limit(
     limit: int,
     server_pagination: bool | None = None,
     settings: Any | None = None,
 ) -> int:
-    """Cap a requested row limit at the configured maximum — 1:1 port of
-    ``superset_old/utils/core.py::apply_max_row_limit``.
+    """Cap a requested row limit at the configured maximum.
 
     ``server_pagination`` selects ``TABLE_VIZ_MAX_ROW_SERVER`` vs ``SQL_MAX_ROW``
     as the ceiling; ``limit == 0`` means "no explicit limit" → use the max. The
@@ -151,9 +134,6 @@ def generic_find_constraint_name(
     return None
 
 
-# ---------------------------------------------------------------------------
-# generic_find_fk_constraint_name
-# ---------------------------------------------------------------------------
 def generic_find_fk_constraint_name(
     table: str, columns: set[str], referenced: str, insp: Inspector
 ) -> str | None:
@@ -168,9 +148,6 @@ def generic_find_fk_constraint_name(
     return None
 
 
-# ---------------------------------------------------------------------------
-# generic_find_fk_constraint_names
-# ---------------------------------------------------------------------------
 def generic_find_fk_constraint_names(
     table: str, columns: set[str], referenced: str, insp: Inspector
 ) -> set[str]:
@@ -188,9 +165,6 @@ def generic_find_fk_constraint_names(
     return names
 
 
-# ---------------------------------------------------------------------------
-# generic_find_uq_constraint_name
-# ---------------------------------------------------------------------------
 def generic_find_uq_constraint_name(
     table: str, columns: set[str], insp: Inspector
 ) -> str | None:
@@ -202,17 +176,9 @@ def generic_find_uq_constraint_name(
     return None
 
 
-# ---------------------------------------------------------------------------
-# Current-user / logs-context ContextVars
-# ---------------------------------------------------------------------------
-# Declared early so :func:`get_user_id` (used by event-logger code paths
-# that import this module standalone) can resolve the bound user.
 _current_user_ctx: ContextVar[Any] = ContextVar("_current_user_ctx", default=None)
 
-# Form-data ContextVar — direct port of the original ``g.form_data`` slot
-# that ``superset_old/tasks/async_queries.py::set_form_data`` populated
-# and ``superset_old/jinja_context.py::get_dataset_id_from_context``
-# read as a fallback.  Lives in ``utils.core`` (not ``jinja_context``)
+# Form-data ContextVar. Lives in ``utils.core`` (not ``jinja_context``)
 # because non-template code paths (Celery tasks, warm-up cache command)
 # must be able to set it without pulling in the Jinja module.
 _current_form_data_ctx: ContextVar[Any] = ContextVar(
@@ -220,16 +186,12 @@ _current_form_data_ctx: ContextVar[Any] = ContextVar(
 )
 
 
-# ---------------------------------------------------------------------------
-# get_user_id  (port of superset_old/utils/core.py:get_user_id)
-# ---------------------------------------------------------------------------
 def get_user_id() -> int | None:
     """Return the ID of the current user, or ``None`` if unset.
 
-    Port of ``superset_old.utils.core.get_user_id`` which read
-    ``g.user.id``.  In Liteset the user is held on a :class:`ContextVar`
-    populated by the auth middleware; this helper digs the ``id`` out of
-    whichever object the middleware put there.
+    The user is held on a :class:`ContextVar` populated by the auth
+    middleware; this helper digs the ``id`` out of whichever object the
+    middleware put there.
 
     Returns ``None`` when no user has been bound to the current async
     task — the canonical case during alembic migrations, Celery tasks
@@ -251,9 +213,6 @@ def get_user_id() -> int | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# MediumText / LongText
-# ---------------------------------------------------------------------------
 def MediumText() -> Variant[Any]:  # noqa: N802
     return Text().with_variant(MEDIUMTEXT(), "mysql")  # type: ignore[return-value]
 
@@ -262,16 +221,10 @@ def LongText() -> Variant[Any]:  # noqa: N802
     return Text().with_variant(LONGTEXT(), "mysql")  # type: ignore[return-value]
 
 
-# ---------------------------------------------------------------------------
-# shortid
-# ---------------------------------------------------------------------------
 def shortid() -> str:
     return f"{uuid.uuid4()}"[-12:]
 
 
-# ---------------------------------------------------------------------------
-# as_list
-# ---------------------------------------------------------------------------
 def as_list(x: T | list[T]) -> list[T]:
     """
     Wrap an object in a list if it's not a list.
@@ -282,9 +235,6 @@ def as_list(x: T | list[T]) -> list[T]:
     return x if isinstance(x, list) else [x]
 
 
-# ---------------------------------------------------------------------------
-# Filter conversion helpers (used by adhoc_filters migration)
-# ---------------------------------------------------------------------------
 def simple_filter_to_adhoc(
     filter_clause: dict[str, Any],
     clause: str = "where",
@@ -369,8 +319,8 @@ def split_adhoc_filters_into_base_filters(
                 sql_expression = adhoc_filter.get("sqlExpression") or adhoc_filter.get(
                     "sql_expression"
                 )
-                # 1:1 with upstream: every SQL adhoc filter clause is run
-                # through ``sanitize_clause`` (strips SQL comments and raises
+                # Every SQL adhoc filter clause is run through
+                # ``sanitize_clause`` (strips SQL comments and raises
                 # QueryClauseValidationException on malformed SQL).  Without
                 # this a trailing ``--`` comment would comment out the rest of
                 # the assembled ``WHERE``/``HAVING`` clause (joined with
@@ -387,12 +337,6 @@ def split_adhoc_filters_into_base_filters(
         form_data["filters"] = simple_where_filters
 
 
-# ---------------------------------------------------------------------------
-# Extra-filter enums + time-filter status (ported 1:1 from
-# superset_old/utils/core.py). Used by the chart-data response shape
-# (``applied_filters`` / ``rejected_filters``) in
-# ``common/query_context_processor.py``.
-# ---------------------------------------------------------------------------
 class ExtraFiltersTimeColumnType(StrEnum):
     TIME_COL = "__time_col"
     TIME_GRAIN = "__time_grain"
@@ -452,9 +396,6 @@ def get_time_filter_status(
     return applied, rejected
 
 
-# ---------------------------------------------------------------------------
-# FilterOperator enum (ported from superset_old/utils/core.py)
-# ---------------------------------------------------------------------------
 class FilterOperator(StrEnum):
     """Operators used filter controls"""
 
@@ -477,9 +418,8 @@ class FilterOperator(StrEnum):
 
 
 class RowLevelSecurityFilterType(StrEnum):
-    """Type of an RLS filter — ported 1:1 from the original Superset.
+    """Type of an RLS filter.
 
-    See ``superset_old/utils/core.py``.
     - ``REGULAR``: filter applies when the user holds one of the listed roles.
     - ``BASE``: filter applies to everyone *except* users holding the listed
       roles (typically used to exempt Admin from a global filter).
@@ -507,9 +447,6 @@ class FilterStringOperators(StrEnum):
     IS_FALSE = "IS_FALSE"
 
 
-# ---------------------------------------------------------------------------
-# LoggerLevel  (ported 1:1 from superset_old/utils/core.py:194)
-# ---------------------------------------------------------------------------
 class LoggerLevel(StrEnum):
     """Logger method names — used by ``utils.log.get_logger_from_status``."""
 
@@ -518,9 +455,6 @@ class LoggerLevel(StrEnum):
     EXCEPTION = "exception"
 
 
-# ---------------------------------------------------------------------------
-# DatasourceType  (ported 1:1 from superset_old/utils/core.py)
-# ---------------------------------------------------------------------------
 class DatasourceType(StrEnum):
     """Type of a Superset data source — used by cache_manager,
     explore-form-data cache, and a number of legacy controllers.
@@ -533,9 +467,6 @@ class DatasourceType(StrEnum):
     VIEW = "view"
 
 
-# ---------------------------------------------------------------------------
-# to_int  (ported 1:1 from superset_old/utils/core.py:1931)
-# ---------------------------------------------------------------------------
 def to_int(v: Any, value_if_invalid: int = 0) -> int:
     """Coerce ``v`` to ``int`` returning a fallback on failure."""
     try:
@@ -544,9 +475,6 @@ def to_int(v: Any, value_if_invalid: int = 0) -> int:
         return value_if_invalid
 
 
-# ---------------------------------------------------------------------------
-# error_msg_from_exception  (ported 1:1 from superset_old/utils/core.py:455)
-# ---------------------------------------------------------------------------
 def error_msg_from_exception(ex: Exception) -> str:
     """Translate an exception into a human-readable error message.
 
@@ -563,10 +491,6 @@ def error_msg_from_exception(ex: Exception) -> str:
     return str(msg) or str(ex)
 
 
-# ---------------------------------------------------------------------------
-# logs_context  --  ContextVar replacing the legacy ``g.logs_context``
-# (used by superset.utils.decorators:logs_context)
-# ---------------------------------------------------------------------------
 _logs_context_ctx: ContextVar[dict[str, Any] | None] = ContextVar(
     "_logs_context_ctx", default=None
 )
@@ -575,9 +499,8 @@ _logs_context_ctx: ContextVar[dict[str, Any] | None] = ContextVar(
 def get_logs_context() -> dict[str, Any]:
     """Return the per-task logs-context dict, initialising it on first read.
 
-    Mirrors the original ``g.logs_context`` behaviour: callers expect
-    a *mutable* dict that survives the duration of the running request /
-    Celery task.
+    Callers expect a *mutable* dict that survives the duration of the
+    running request / Celery task.
     """
     ctx = _logs_context_ctx.get()
     if ctx is None:
@@ -591,11 +514,6 @@ def reset_logs_context() -> None:
     _logs_context_ctx.set(None)
 
 
-# ---------------------------------------------------------------------------
-# QuerySource / get_user_agent (ported from superset_old/utils/core.py)
-# Used by DB engine specs (e.g. Databricks) to stamp connections with
-# identifying user-agent strings.
-# ---------------------------------------------------------------------------
 class QuerySource(Enum):
     """
     The source of a SQL query.
@@ -610,15 +528,9 @@ def get_user_agent(database: Any, source: QuerySource | None) -> str:
     """
     Return the user-agent to advertise when connecting to ``database``.
 
-    Ported 1:1 from ``superset_old/utils/core.py``.  The original reads
-    ``USER_AGENT_FUNC`` from the upstream ``current_app.config``; in liteset we
-    resolve it via the pydantic settings module instead, but the behaviour
-    is byte-for-byte equivalent.
-
-    Like the original, falls back to inferring the QuerySource from the
-    request referrer header when ``source`` is None.
+    Falls back to inferring the QuerySource from the request referrer
+    header when ``source`` is None.
     """
-    # pylint: disable=import-outside-toplevel
     from superset.constants import DEFAULT_USER_AGENT
     from superset.utils.database import _get_query_source_from_request
 
@@ -638,17 +550,11 @@ def get_user_agent(database: Any, source: QuerySource | None) -> str:
     return DEFAULT_USER_AGENT
 
 
-# ---------------------------------------------------------------------------
-# User context helpers (request-free versions for use in jinja templates)
-#
-# In the original Superset these read from the request-scoped ``g`` object.
-# In Liteset
-# the request context is threaded via Litestar's dependency injection.  For
+# The request context is threaded via Litestar's dependency injection.  For
 # code paths that do *not* have access to a ``Request`` (e.g. Celery tasks,
 # Jinja template rendering triggered outside a controller) we use a
 # context-var based approach (the underlying ``_current_user_ctx`` is
 # declared near the top of this module so :func:`get_user_id` can use it).
-# ---------------------------------------------------------------------------
 
 
 def set_current_user(user: Any) -> None:
@@ -664,12 +570,6 @@ def get_current_user() -> Any:
 def set_form_data(form_data: dict[str, Any]) -> Any:
     """Bind ``form_data`` to the current async task; return a reset token.
 
-    Direct port of ``superset_old/tasks/async_queries.py::set_form_data``
-    (and the equivalent line in ``commands/chart/warm_up_cache.py``)
-    which assigned ``g.form_data = form_data`` so that
-    ``jinja_context.get_dataset_id_from_context`` could later resolve
-    the dataset id from the running task's form payload.
-
     Returns the :class:`ContextVar` token so callers can reset the
     binding in a ``finally`` clause and avoid leaking form data
     across Celery tasks that share an event loop.
@@ -680,9 +580,8 @@ def set_form_data(form_data: dict[str, Any]) -> Any:
 def get_form_data() -> dict[str, Any]:
     """Return the form_data bound to the current async task, or ``{}``.
 
-    Mirrors the original ``getattr(g, "form_data", {})`` fallback used
-    by ``jinja_context.get_dataset_id_from_context``.  Always returns
-    a dict so callers can use ``.get(...)`` without a None-check.
+    Always returns a dict so callers can use ``.get(...)`` without a
+    None-check.
     """
     value = _current_form_data_ctx.get(None)
     return value if isinstance(value, dict) else {}
@@ -702,24 +601,17 @@ def reset_form_data(token: Any) -> None:
         _current_form_data_ctx.set(None)
 
 
-# ---------------------------------------------------------------------------
-# current_request  --  ContextVar that holds the in-flight Litestar Request.
-#
-# The original Apache Superset relied on the legacy thread-local ``request``
-# proxy.  In our async port we instead bind the active request to a
-# :class:`ContextVar` from a tiny ASGI middleware
-# (``superset.middleware.request_context``) so that code paths which lack
-# direct access to the request (deep inside Commands, audit-logging
-# decorators, etc.) can still observe per-request fields like the
-# ``Referer`` header or query string without having to thread the request
-# through every signature.
+# The active request is bound to a :class:`ContextVar` from a tiny ASGI
+# middleware (``superset.middleware.request_context``) so that code paths
+# which lack direct access to the request (deep inside Commands,
+# audit-logging decorators, etc.) can still observe per-request fields
+# like the ``Referer`` header or query string without having to thread
+# the request through every signature.
 #
 # ``ContextVar`` semantics give us automatic per-task isolation: concurrent
 # requests served by the same event loop never see each other's bindings,
 # and Celery / CLI call sites that have no inbound request simply observe
-# ``None`` (which matches the original ``has_request_context() is False``
-# branch in ``superset_old/utils/log.py``).
-# ---------------------------------------------------------------------------
+# ``None``.
 _current_request_ctx: ContextVar[Any] = ContextVar("_current_request_ctx", default=None)
 
 
@@ -767,12 +659,6 @@ def get_user_email() -> str | None:
         return user.email if user else None
     except Exception:
         return None
-
-
-# ---------------------------------------------------------------------------
-# merge_extra_form_data / merge_extra_filters
-# Ported 1:1 from superset_old/utils/core.py
-# ---------------------------------------------------------------------------
 
 
 def merge_extra_form_data(form_data: dict[str, Any]) -> None:  # noqa: C901
@@ -890,8 +776,6 @@ def merge_request_params(form_data: dict[str, Any], params: dict[str, Any]) -> N
     Only updates or appends parameters to ``form_data`` that are defined
     in ``params``; pre-existing parameters not in ``params`` are left
     unchanged.
-
-    1:1 port of ``superset_old/utils/core.py:merge_request_params``.
     """
     url_params = form_data.get("url_params", {})
     for key, value in params.items():
@@ -904,7 +788,6 @@ def merge_request_params(form_data: dict[str, Any], params: dict[str, Any]) -> N
 class DatasourceName(NamedTuple):
     """Tuple shape used by ``Database.get_all_table_names_in_schema``.
 
-    1:1 with ``superset_old.utils.core.DatasourceName`` — the
     ``TablesDatabaseCommand`` wraps each ``(table, schema, catalog)``
     triple from the (cached) inspector call so downstream code can
     address ``.table`` / ``.schema`` / ``.catalog`` by name.
@@ -913,12 +796,6 @@ class DatasourceName(NamedTuple):
     table: str
     schema: str
     catalog: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# zlib_compress / zlib_decompress
-# Ported 1:1 from superset_old/utils/core.py:870-894
-# ---------------------------------------------------------------------------
 
 
 def zlib_compress(data: bytes | str) -> bytes:
@@ -948,13 +825,6 @@ def zlib_decompress(blob: bytes, decode: bool | None = True) -> bytes | str:
     return decompressed.decode("utf-8") if decode else decompressed
 
 
-# ---------------------------------------------------------------------------
-# override_user
-# Ported 1:1 from superset_old/utils/core.py:1332-1356, adapted for
-# Liteset ContextVar-based user context (no request-scoped g).
-# ---------------------------------------------------------------------------
-
-
 @contextmanager
 def override_user(user: Any, force: bool = True) -> Iterator[Any]:
     """
@@ -963,9 +833,6 @@ def override_user(user: Any, force: bool = True) -> Iterator[Any]:
     Sometimes, often in the context of async Celery tasks, it is useful to
     switch the current user (which may be undefined) to a different one,
     execute some SQLAlchemy tasks et al. and then revert back to the original.
-
-    Ported from superset_old/utils/core.py::override_user — adapted for
-    Liteset's ContextVar-based user (replaces the request-scoped ``g.user``).
 
     :param user: The override user
     :param force: Whether to override the current user if already set
@@ -980,13 +847,6 @@ def override_user(user: Any, force: bool = True) -> Iterator[Any]:
         yield
     finally:
         _current_user_ctx.reset(token)
-
-
-# ---------------------------------------------------------------------------
-# parse_ssl_cert / create_ssl_cert_file
-# Ported 1:1 from superset_old/utils/core.py:1359-1395
-# The original used ``app.config["SSL_CERT_PATH"]``; we use SupersetSettings.
-# ---------------------------------------------------------------------------
 
 
 def parse_ssl_cert(certificate: str) -> Any:
@@ -1037,12 +897,6 @@ def create_ssl_cert_file(certificate: str) -> str:
     return path
 
 
-# ---------------------------------------------------------------------------
-# parse_boolean_string
-# Ported 1:1 from superset_old/utils/core.py:1825-1851
-# ---------------------------------------------------------------------------
-
-
 def parse_boolean_string(bool_str: str | None) -> bool:
     """
     Convert a string representation of a true/false value into a boolean
@@ -1070,12 +924,6 @@ def parse_boolean_string(bool_str: str | None) -> bool:
     if bool_str is None:
         return False
     return bool_str.lower() in ("y", "yes", "true", "t", "on", "1")
-
-
-# ---------------------------------------------------------------------------
-# markdown
-# Ported 1:1 from superset_old/utils/core.py:478-522
-# ---------------------------------------------------------------------------
 
 
 def markdown(raw: str, markup_wrap: bool | None = False) -> str:
@@ -1132,12 +980,6 @@ def markdown(raw: str, markup_wrap: bool | None = False) -> str:
     return safe
 
 
-# ---------------------------------------------------------------------------
-# SigalrmTimeout
-# Ported 1:1 from superset_old/utils/core.py:598-635
-# ---------------------------------------------------------------------------
-
-
 class SigalrmTimeout:
     """
     To be used in a ``with`` block and timeout its content.
@@ -1183,24 +1025,14 @@ class SigalrmTimeout:
 def format_list(items: Sequence[str], sep: str = ", ", quote: str = '"') -> str:
     """Format a list of strings with quoting and a separator.
 
-    1:1 port of ``superset_old/utils/core.py::format_list`` (line 1725).
     Used by template-parameter error messages in SQL Lab.
     """
     quote_escaped = "\\" + quote
     return sep.join(f"{quote}{x.replace(quote, quote_escaped)}{quote}" for x in items)
 
 
-# ---------------------------------------------------------------------------
-# user_label
-# Ported 1:1 from superset_old/utils/core.py:1070-1078
-# ---------------------------------------------------------------------------
-
-
 def user_label(user: Any) -> str | None:
-    """Given a user ORM object, returns a label.
-
-    Ported 1:1 from superset_old/utils/core.py::user_label (line 1070).
-    """
+    """Given a user ORM object, returns a label."""
     if user:
         if user.first_name and user.last_name:
             return user.first_name + " " + user.last_name

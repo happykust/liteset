@@ -25,12 +25,10 @@ from msgspec import Meta
 
 
 def _validate_theme_json(value: Any) -> None:
-    """Mirror upstream's ``ThemeBaseSchema.validate_json_data``.
+    """Reject unparseable JSON in ``json_data`` up-front.
 
-    Upstream rejects unparseable JSON in ``json_data`` up-front
-    (superset_old/themes/schemas.py:70-76). Port skipped this, so a
-    PUT with ``json_data='{invalid'`` silently persisted broken text;
-    subsequent reads fed it to the SPA's ``JSON.parse`` and crashed
+    A PUT with ``json_data='{invalid'`` would silently persist broken text;
+    subsequent reads would feed it to the SPA's ``JSON.parse`` and crash
     the theme picker.
     """
     if value is None or value is msgspec.UNSET:
@@ -48,11 +46,10 @@ def _validate_theme_json(value: Any) -> None:
 class ThemePostSchema(msgspec.Struct):
     """POST /api/v1/theme/
 
-    Mirrors original ``ThemePostSchema`` at
-    superset_old/themes/schemas.py:83 — accepts ``theme_name`` and the
-    serialized ``json_data`` only. The legacy ``css``/``json_metadata``/
-    ``description`` fields belonged to a different (CSS template) entity
-    and are not part of the ``themes`` table schema.
+    Accepts ``theme_name`` and the serialized ``json_data`` only.
+    The legacy ``css``/``json_metadata``/``description`` fields belonged
+    to a different (CSS template) entity and are not part of the
+    ``themes`` table schema.
     """
 
     theme_name: Annotated[str, Meta(min_length=1)]
@@ -65,8 +62,7 @@ class ThemePostSchema(msgspec.Struct):
 class ThemePutSchema(msgspec.Struct):
     """PUT /api/v1/theme/<pk>
 
-    1:1 with the original ``ThemePutSchema(ThemeBaseSchema)``: BOTH fields
-    are ``required=True, allow_none=False`` — a partial PUT or an explicit
+    BOTH fields are ``required=True, allow_none=False`` — a partial PUT or an explicit
     null is a 400 upstream, never a silent NULL write.
     """
 

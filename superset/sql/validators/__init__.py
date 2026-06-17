@@ -14,8 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""SQL validators registry — ported 1:1 from
-``superset_old/sql_validators/__init__.py``.
+"""SQL validators registry.
 
 Honours the ``SQL_VALIDATORS_BY_ENGINE`` config map (``{engine: name}``)
 to dispatch a :class:`BaseSQLValidator` per engine. Engines without a
@@ -32,9 +31,8 @@ from superset.sql.validators.base import BaseSQLValidator, SQLValidationAnnotati
 def get_validator_by_name(name: str) -> type[BaseSQLValidator] | None:
     """Return the validator class registered under ``name`` or ``None``.
 
-    1:1 with the original registry: only ``PrestoDBSQLValidator`` and
-    ``PostgreSQLValidator`` are bundled. Custom validators may extend this
-    map at runtime if needed.
+    Only ``PrestoDBSQLValidator`` and ``PostgreSQLValidator`` are bundled.
+    Custom validators may extend this map at runtime if needed.
     """
     return {
         "PrestoDBSQLValidator": presto_db.PrestoDBSQLValidator,

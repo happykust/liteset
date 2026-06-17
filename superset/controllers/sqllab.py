@@ -52,8 +52,7 @@ from superset.typing import QueryDAOProtocol, UserProtocol
 
 logger = logging.getLogger(__name__)
 
-# Keys to expose for each database in the bootstrap response.
-# Mirrors ``superset_old/sqllab/utils.py::DATABASE_KEYS`` exactly so the
+# Keys to expose for each database in the bootstrap response so the
 # frontend's "Show full schema preview", multi-catalog dropdown, and
 # similar flags continue to render correctly.
 _DATABASE_KEYS = frozenset(
@@ -101,12 +100,7 @@ class SqlLabController(Controller):
         database_dao: AsyncDatabaseDAO,
         tab_state_dao: AsyncTabStateDAO,
     ) -> dict[str, Any]:
-        """GET /api/v1/sqllab/ — bootstrap data for SqlLab UI.
-
-        Loads active tab state IDs, databases exposed in SQLLab, and the
-        user's active tab — mirroring the original
-        ``bootstrap_sqllab_data``.
-        """
+        """GET /api/v1/sqllab/ — bootstrap data for SqlLab UI."""
         all_dbs = await database_dao.find_all()
         databases: dict[int, dict[str, Any]] = {}
         for db_row in all_dbs:
@@ -118,10 +112,7 @@ class SqlLabController(Controller):
                     except Exception:  # noqa: BLE001
                         # Some derived properties (e.g. ``allows_subquery``)
                         # call into the engine spec which may fail without
-                        # an established connection. Skip the key — the
-                        # original behaviour was identical (the
-                        # to_json() called below also swallows attribute
-                        # errors via Marshmallow).
+                        # an established connection. Skip the key.
                         logger.debug("Failed to read db key %s", key, exc_info=True)
                         continue
             if hasattr(db_row, "backend"):
@@ -131,9 +122,7 @@ class SqlLabController(Controller):
                     logger.debug("Failed to read db backend", exc_info=True)
             databases[int(db_row.id)] = db_dict
 
-        # These are unnecessary if sqllab backend persistence is disabled.
-        # Mirrors ``superset_old/sqllab/utils.py::bootstrap_sqllab_data``: tab
-        # states are only loaded when ``SQLLAB_BACKEND_PERSISTENCE`` is enabled.
+        # Tab states are only loaded when ``SQLLAB_BACKEND_PERSISTENCE`` is enabled.
         from superset.utils.feature_flags import feature_flag_manager
 
         tab_state_ids: Any = []
@@ -230,9 +219,7 @@ class SqlLabController(Controller):
         csv_data = result["data"]
         row_count = result["count"]
 
-        # Build filename matching the original: ``query.name`` is "untitled"
-        # by default but the frontend always sets a tab name; produce the
-        # same ``sqllab_{tab}_{ts}.csv`` shape.
+        # Build filename: ``sqllab_{tab}_{ts}.csv``.
         tab = (
             query.tab_name.replace(" ", "_").lower()
             if getattr(query, "tab_name", None)
@@ -289,16 +276,12 @@ class SqlLabController(Controller):
             import dataclasses
 
             await event_logger.alog_with_context("sqllab.results")
-            # 1:1 with superset_old/views/error_handling.py:137-140:
-            # @app.errorhandler(SupersetErrorException) calls
-            # json_error_response([ex.error], status=ex.status) which does
-            # dataclasses.asdict(error) — returning the full SIP-40 error dict.
-            # The frontend sqlLab.js:261 destructures { error_type, message, extra }
-            # from each item; plain strings would yield undefined for all fields.
+            # Return the full SIP-40 error dict; the frontend destructures
+            # { error_type, message, extra } from each item — plain strings
+            # would yield undefined for all fields.
             error_dict = dataclasses.asdict(ex.error)
             # ``message`` may be a LazyString (i18n) — Litestar's msgspec
-            # encoder cannot serialize it (SerializationException → generic
-            # 500); the original went through json.dumps which str()ed it.
+            # encoder cannot serialize it; str() it before returning.
             error_dict["message"] = str(error_dict.get("message") or "")
             return Response(
                 content={"errors": [error_dict]},
@@ -307,10 +290,8 @@ class SqlLabController(Controller):
             )
 
         await event_logger.alog_with_context("sqllab.results")
-        # 1:1 with the original ``get_results``
-        # (superset_old/sqllab/api.py:345-350): use pessimistic serialization
-        # to handle NaN values (converting to null) and edge-case datetime
-        # types that the default serializer does not handle.
+        # Use pessimistic serialization to handle NaN values (converting to null)
+        # and edge-case datetime types that the default serializer does not handle.
         from superset.utils import json as superset_json
 
         payload_str = superset_json.dumps(
@@ -340,8 +321,7 @@ class SqlLabController(Controller):
     ) -> Response[dict[str, Any]]:
         settings = state.settings
 
-        # 1:1 with the original ``execute_sql_query``
-        # (superset_old/sqllab/api.py:402-404): extract user-agent for audit logs.
+        # Extract user-agent for audit logs.
         log_params: dict[str, Any] = {
             "user_agent": request.headers.get("user-agent"),
         }
@@ -385,12 +365,9 @@ class SqlLabController(Controller):
         result = await cmd.execute()
         await event_logger.alog_with_context("sqllab.execute", user_id=current_user.id)
 
-        # Mirror original ``sqllab/api.py:409-412``:
-        #   response_status = 202 if status == QUERY_IS_RUNNING else 200
-        # 202 is ONLY for a freshly-dispatched Celery job (``_run_async`` path
-        # in the command, status="running").  Re-submitted queries that already
-        # existed (QUERY_ALREADY_CREATED == 1 in the original) must return 200
-        # even when their DB status is "running" or "pending".
+        # 202 is ONLY for a freshly-dispatched Celery job (``_run_async`` path,
+        # status="running"). Re-submitted queries that already existed must return
+        # 200 even when their DB status is "running" or "pending".
         result_dict = result or {}
         # Pop the sentinel set by the idempotency path — must not appear in
         # the response body.
@@ -404,8 +381,6 @@ class SqlLabController(Controller):
             QueryStatus.PENDING,
         }
         status = 202 if is_async_dispatch else 200
-        # 1:1 with ``ExecutionContextConvertor.serialize_payload``
-        # (superset_old/sqllab/execution_context_convertor.py:51-58):
         # HAS_RESULTS (sync results) → pessimistic ISO serialization for
         # numpy.float64 / pandas.Timestamp / Decimal / NaN (→ null);
         # QUERY_IS_RUNNING / QUERY_ALREADY_CREATED → ``{"query": ...}`` body

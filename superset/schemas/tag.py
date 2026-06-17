@@ -25,16 +25,14 @@ from msgspec import Meta
 
 
 class TagPostSchema(msgspec.Struct):
-    # Upstream's TagObjectSchema enforces ``Length(min=1)`` on ``name``
-    # (superset_old/tags/schemas.py:75). The ``tag.name`` DB column is
-    # ``VARCHAR(250)``; cap at the DB limit so a long string is rejected
-    # cleanly instead of failing in the asyncpg StringDataRightTruncation
-    # path (now caught by the global DBAPI handler as 400, but it's nicer
-    # to reject up-front with the field name).
+    # Upstream's TagObjectSchema enforces ``Length(min=1)`` on ``name``.
+    # The ``tag.name`` DB column is ``VARCHAR(250)``; cap at the DB limit so a long
+    # string is rejected cleanly instead of failing in the asyncpg
+    # StringDataRightTruncation path (now caught by the global DBAPI handler as 400,
+    # but it's nicer to reject up-front with the field name).
     name: Annotated[str, Meta(min_length=1, max_length=250)]
     description: str | None = None
-    # 1:1 with upstream ``objects_to_tag_field``: a list of
-    # ``(object_type, object_id)`` pairs with ``Range(min=1)`` on the id —
+    # A list of ``(object_type, object_id)`` pairs with ``Range(min=1)`` on the id —
     # ``object_id=0`` would insert a dangling TaggedObject row.
     objects_to_tag: list[tuple[str, Annotated[int, Meta(ge=1)]]] = []
 

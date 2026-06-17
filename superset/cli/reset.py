@@ -14,9 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/cli/reset.py``.
-
-Implements the ``factory-reset`` CLI command: wipes datasets, dashboards,
+"""Implements the ``factory-reset`` CLI command: wipes datasets, dashboards,
 charts, the key-value store, logs, fav-stars and all non-Admin /
 non-system users and roles, then writes a ``Factory Reset`` audit row.
 
@@ -77,7 +75,6 @@ async def _run_factory_reset(
     exclude_users: str | None,
     exclude_roles: str | None,
 ) -> None:
-    """Async entrypoint that mirrors the legacy CLI command body."""
     from superset.commands.security.reset import ResetSupersetCommand
     from superset.config import SupersetSettings
     from superset.db.session import create_db_engine, create_session_factory

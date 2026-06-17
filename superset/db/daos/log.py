@@ -30,7 +30,6 @@ class AsyncLogDAO(BaseAsyncDAO[Log]):
     model_cls = Log
 
     async def get_dashboard_titles(self, ids: set[int]) -> dict[int, str]:
-        """Return a mapping of dashboard ID to dashboard_title for the given IDs."""
         if not ids:
             return {}
         stmt = select(Dashboard.id, Dashboard.dashboard_title).where(
@@ -40,7 +39,6 @@ class AsyncLogDAO(BaseAsyncDAO[Log]):
         return {int(r[0]): r[1] or "" for r in rows}
 
     async def get_slice_names(self, ids: set[int]) -> dict[int, str]:
-        """Return a mapping of slice ID to slice_name for the given IDs."""
         if not ids:
             return {}
         stmt = select(Slice.id, Slice.slice_name).where(Slice.id.in_(ids))
@@ -51,13 +49,6 @@ class AsyncLogDAO(BaseAsyncDAO[Log]):
         self,
         attributes: dict[str, Any],
     ) -> Log:
-        """Create a Log record from a dict of column values.
-
-        Delegates to :meth:`BaseAsyncDAO.create` which calls
-        ``session.add()`` internally.  The caller (or the
-        ``provide_async_session`` dependency) is responsible for
-        committing.
-        """
         return await self.create(attributes)
 
     async def get_recent_activity(
@@ -72,8 +63,7 @@ class AsyncLogDAO(BaseAsyncDAO[Log]):
 
         When ``distinct`` is ``True`` (default), deduplicates by
         (dashboard_id, slice_id, action) keeping only the most-recent
-        entry per combination — mirroring the subquery in
-        ``superset_old/daos/log.py:LogDAO.get_recent_activity``.
+        entry per combination.
         When ``False``, returns all matching rows ordered by dttm desc.
         """
         from datetime import datetime, timedelta

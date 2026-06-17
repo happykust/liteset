@@ -88,9 +88,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants ported from superset/utils/core.py
-# ---------------------------------------------------------------------------
 DTTM_ALIAS = "__timestamp"
 JS_MAX_INTEGER = 9007199254740991  # 2^53-1
 NO_TIME_RANGE = "No filter"
@@ -129,9 +126,8 @@ def _get_form_data_token(form_data: dict[str, Any]) -> str:
 def _error_msg_from_exception(ex: Exception) -> str:
     """Translate exception into error message.
 
-    1:1 port of ``superset_old/utils/core.py:455-475``.  Handles dict-type
-    ``ex.message`` (common with Presto/Trino drivers) by extracting the
-    ``"message"`` key, falling back to ``str(ex)``.
+    Handles dict-type ``ex.message`` (common with Presto/Trino drivers) by
+    extracting the ``"message"`` key, falling back to ``str(ex)``.
     """
     msg: Any = ""
     if hasattr(ex, "message"):
@@ -143,13 +139,7 @@ def _error_msg_from_exception(ex: Exception) -> str:
 
 
 def _get_stacktrace(settings: SupersetSettings | None = None) -> str | None:
-    """Return the current stacktrace if SHOW_STACKTRACE is enabled, else None.
-
-    1:1 with the original ``get_stacktrace()`` in
-    ``superset_old/utils/core.py:1433-1438`` which checks
-    ``app.config["SHOW_STACKTRACE"]`` and returns ``None`` when the flag
-    is ``False`` (the production default).
-    """
+    """Return the current stacktrace if SHOW_STACKTRACE is enabled, else None."""
     import traceback
 
     if settings is not None and getattr(settings, "show_stacktrace", False):
@@ -288,15 +278,13 @@ def _normalize_dttm_col(
 ) -> None:
     """Normalize the __timestamp column in-place.
 
-    1:1 port of ``superset_old/utils/core.py:1779-1822``
-    (``normalize_dttm_col``), specialized for the single ``__timestamp``
-    (``DTTM_ALIAS``) column that ``BaseViz.get_df`` passes.
+    Specialized for the single ``__timestamp`` (``DTTM_ALIAS``) column that
+    ``BaseViz.get_df`` passes.
 
-    Key parity notes:
-    - ``utc=False`` (not ``True``): produces naive ``datetime64[ns]``
-      series matching the original's behavior.
-    - Epoch formats: checks ``is_numeric_dtype`` and has a fallback to
-      ``pd.Timestamp(x)`` for already-formatted timestamp strings.
+    Key notes:
+    - ``utc=False``: produces naive ``datetime64[ns]`` series.
+    - Epoch formats: checks ``is_numeric_dtype``; fallback to ``pd.Timestamp(x)``
+      for already-formatted timestamp strings.
     - Non-epoch formats: uses ``errors="coerce"`` and ``exact=False``.
     """
     from pandas.core.dtypes.common import is_numeric_dtype
@@ -379,12 +367,8 @@ def get_active_viz_types(
 ) -> dict[str | None, type[BaseViz]]:
     """Return the viz registry with ``VIZ_TYPE_DENYLIST`` entries removed.
 
-    Mirrors upstream's module-level ``viz_types`` comprehension, which filters
-    by ``current_app.config["VIZ_TYPE_DENYLIST"]``. The port can't filter at
-    import time (settings/app may not exist yet), so it filters on access.
-    Routing guards (``if viz_type in get_active_viz_types()``) therefore skip a
-    denied type exactly as upstream did — sending it to the non-legacy path
-    instead of instantiating the legacy ``BaseViz`` pipeline.
+    Filtered on access rather than import time because settings may not exist
+    when the module is first loaded.
     """
     if settings is None:
         settings = _resolve_settings()
@@ -700,10 +684,7 @@ class BaseViz:
                 query_obj
             )
         cache_dict["changed_on"] = str(getattr(self.datasource, "changed_on", ""))
-        # RLS cache key — populated externally before cache_key() is called
-        # via ``viz._rls_cache_key = await security_manager.get_rls_cache_key(...)``.
-        # Mirrors ``security_manager.get_rls_cache_key(self.datasource)`` from
-        # the original ``superset_old/viz.py`` line 471.
+        # RLS cache key — populated externally before cache_key() is called.
         cache_dict["rls"] = self._rls_cache_key
         json_data = self.json_dumps(cache_dict, sort_keys=True)
         return md5_sha_from_str(json_data)
@@ -832,8 +813,7 @@ class BaseViz:
         cache_timeout = self.cache_timeout
 
         # --- Cache read ---
-        # 1:1 with the original (viz.py:531): a datasource with a
-        # ``CACHE_DISABLED_TIMEOUT`` (-1) cache_timeout bypasses the cache.
+        # A datasource with CACHE_DISABLED_TIMEOUT (-1) bypasses the cache.
         force = self.force or cache_timeout == CACHE_DISABLED_TIMEOUT
         data_cache = self._get_data_cache()
         if cache_key and data_cache is not None and not force:
@@ -865,9 +845,8 @@ class BaseViz:
                     "force_cached (viz.py): value not found for cache key %s",
                     cache_key,
                 )
-                # 1:1 with the original BaseViz.get_df_payload (viz.py:563):
-                # in force_cached mode a cache miss must NOT compute — it raises
-                # so the explore_json GAQ branch falls through to an async job.
+                # In force_cached mode a cache miss must NOT compute — raise so
+                # the explore_json GAQ branch falls through to an async job.
                 raise CacheLoadError("Cached value not found")
             try:
                 invalid_columns = [
@@ -900,13 +879,9 @@ class BaseViz:
                 stacktrace = _get_stacktrace(self.settings)
 
             # --- Cache write ---
-            # 1:1 with the original (viz.py:615-622): a successful load is
-            # written to cache regardless of ``self.force`` — a forced refresh
-            # must update the cache, not just bypass the read.
-            # CACHE_DISABLED_TIMEOUT (-1) is the sentinel meaning "do not
-            # cache" — skip the write entirely, matching the original's
-            # ``set_and_log_cache`` guard in
-            # ``superset_old/utils/cache.py:62-63``.
+            # A successful load is written to cache regardless of ``self.force``
+            # — a forced refresh must update the cache, not just bypass the read.
+            # CACHE_DISABLED_TIMEOUT (-1) means do not cache; skip the write.
             if (
                 is_loaded
                 and cache_key
@@ -915,9 +890,7 @@ class BaseViz:
                 and cache_timeout != CACHE_DISABLED_TIMEOUT
             ):
                 try:
-                    # ``dttm`` — 1:1 with ``set_and_log_cache``
-                    # (superset_old/utils/cache.py:65-66); the return value
-                    # below reads it back as ``cached_dttm`` for the
+                    # ``dttm`` is read back as ``cached_dttm`` for the
                     # frontend's "Last cached at …" display.
                     from datetime import datetime as _datetime
 

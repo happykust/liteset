@@ -80,12 +80,11 @@ def test_all_datasource_access_constant():
 def test_list_roles_pvm_is_admin_only():
     """``can_list_roles`` must live on the admin-only ``RoleRestAPI`` view menu.
 
-    The original /security/roles/search endpoint is a SEPARATE class —
-    ``RoleRestAPI`` (superset_old/security/api.py:199, ``@permission_name
-    ("list_roles")`` → PVM ``can_list_roles on RoleRestAPI``), and
-    "RoleRestAPI" is in ADMIN_ONLY_VIEW_MENUS (superset_old/security/
-    manager.py:288). Registering the PVM under "SecurityRestApi" instead
-    would leak role enumeration to Alpha/Gamma after a role sync.
+    The /security/roles/search endpoint uses a SEPARATE class — ``RoleRestAPI``
+    (``@permission_name("list_roles")`` → PVM ``can_list_roles on RoleRestAPI``),
+    and "RoleRestAPI" is in ADMIN_ONLY_VIEW_MENUS.  Registering the PVM under
+    "SecurityRestApi" instead would leak role enumeration to Alpha/Gamma after
+    a role sync.
     """
     from types import SimpleNamespace
 
@@ -106,7 +105,6 @@ def test_list_roles_pvm_is_admin_only():
     )
     assert _is_admin_only(pvm)
 
-    # The route guard must reference the same admin-only view menu.
     handler = SecurityController.search_roles
     guard_closures = [
         {

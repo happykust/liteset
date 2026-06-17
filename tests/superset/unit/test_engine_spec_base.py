@@ -97,11 +97,10 @@ def test_get_time_grain_expressions_no_env_vars(
     """get_time_grain_expressions must not require LITESET_SECRET_KEY or
     LITESET_SQLALCHEMY_DATABASE_URI to be set.
 
-    Regression guard: the original BaseEngineSpec.get_time_grain_expressions
-    (superset_old/db_engine_specs/base.py:946-971) read app.config directly
-    and had zero configuration preconditions.  The liteset port must not add
-    them — callers (CLI tools, schema-inspection utilities, unit tests) must
-    be able to call the method without a fully initialised SupersetSettings.
+    Regression guard: BaseEngineSpec.get_time_grain_expressions reads
+    app.config directly and has zero configuration preconditions.  Callers
+    (CLI tools, schema-inspection utilities, unit tests) must be able to call
+    the method without a fully initialised SupersetSettings.
     """
     # Strip the required env vars so that SupersetSettings() would raise
     # pydantic.ValidationError if called unconditionally.
@@ -267,7 +266,7 @@ def test_custom_errors_isolation_between_subclasses() -> None:
 
 
 # ---------------------------------------------------------------------------
-# DBAPI exception mapping — 1:1 with BaseEngineSpec (superset_old lines 751–786)
+# DBAPI exception mapping
 # ---------------------------------------------------------------------------
 
 
@@ -354,15 +353,11 @@ def test_get_dbapi_mapped_exception_subclass_override() -> None:
 
 # ---------------------------------------------------------------------------
 # get_table_names / get_view_names — exception wrapping (regression guard)
-# 1:1 with BaseEngineSpec.get_table_names superset_old/db_engine_specs/base.py:1459-1466
 # ---------------------------------------------------------------------------
 
 
 async def test_get_table_names_wraps_inspector_exception() -> None:
-    """Inspector errors are mapped via get_dbapi_mapped_exception.
-
-    1:1 with BaseEngineSpec.get_table_names (superset_old lines 1459-1462).
-    """
+    """Inspector errors are mapped via get_dbapi_mapped_exception."""
 
     class MyDriverError(Exception):
         pass
@@ -398,10 +393,7 @@ async def test_get_table_names_passes_through_on_success() -> None:
 
 
 async def test_get_view_names_wraps_inspector_exception() -> None:
-    """Inspector errors are mapped via get_dbapi_mapped_exception.
-
-    1:1 with BaseEngineSpec.get_view_names (superset_old lines 1487-1490).
-    """
+    """Inspector errors are mapped via get_dbapi_mapped_exception."""
 
     class MyDriverError(Exception):
         pass
@@ -466,10 +458,8 @@ async def test_get_view_names_unmapped_exception_propagates_as_original_type() -
 # ---------------------------------------------------------------------------
 # BaseEngineSpec.execute_with_cursor — cancel-query-id session commit
 # Regression guard: object_session(query) must be None-guarded before commit.
-# Original (superset_old/db_engine_specs/base.py:1316): db.session.commit()
-#   — Flask-SQLAlchemy scoped session, always non-None in WSGI context.
-# Liteset port: object_session(query) can return None for detached/transient
-#   objects; missing None-guard would raise AttributeError on None.commit().
+# object_session(query) can return None for detached/transient objects;
+# a missing None-guard raises AttributeError on None.commit().
 # ---------------------------------------------------------------------------
 
 
@@ -477,7 +467,7 @@ def test_execute_with_cursor_commits_cancel_query_id(
     mocker: MockerFixture,
 ) -> None:
     """When get_cancel_query_id returns a non-None value, execute_with_cursor
-    must call session.commit() — mirrors the original db.session.commit()."""
+    must call session.commit()."""
     from superset.db_engine_specs.base import BaseEngineSpec
 
     cursor = mocker.MagicMock()
@@ -527,7 +517,7 @@ def test_execute_with_cursor_skips_commit_when_no_cancel_query_id(
     mocker: MockerFixture,
 ) -> None:
     """When get_cancel_query_id returns None, no object_session lookup or commit
-    should occur — mirrors the original if cancel_query_id is not None: guard."""
+    should occur — the ``if cancel_query_id is not None:`` guard is skipped."""
     from superset.db_engine_specs.base import BaseEngineSpec
 
     cursor = mocker.MagicMock()

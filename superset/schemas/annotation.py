@@ -24,19 +24,16 @@ from typing import Annotated
 import msgspec
 from msgspec import Meta
 
-# ---------------------------------------------------------------------------
 # Annotation Layer — request bodies
-# ---------------------------------------------------------------------------
 
 
 class AnnotationLayerPostSchema(msgspec.Struct):
     """POST /api/v1/annotation_layer/
 
-    Upstream's AnnotationLayerPostSchema enforces ``Length(1, 250)`` only
-    on ``name``; ``descr`` has no length constraint and allows None/null
-    (superset_old/annotation_layers/schemas.py:44-51). With no ``missing``
-    argument an absent ``descr`` is omitted from the loaded dict, so the
-    column keeps its SQL default (NULL) — hence UNSET, not ``""``.
+    ``name`` enforces ``Length(1, 250)``; ``descr`` has no length constraint and
+    allows None/null. With no ``missing`` argument an absent ``descr`` is omitted
+    from the loaded dict, so the column keeps its SQL default (NULL) — hence UNSET,
+    not ``""``.
     """
 
     name: Annotated[str, Meta(min_length=1, max_length=250)]
@@ -46,10 +43,8 @@ class AnnotationLayerPostSchema(msgspec.Struct):
 class AnnotationLayerPutSchema(msgspec.Struct):
     """PUT /api/v1/annotation_layer/<pk>
 
-    Upstream's AnnotationLayerPutSchema has no ``allow_none=True`` on
-    ``descr`` (superset_old/annotation_layers/schemas.py:60-62), so passing
-    ``descr: null`` in a PUT body must be rejected with 422.  Only UNSET
-    (field absent) is permitted.
+    No ``allow_none=True`` on ``descr``, so passing ``descr: null`` in a PUT body
+    must be rejected with 422.  Only UNSET (field absent) is permitted.
     """
 
     name: Annotated[str, Meta(min_length=1, max_length=250)] | msgspec.UnsetType = (
@@ -58,9 +53,7 @@ class AnnotationLayerPutSchema(msgspec.Struct):
     descr: str | msgspec.UnsetType = msgspec.UNSET
 
 
-# ---------------------------------------------------------------------------
 # Annotation Layer — response
-# ---------------------------------------------------------------------------
 
 
 class AnnotationLayerResponseSchema(msgspec.Struct):
@@ -73,18 +66,14 @@ class AnnotationLayerResponseSchema(msgspec.Struct):
     changed_on: str | None = None
 
 
-# ---------------------------------------------------------------------------
 # Annotation — request bodies
-# ---------------------------------------------------------------------------
 
 
 class AnnotationPostSchema(msgspec.Struct):
     """POST /api/v1/annotation_layer/<layer_pk>/annotation/
 
     Optional fields default to ``UNSET`` (not ``None``) so the 201 response
-    can echo exactly the submitted keys — 1:1 with the original
-    ``result=item`` where ``item`` is the Marshmallow-loaded request dict
-    (superset_old/annotation_layers/annotations/api.py:289-297).
+    can echo exactly the submitted keys.
     """
 
     short_descr: Annotated[str, Meta(min_length=1, max_length=500)]
@@ -101,17 +90,14 @@ class AnnotationPutSchema(msgspec.Struct):
         Annotated[str, Meta(min_length=1, max_length=500)] | msgspec.UnsetType
     ) = msgspec.UNSET
     long_descr: str | None | msgspec.UnsetType = msgspec.UNSET
-    # No ``allow_none=True`` in the original PUT schema
-    # (superset_old/annotation_layers/annotations/schemas.py:92-97) —
+    # No ``allow_none=True`` in the PUT schema —
     # explicit null → 422, never NULL in the DateTime columns.
     start_dttm: datetime | msgspec.UnsetType = msgspec.UNSET
     end_dttm: datetime | msgspec.UnsetType = msgspec.UNSET
     json_metadata: str | None | msgspec.UnsetType = msgspec.UNSET
 
 
-# ---------------------------------------------------------------------------
 # Annotation — response
-# ---------------------------------------------------------------------------
 
 
 class AnnotationResponseSchema(msgspec.Struct):

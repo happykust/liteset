@@ -16,9 +16,7 @@
 # under the License.
 """ALERT_REPORTS feature-flag gate on report + report-log controllers.
 
-1:1 with the original FAB ``@before_request ensure_alert_reports_enabled``
-(superset_old/reports/api.py:69-73, superset_old/reports/logs/api.py:38-41):
-every report and report-log endpoint returns 404 when the ALERT_REPORTS
+Every report and report-log endpoint returns 404 when the ALERT_REPORTS
 feature flag is disabled.
 """
 

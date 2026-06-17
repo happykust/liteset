@@ -14,22 +14,17 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/explore/utils.py``.
+"""Utilities for validating datasource and chart access in explore/permalink flows.
 
 Provides ``check_access(datasource_id, chart_id, datasource_type)`` —
-the same signature surface used by the original
-``CreateExplorePermalinkCommand`` / ``GetExplorePermalinkCommand`` /
-``CreateFormDataCommand`` / ``UpdateFormDataCommand``.
+used by :class:`CreateExplorePermalinkCommand`,
+:class:`GetExplorePermalinkCommand`, :class:`CreateFormDataCommand`, and
+:class:`UpdateFormDataCommand`.
 
-The original raises one of:
-
-* ``DatasetAccessDeniedError`` / ``DatasetNotFoundError``
-* ``QueryNotFoundValidationError``
-* ``DatasourceNotFoundValidationError`` / ``DatasourceTypeInvalidError``
-* ``ChartAccessDeniedError`` / ``ChartNotFoundError``
-
-The async port keeps the same control flow but maps to the existing
-Liteset exceptions so the controllers can catch them generically.
+Raises one of:
+* ``ObjectNotFoundError`` / ``ForbiddenError`` for datasets
+* ``SupersetGenericErrorException`` (status=400) for queries and invalid types
+* ``ChartNotFoundError`` / ``ForbiddenError`` for charts
 """
 
 from __future__ import annotations
@@ -52,20 +47,15 @@ async def check_dataset_access(
 ) -> bool:
     """Ensure the current user can access dataset ``dataset_id``.
 
-    1:1 with ``superset_old/explore/utils.py:check_dataset_access``:
-    raises ``ObjectNotFoundError`` when the dataset is missing,
+    Raises ``ObjectNotFoundError`` when the dataset is missing,
     ``ForbiddenError`` when the user lacks ``can_access_datasource``.
     """
     if not dataset_id:
         raise ObjectNotFoundError("Dataset", dataset_id)
 
-    # Eager-load ``owners`` + ``database`` so ``can_access_datasource`` can read
-    # the M2M ownership and the schema-access ``database`` relationship without
-    # triggering a sync lazy-load on the async session — those accesses raised
-    # ``MissingGreenlet`` for any user lacking ``all_datasource_access`` (the
-    # ``all_datasource_access`` fast-path returns before touching them, which is
-    # why it only surfaced for non-privileged users).  Mirrors the chart path
-    # below which already eager-loads ``Slice.owners``.
+    # Eager-load owners + database so can_access_datasource can read M2M and
+    # schema-access relationships without triggering a sync lazy-load on the
+    # async session (raises MissingGreenlet for users lacking all_datasource_access).
     from sqlalchemy.orm import selectinload
 
     from superset.models.connectors import SqlaTable
@@ -97,18 +87,12 @@ async def check_query_access(
     security_manager: Any,
     user: Any,
 ) -> bool:
-    """Ensure the current user can access query ``query_id``.
-
-    1:1 with ``superset_old/explore/utils.py:check_query_access``.
-    """
+    """Ensure the current user can access query ``query_id``."""
     if not query_id:
-        # 1:1 with original QueryNotFoundValidationError (marshmallow ValidationError
-        # subclass) → HTTP 400, caught by ``except ValidationError`` in the API layer.
         raise SupersetGenericErrorException(f"Missing query id: {query_id}", status=400)
 
     query = await query_dao.find_by_id(query_id)
     if query is None:
-        # 1:1 with original QueryNotFoundValidationError → HTTP 400.
         raise SupersetGenericErrorException(f"Query {query_id} not found", status=400)
 
     await security_manager.raise_for_access(query=query, user=user)
@@ -124,14 +108,10 @@ async def check_datasource_access(
     security_manager: Any,
     user: Any,
 ) -> bool:
-    """Dispatch ``check_dataset_access`` / ``check_query_access`` based on
-    ``datasource_type``.  Mirrors the original ``ACCESS_FUNCTION_MAP``
-    table.
+    """Dispatch ``check_dataset_access`` or ``check_query_access`` based on
+    ``datasource_type``.
     """
     if not datasource_id:
-        # 1:1 with original DatasourceNotFoundValidationError (marshmallow
-        # ValidationError subclass) → HTTP 400, caught by ``except ValidationError``
-        # in the API layer.
         raise SupersetGenericErrorException("Missing datasource id", status=400)
 
     if datasource_type == "table":
@@ -148,9 +128,6 @@ async def check_datasource_access(
             security_manager=security_manager,
             user=user,
         )
-    # 1:1 with original DatasourceTypeInvalidError (marshmallow ValidationError
-    # subclass, raised when datasource_type key is absent from ACCESS_FUNCTION_MAP)
-    # → HTTP 400.
     raise SupersetGenericErrorException(
         f"Invalid datasource type: {datasource_type}", status=400
     )
@@ -167,11 +144,11 @@ async def check_access(
     security_manager: Any,
     user: Any,
 ) -> bool:
-    """1:1 port of ``superset_old/explore/utils.py:check_access``.
+    """Validate datasource and optional chart access for the current user.
 
-    1. Validate that the current user can access ``datasource_id``.
+    1. Confirm the user can access ``datasource_id``.
     2. If ``chart_id`` is provided, confirm that the user is either an
-       owner of the chart or holds the global ``can_read Chart`` perm.
+       owner of the chart or holds the ``can_read Chart`` permission.
 
     Raises ``ForbiddenError`` / ``ObjectNotFoundError`` on failure.
     """
@@ -187,9 +164,8 @@ async def check_access(
     if not chart_id:
         return True
 
-    # Eager-load ``owners`` so ``security_manager.is_owner`` can read the
-    # M2M without triggering a sync lazy-load on the async session
-    # (which raises ``MissingGreenlet``).
+    # Eager-load owners so is_owner can read the M2M without triggering a sync
+    # lazy-load on the async session (raises MissingGreenlet).
     from sqlalchemy.orm import selectinload
 
     from superset.models.slice import Slice
@@ -198,10 +174,8 @@ async def check_access(
         chart_id, [selectinload(Slice.owners)]
     )
     if chart is None:
-        # 1:1 with the original check_access which raises ChartNotFoundError
-        # (superset_old/explore/utils.py:95) — distinct from the dataset's
-        # ObjectNotFoundError: the permalink GET command wraps only
-        # dataset-not-found into a 500, while chart-not-found surfaces as 404.
+        # ChartNotFoundError is distinct from ObjectNotFoundError — permalink GET
+        # wraps only dataset-not-found into a 500; chart-not-found surfaces as 404.
         from superset.exceptions import ChartNotFoundError
 
         raise ChartNotFoundError()

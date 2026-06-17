@@ -57,11 +57,6 @@ from superset.security.permissions import (
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# PVM predicate functions
-# ---------------------------------------------------------------------------
-
-
 def _is_user_defined_permission(pvm: PermissionView) -> bool:
     """Return True if the PVM is user-defined (object-specific).
 
@@ -111,11 +106,6 @@ def _is_sql_lab_only(pvm: PermissionView) -> bool:
     return (pvm.permission.name, pvm.view_menu.name) in SQLLAB_ONLY_PERMISSIONS
 
 
-# ---------------------------------------------------------------------------
-# Role-membership predicates (mirrors SupersetSecurityManager)
-# ---------------------------------------------------------------------------
-
-
 def _is_admin_pvm(pvm: PermissionView) -> bool:
     """Admin gets every PVM except user-defined (object-specific) ones."""
     return not _is_user_defined_permission(pvm)
@@ -151,11 +141,6 @@ def _is_sql_lab_pvm(pvm: PermissionView) -> bool:
     )
 
 
-# ---------------------------------------------------------------------------
-# Helper: get or create a Permission row
-# ---------------------------------------------------------------------------
-
-
 async def _get_or_create_permission(session: AsyncSession, name: str) -> Permission:
     """Get an existing Permission or create one."""
     result = await session.execute(select(Permission).where(Permission.name == name))
@@ -167,11 +152,6 @@ async def _get_or_create_permission(session: AsyncSession, name: str) -> Permiss
     return perm
 
 
-# ---------------------------------------------------------------------------
-# Helper: get or create a ViewMenu row
-# ---------------------------------------------------------------------------
-
-
 async def _get_or_create_view_menu(session: AsyncSession, name: str) -> ViewMenu:
     """Get an existing ViewMenu or create one."""
     result = await session.execute(select(ViewMenu).where(ViewMenu.name == name))
@@ -181,11 +161,6 @@ async def _get_or_create_view_menu(session: AsyncSession, name: str) -> ViewMenu
         session.add(vm)
         await session.flush()
     return vm
-
-
-# ---------------------------------------------------------------------------
-# Helper: get or create a PermissionView (permission + view_menu pair)
-# ---------------------------------------------------------------------------
 
 
 async def _get_or_create_pvm(
@@ -208,11 +183,6 @@ async def _get_or_create_pvm(
         session.add(pvm)
         await session.flush()
     return pvm
-
-
-# ---------------------------------------------------------------------------
-# Helper: get or create a Role
-# ---------------------------------------------------------------------------
 
 
 async def _get_or_create_role(session: AsyncSession, name: str) -> Role:
@@ -249,11 +219,6 @@ async def _get_or_create_role(session: AsyncSession, name: str) -> Role:
     return role
 
 
-# ---------------------------------------------------------------------------
-# Helper: load all PVMs with eager-loaded relationships
-# ---------------------------------------------------------------------------
-
-
 async def _get_all_pvms(session: AsyncSession) -> list[PermissionView]:
     """Load all PermissionView rows with permission and view_menu."""
     result = await session.execute(
@@ -264,11 +229,6 @@ async def _get_all_pvms(session: AsyncSession) -> list[PermissionView]:
     )
     pvms = result.scalars().all()
     return [p for p in pvms if p.permission and p.view_menu]
-
-
-# ---------------------------------------------------------------------------
-# Helper: set_role — assign filtered PVMs to a role
-# ---------------------------------------------------------------------------
 
 
 async def _set_role(
@@ -282,11 +242,6 @@ async def _set_role(
     role = await _get_or_create_role(session, role_name)
     role.permissions = [pvm for pvm in pvms if pvm_check(pvm)]
     return role
-
-
-# ---------------------------------------------------------------------------
-# Helper: copy_role — PUBLIC_ROLE_LIKE support
-# ---------------------------------------------------------------------------
 
 
 async def _copy_role(
@@ -329,10 +284,6 @@ async def _copy_role(
 
     target_role.permissions = source_pvms
 
-
-# ---------------------------------------------------------------------------
-# Helper: create_missing_perms for datasources and databases
-# ---------------------------------------------------------------------------
 
 _STANDARD_VIEW_PERMISSIONS: list[tuple[str, str]] = [
     # Core resources (can_read + can_write)
@@ -381,16 +332,15 @@ _STANDARD_VIEW_PERMISSIONS: list[tuple[str, str]] = [
     ("can_write", "Row Level Security"),
     # SQL Lab
     # Custom Superset-view permissions (mirror create_custom_permissions in
-    # superset_old/security/manager.py:1109-1124 — these live on the
-    # ``Superset`` view-menu, NOT ``SqlLab``).
+    # Custom Superset-view permissions (these live on the ``Superset``
+    # view-menu, NOT ``SqlLab``).
     ("can_sqllab", "Superset"),
     ("can_sqllab_history", "Superset"),
     ("can_csv", "Superset"),
     ("can_share_dashboard", "Superset"),
     ("can_share_chart", "Superset"),
     # SqlLabRestApi (class_permission_name="SQLLab") + fine-grained method
-    # permissions the upstream auto-creates for the SQL Lab endpoints. Mirrors
-    # SQLLAB_ONLY_PERMISSIONS in superset_old/security/manager.py:351-381.
+    # permissions for the SQL Lab endpoints (see SQLLAB_ONLY_PERMISSIONS).
     ("can_read", "SQLLab"),
     ("can_write", "SQLLab"),
     ("can_execute_sql_query", "SQLLab"),
@@ -417,10 +367,8 @@ _STANDARD_VIEW_PERMISSIONS: list[tuple[str, str]] = [
     # Security
     ("can_grant_guest_token", "SecurityRestApi"),
     ("can_read", "SecurityRestApi"),
-    # /security/roles/search lives on a SEPARATE class in the original —
-    # ``RoleRestAPI`` (superset_old/security/api.py:199-219). Upstream registers
-    # the PVM under the class name, and "RoleRestAPI" is in
-    # ADMIN_ONLY_VIEW_MENUS, so this stays admin-only.
+    # /security/roles/search lives on ``RoleRestAPI`` (a separate class).
+    # "RoleRestAPI" is in ADMIN_ONLY_VIEW_MENUS so this stays admin-only.
     ("can_list_roles", "RoleRestAPI"),
     # Upstream security CRUD REST APIs (AB_ADD_SECURITY_API). The upstream
     # ModelRestApi uses per-HTTP-method permission names (can_get/can_post/
@@ -574,11 +522,6 @@ async def _create_missing_perms(session: AsyncSession) -> None:  # noqa: C901
         logger.info("Created %d missing permission-view entries", created)
 
 
-# ---------------------------------------------------------------------------
-# Helper: clean_perms — remove faulty PermissionView rows
-# ---------------------------------------------------------------------------
-
-
 async def _clean_perms(session: AsyncSession) -> None:
     """Delete PermissionView rows with NULL permission or view_menu."""
     logger.info("Cleaning faulty permissions")
@@ -596,11 +539,6 @@ async def _clean_perms(session: AsyncSession) -> None:
         for pvm in faulty:
             await session.delete(pvm)
         logger.info("Deleted %d faulty permissions", len(faulty))
-
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
 
 
 async def sync_role_definitions(

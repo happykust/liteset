@@ -14,13 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/database/ssh_tunnel/exceptions.py``.
+"""SSH-tunnel-specific exception classes.
 
-Same class hierarchy as the original; the only difference is that the
-``SSHTunnelRequiredFieldValidationError`` no longer inherits from
-``marshmallow.ValidationError`` (Liteset has dropped Marshmallow) — it is
-emitted as a ``CommandInvalidError`` carrying ``field_name`` and message
-attributes that the API layer formats into the same JSON error payload.
+``SSHTunnelRequiredFieldValidationError`` carries ``field_name`` and
+``message`` attributes that the API layer formats into a field-keyed
+JSON error payload.
 """
 
 from superset.exceptions import (
@@ -34,7 +32,7 @@ from superset.i18n import gettext as _
 
 
 class SSHTunnelError(Exception):
-    """Base class — mirrors the original."""
+    """Base class for SSH tunnel exceptions."""
 
 
 class SSHTunnelDeleteFailedError(DeleteFailedError, SSHTunnelError):
@@ -84,9 +82,8 @@ class SSHTunnelingNotEnabledError(CommandException, SSHTunnelError):
 class SSHTunnelRequiredFieldValidationError(CommandInvalidError, SSHTunnelError):
     """Raised when a required SSH-tunnel field is missing.
 
-    The original wraps Marshmallow ``ValidationError`` so the message
-    attaches to the field name in the response payload.  Liteset surfaces
-    the same data via ``field_name`` + ``message`` attributes.
+    Carries ``field_name`` + ``message`` attributes used by the API layer
+    to format a field-keyed error in the response payload.
     """
 
     def __init__(self, field_name: str) -> None:

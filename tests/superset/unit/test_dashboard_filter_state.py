@@ -132,9 +132,7 @@ async def test_create_filter_state_with_tab_id_generates_deterministic_key(
 ):
     """A truthy tab_id produces the same deterministic uuid5 key on every call.
 
-    Mirrors the original's contextual-key cache logic
-    (superset_old/commands/dashboard/filter_state/create.py:35-37):
-    when ``tab_id`` is truthy and the contextual cache already holds a key,
+    When ``tab_id`` is truthy and the contextual cache already holds a key,
     the same key is returned.  In liteset uuid5 replaces session+cache as the
     deterministic function.
     """
@@ -165,8 +163,7 @@ async def test_create_filter_state_falsy_tab_id_generates_random_key(
 ):
     """Falsy tab_id (None or empty string) always produces a fresh random key.
 
-    Original (superset_old/commands/dashboard/filter_state/create.py:37):
-    ``if not key or not tab_id: key = random_key()``
+    Logic: ``if not key or not tab_id: key = random_key()``
     Falsy tab_id — including the empty string sent via ``?tab_id=`` — must
     trigger the random branch, not the deterministic uuid5 branch.  The
     liteset UPDATE command already uses ``if self._tab_id:`` (truthy check);
@@ -236,9 +233,8 @@ async def test_update_filter_state(mock_cache, mock_dashboard_dao):
         cache=mock_cache,
     )
     result = await cmd.execute()
-    # 1:1 with upstream UpdateFilterStateCommand: an owned entry is updated
-    # and a FRESH (rotated) key is returned, NOT the input key. With no
-    # ``tab_id`` the original generates ``random_key()`` (here ``uuid4``).
+    # An owned entry is updated and a FRESH (rotated) key is returned, NOT the
+    # input key. With no ``tab_id`` a random key (uuid4) is generated.
     assert isinstance(result, str)
     assert len(result) > 0
     assert result != "test-key"
@@ -253,10 +249,8 @@ async def test_update_filter_state(mock_cache, mock_dashboard_dao):
 async def test_update_filter_state_not_found(mock_cache, mock_dashboard_dao):
     """Missing entry is a no-op returning the original key (HTTP 200).
 
-    Mirrors original Superset
-    (``superset_old/commands/dashboard/filter_state/update.py``): the command
-    only writes / rotates the key when an entry exists. An absent entry returns
-    the original key unchanged — it does NOT raise 404.
+    The command only writes / rotates the key when an entry exists. An absent
+    entry returns the original key unchanged — it does NOT raise 404.
     """
     mock_cache.get = AsyncMock(return_value=None)
     cmd = UpdateFilterStateCommand(
@@ -276,10 +270,9 @@ async def test_update_filter_state_not_found(mock_cache, mock_dashboard_dao):
 async def test_update_filter_state_wrong_owner(mock_cache, mock_dashboard_dao):
     """Non-owner is rejected with ``TemporaryCacheAccessDeniedError``.
 
-    Production raises the temporary-cache variant (1:1 with upstream) which
-    IS-A ``ForbiddenError``. The owner check lives in ``run`` (the original's
-    ``update``), after ``validate`` clears dashboard-level access — so no write
-    is performed for a non-owner.
+    Production raises the temporary-cache variant which IS-A ``ForbiddenError``.
+    The owner check lives in ``run`` (the ``update`` method), after ``validate``
+    clears dashboard-level access — so no write is performed for a non-owner.
     """
     mock_cache.get = AsyncMock(return_value={"owner": 99, "value": "old"})
     cmd = UpdateFilterStateCommand(

@@ -47,18 +47,9 @@ class AsyncExportModelsCommand(AsyncBaseCommand[io.BytesIO]):
         export_related: bool = True,
     ) -> None:
         self._model_ids = model_ids
-        # Optional root folder under which every ZIP entry is nested. The
-        # original API handlers (e.g.
-        # ``superset_old/datasets/api.py:553-579``) build
-        # ``root = f"{type}_export_{timestamp}"`` and write each entry as
-        # ``f"{root}/{file_name}"``; the importer strips it back off via
-        # ``remove_root`` (``parts[1:]``).
         self._root = root
         self._security_manager = security_manager
         self._user = user
-        # 1:1 with superset_old/commands/export/models.py:39 — stored so
-        # subclasses can gate related-resource emission on this flag
-        # (e.g. tags.yaml is skipped in full-bundle exports).
         self._export_related = export_related
 
     async def validate(self) -> None:
@@ -73,8 +64,7 @@ class AsyncExportModelsCommand(AsyncBaseCommand[io.BytesIO]):
     ) -> None:
         """Restrict the export to IDs the current user is allowed to see.
 
-        1:1 with ``superset_old/commands/export/models.py:validate()`` which
-        calls ``dao.find_by_ids(model_ids)`` — that applies the DAO
+        Calls ``dao.find_by_ids(model_ids)`` — that applies the DAO
         ``base_filter`` (``ChartFilter`` / ``DashboardAccessFilter`` /
         ``DatabaseFilter`` / ``DatasourceFilter``), restricting results to
         models the user can access, and raises ``not_found`` when the number
@@ -88,10 +78,10 @@ class AsyncExportModelsCommand(AsyncBaseCommand[io.BytesIO]):
             raise CommandInvalidError("DAO not provided for export")
         # CLI callers (e.g. superset/cli/importexport.py) do not inject a
         # security_manager — they run as the OS process with admin-level DB
-        # access.  The original CLI (superset_old/cli/importexport.py:76) set
-        # g.user=admin which made every access-filter return [] immediately.
-        # Guard here to reproduce that behaviour: no security_manager → skip
-        # the filter check and allow all requested IDs.
+        # access.  CLI imports historically set g.user=admin which made every
+        # access-filter return [] immediately.  Guard here to reproduce that
+        # behaviour: no security_manager → skip the filter check and allow
+        # all requested IDs.
         if self._security_manager is None:
             return
         base_filters = await access_filters(self._security_manager, self._user)
@@ -106,7 +96,6 @@ class AsyncExportModelsCommand(AsyncBaseCommand[io.BytesIO]):
         buf = io.BytesIO()
         seen: set[str] = set()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            # Write metadata.yaml first
             metadata = {
                 "version": "1.0.0",
                 "type": self._resource_type,
@@ -126,9 +115,7 @@ class AsyncExportModelsCommand(AsyncBaseCommand[io.BytesIO]):
                     safe_name = str(
                         PurePosixPath(*[p for p in parts if p not in ("..", "/")])
                     )
-                    # Sanitize remaining unsafe characters
                     safe_name = re.sub(r'[\x00\\:*?"<>|]', "_", safe_name)
-                    # Avoid duplicate entries (e.g. metadata.yaml from each model)
                     if safe_name not in seen:
                         zf.writestr(self._with_root(safe_name), content)
                         seen.add(safe_name)

@@ -16,9 +16,8 @@
 # under the License.
 """Superset wrapper around ``pyarrow.Table``.
 
-Ported 1:1 from ``superset_old/result_set.py``.  The class is the central
-piece that bridges raw DB-API cursor data into a normalised pyarrow
-table so that downstream code (``sql_lab``, ``models/connectors``,
+The central piece that bridges raw DB-API cursor data into a normalised
+pyarrow table so that downstream code (``sql_lab``, ``models/connectors``,
 ``db_engine_specs/presto``) can rely on a uniform shape regardless of
 the underlying driver's quirks.
 
@@ -96,8 +95,7 @@ def stringify(obj: Any) -> str:
 def stringify_values(array: NDArray[Any]) -> NDArray[Any]:
     """Stringify each entry of ``array`` in place.
 
-    Mirrors ``superset_old.result_set.stringify_values`` byte-for-byte:
-    a NaN-aware ``nditer`` walk that first attempts a plain ``str()``
+    NaN-aware ``nditer`` walk that first attempts a plain ``str()``
     cast and falls back to JSON encoding via :func:`stringify`.
     """
     result = np.copy(array)
@@ -141,8 +139,7 @@ def convert_to_string(value: Any) -> str:
 class SupersetResultSet:
     """Wrap raw DB-API result data in a uniform :class:`pyarrow.Table`.
 
-    Ported 1:1 from ``superset_old.result_set.SupersetResultSet``.  Used
-    by SQL Lab to materialise query results, by Presto/Trino engine specs
+    Used by SQL Lab to materialise query results, by Presto/Trino engine specs
     to inspect and serialise rows, and by ``models.connectors`` for the
     legacy datasource path.
     """

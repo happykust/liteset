@@ -15,11 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""TabState and TableSchema controllers — SQL Lab tab persistence.
-
-Ports the original ``TabStateView`` and ``TableSchemaView``
-to async Litestar controllers 1:1.
-"""
+"""TabState and TableSchema controllers — SQL Lab tab persistence."""
 
 from __future__ import annotations
 
@@ -52,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 
 class TabStateController(Controller):
-    """SQL Lab tab state CRUD — mirrors the upstream TabStateView."""
+    """SQL Lab tab state CRUD."""
 
     path = "/tabstateview"
     tags = ["SQL Lab"]
@@ -70,9 +66,7 @@ class TabStateController(Controller):
     ) -> Response[str]:
         """POST /tabstateview/ — create a new tab state.
 
-        Upstream's view returns 200 via ``json_success`` (which sets
-        no explicit status_code, so the WSGI layer defaults to 200). Override
-        Litestar's @post default of 201 to match.
+        Returns 200 (overrides Litestar's @post default of 201).
         """
         try:
             form = await request.form()
@@ -80,7 +74,6 @@ class TabStateController(Controller):
 
             remote_id = query_editor.get("remoteId")
 
-            # Set all user's existing tabs to inactive
             await dao.deactivate_all_for_user(current_user.id)
 
             tab_state = await dao.create_tab(
@@ -104,12 +97,9 @@ class TabStateController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
-            # Roll back the partial mutation before returning. The request
-            # wrapper COMMITS on a returned Response, so without this a
-            # multi-step handler (e.g. delete tab-state then table-schemas,
-            # or delete-matching then create-schema) would persist its first
-            # step when the second fails. 1:1 with upstream's
-            # ``db.session.rollback()`` in every ``except``.
+            # Roll back the partial mutation before returning. Litestar
+            # COMMITS on a returned Response, so without this a multi-step
+            # handler would persist its first step when the second fails.
             await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": error_msg_from_exception(ex)}),
@@ -144,7 +134,6 @@ class TabStateController(Controller):
                     status_code=403,
                     media_type="application/json",
                 )
-            # Delete tab state and its associated table schemas
             await dao.delete_by_id(tab_state_id)
             await table_schema_dao.delete_by_tab_state_id(tab_state_id)
             return Response(
@@ -152,12 +141,9 @@ class TabStateController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
-            # Roll back the partial mutation before returning. The request
-            # wrapper COMMITS on a returned Response, so without this a
-            # multi-step handler (e.g. delete tab-state then table-schemas,
-            # or delete-matching then create-schema) would persist its first
-            # step when the second fails. 1:1 with upstream's
-            # ``db.session.rollback()`` in every ``except``.
+            # Roll back the partial mutation before returning. Litestar
+            # COMMITS on a returned Response, so without this a multi-step
+            # handler would persist its first step when the second fails.
             await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": error_msg_from_exception(ex)}),
@@ -212,7 +198,7 @@ class TabStateController(Controller):
     ) -> Response[str]:
         """POST /tabstateview/<id>/activate — activate a tab.
 
-        Upstream returns 200 via ``json_success``; override Litestar default.
+        Returns 200 (overrides Litestar's @post default of 201).
         """
         try:
             owner_id = await dao.get_owner_id(tab_state_id)
@@ -234,12 +220,9 @@ class TabStateController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
-            # Roll back the partial mutation before returning. The request
-            # wrapper COMMITS on a returned Response, so without this a
-            # multi-step handler (e.g. delete tab-state then table-schemas,
-            # or delete-matching then create-schema) would persist its first
-            # step when the second fails. 1:1 with upstream's
-            # ``db.session.rollback()`` in every ``except``.
+            # Roll back the partial mutation before returning. Litestar
+            # COMMITS on a returned Response, so without this a multi-step
+            # handler would persist its first step when the second fails.
             await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": error_msg_from_exception(ex)}),
@@ -280,12 +263,9 @@ class TabStateController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
-            # Roll back the partial mutation before returning. The request
-            # wrapper COMMITS on a returned Response, so without this a
-            # multi-step handler (e.g. delete tab-state then table-schemas,
-            # or delete-matching then create-schema) would persist its first
-            # step when the second fails. 1:1 with upstream's
-            # ``db.session.rollback()`` in every ``except``.
+            # Roll back the partial mutation before returning. Litestar
+            # COMMITS on a returned Response, so without this a multi-step
+            # handler would persist its first step when the second fails.
             await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": error_msg_from_exception(ex)}),
@@ -329,12 +309,9 @@ class TabStateController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
-            # Roll back the partial mutation before returning. The request
-            # wrapper COMMITS on a returned Response, so without this a
-            # multi-step handler (e.g. delete tab-state then table-schemas,
-            # or delete-matching then create-schema) would persist its first
-            # step when the second fails. 1:1 with upstream's
-            # ``db.session.rollback()`` in every ``except``.
+            # Roll back the partial mutation before returning. Litestar
+            # COMMITS on a returned Response, so without this a multi-step
+            # handler would persist its first step when the second fails.
             await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": error_msg_from_exception(ex)}),
@@ -378,12 +355,9 @@ class TabStateController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
-            # Roll back the partial mutation before returning. The request
-            # wrapper COMMITS on a returned Response, so without this a
-            # multi-step handler (e.g. delete tab-state then table-schemas,
-            # or delete-matching then create-schema) would persist its first
-            # step when the second fails. 1:1 with upstream's
-            # ``db.session.rollback()`` in every ``except``.
+            # Roll back the partial mutation before returning. Litestar
+            # COMMITS on a returned Response, so without this a multi-step
+            # handler would persist its first step when the second fails.
             await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": error_msg_from_exception(ex)}),
@@ -393,7 +367,7 @@ class TabStateController(Controller):
 
 
 class TableSchemaController(Controller):
-    """SQL Lab table schema CRUD — mirrors the upstream TableSchemaView."""
+    """SQL Lab table schema CRUD."""
 
     path = "/tableschemaview"
     tags = ["SQL Lab"]
@@ -413,7 +387,7 @@ class TableSchemaController(Controller):
     ) -> Response[str]:
         """POST /tableschemaview/ — create or replace a table schema entry.
 
-        Upstream returns 200 via ``json_success``; override Litestar default.
+        Returns 200 (overrides Litestar's @post default of 201).
         """
         try:
             form = await request.form()
@@ -441,7 +415,6 @@ class TableSchemaController(Controller):
             ts_id = int(ts_id_raw)
             db_id = int(db_id_raw)
 
-            # Delete existing schema with same params
             await dao.delete_matching(
                 tab_state_id=ts_id,
                 database_id=db_id,
@@ -466,12 +439,9 @@ class TableSchemaController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
-            # Roll back the partial mutation before returning. The request
-            # wrapper COMMITS on a returned Response, so without this a
-            # multi-step handler (e.g. delete tab-state then table-schemas,
-            # or delete-matching then create-schema) would persist its first
-            # step when the second fails. 1:1 with upstream's
-            # ``db.session.rollback()`` in every ``except``.
+            # Roll back the partial mutation before returning. Litestar
+            # COMMITS on a returned Response, so without this a multi-step
+            # handler would persist its first step when the second fails.
             await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": error_msg_from_exception(ex)}),
@@ -497,12 +467,9 @@ class TableSchemaController(Controller):
                 media_type="application/json",
             )
         except Exception as ex:
-            # Roll back the partial mutation before returning. The request
-            # wrapper COMMITS on a returned Response, so without this a
-            # multi-step handler (e.g. delete tab-state then table-schemas,
-            # or delete-matching then create-schema) would persist its first
-            # step when the second fails. 1:1 with upstream's
-            # ``db.session.rollback()`` in every ``except``.
+            # Roll back the partial mutation before returning. Litestar
+            # COMMITS on a returned Response, so without this a multi-step
+            # handler would persist its first step when the second fails.
             await dao.session.rollback()
             return Response(
                 content=json.dumps({"error": error_msg_from_exception(ex)}),
@@ -523,16 +490,13 @@ class TableSchemaController(Controller):
     ) -> Response[str]:
         """POST /tableschemaview/<id>/expanded — toggle expanded state.
 
-        Matches original TableSchemaView.expanded: a missing ``expanded``
-        form key raises the upstream ``BadRequestKeyError`` (an HTTP 400
-        BadRequest subclass) which renders as 400 — NOT 500. Invalid
-        JSON (``json.loads`` ValueError) propagates → 500, as upstream.
+        A missing ``expanded`` form key raises a 400 (not 500). Invalid
+        JSON (``json.loads`` ValueError) propagates as 500.
         """
         from litestar.exceptions import ClientException
 
         form = await request.form()
         if "expanded" not in form:
-            # Upstream ImmutableMultiDict.__getitem__ → BadRequestKeyError → 400.
             raise ClientException(
                 status_code=400, detail="Missing form key: 'expanded'"
             )

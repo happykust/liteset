@@ -14,12 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Amazon Athena engine spec -- synchronous.
-
-Ported 1:1 from ``superset_old/db_engine_specs/athena.py`` with the
-legacy WSGI-stack imports removed.  Only overridden methods and
-attributes are included.
-"""
+"""Amazon Athena engine spec."""
 
 from __future__ import annotations
 
@@ -97,7 +92,7 @@ class AthenaEngineSpec(BaseEngineSpec):
 
     @staticmethod
     def _mutate_label(label: str) -> str:
-        """Athena only supports lowercase column names and aliases."""
+        # Athena only supports lowercase column names and aliases.
         return label.lower()
 
 

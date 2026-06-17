@@ -183,16 +183,12 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
             # calls _soft_close() after fetchall which sets result.cursor=None.
             # fetchmany() does not soft-close on a partial fetch, so it is safe
             # either way, but capturing early is harmless for both paths.
-            # (Original superset_old/db_engine_specs/base.py:986-987 uses a raw
-            # DBAPI cursor that remains open after fetchall, so it never hits this.)
             description = result.cursor.description if result.cursor else None
             if limit is not None:
                 data = [tuple(row) for row in result.fetchmany(limit)]
             else:
                 data = [tuple(row) for row in result.fetchall()]
 
-            # Apply column_type_mutators (1:1 with BaseEngineSpec.fetch_data
-            # in superset_old/db_engine_specs/base.py:973-1011).
             if cls.column_type_mutators and data:
                 description = description or []
                 column_mutators: dict[int, Callable[[Any], Any]] = {}
@@ -275,10 +271,6 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
         those integers to type-name strings so that column_type_mutators can be
         applied.  Without this delegation the mutators would never fire because
         BaseAsyncEngineSpec.get_datatype returns None for non-string codes.
-
-        1:1 with BaseEngineSpec.fetch_data calling ``cls.get_datatype`` where
-        ``cls`` is the engine spec class itself
-        (superset_old/db_engine_specs/base.py:996).
         """
         sync_spec = getattr(cls, "_sync_spec", None)
         if sync_spec is not None:
@@ -304,7 +296,6 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
 def make_async_spec(
     sync_spec_cls: type,
 ) -> type[SyncFallbackEngineSpec]:
-    """Dynamically create a SyncFallbackEngineSpec wrapping a sync spec class."""
     engine = getattr(sync_spec_cls, "engine", "") or ""
     engine_name = getattr(sync_spec_cls, "engine_name", "") or ""
 
@@ -318,7 +309,6 @@ def make_async_spec(
         ),
     }
 
-    # Copy class-level attributes from sync spec
     for attr in (
         "epoch_to_dttm",
         "column_type_mappings",

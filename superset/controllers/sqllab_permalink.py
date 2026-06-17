@@ -63,8 +63,7 @@ class SqlLabPermalinkController(Controller):
                 detail="Validation error",
                 extra={"messages": {"autorun": ["Field may not be null."]}},
             )
-        # Build the state dict from the typed fields (1:1 with the original
-        # Marshmallow schema fields stored as state). Required: dbId, name, sql.
+        # Build the state dict from the typed fields. Required: dbId, name, sql.
         state: dict[str, Any] = {
             "dbId": data.db_id,
             "name": data.name,
@@ -101,11 +100,8 @@ class SqlLabPermalinkController(Controller):
         )
         key = await cmd.execute()
         await event_logger.alog_with_context("sqllab_permalink.create")
-        # 1:1 with upstream
-        # ``url_for("SqllabView.permalink_view", ..., _external=True)``
-        # whose ``route_base="/sqllab"`` yields ``/sqllab/p/{key}/``.
-        # _external=True produces a fully-qualified absolute URL; replicate that
-        # here by prepending the scheme+host from the incoming request.
+        # Build a fully-qualified absolute URL; ``/sqllab/p/{key}/`` matches
+        # the Flask ``url_for("SqllabView.permalink_view", _external=True)`` shape.
         base = str(request.base_url).rstrip("/")
         return {"key": key, "url": f"{base}/sqllab/p/{key}/"}
 

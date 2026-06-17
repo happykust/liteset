@@ -29,13 +29,6 @@ import hmac
 import re
 import secrets
 
-# ---------------------------------------------------------------------------
-# Password complexity — ported 1:1 from the upstream app-builder
-# validators ``password_complexity_regex`` +
-# ``default_password_complexity()``.  Used by PUT /api/v1/me/ when
-# FAB_PASSWORD_COMPLEXITY_ENABLED is True.
-# ---------------------------------------------------------------------------
-
 _PASSWORD_COMPLEXITY_RE = re.compile(
     r"""(
     ^(?=.*[A-Z].*[A-Z])                # at least two capital letters
@@ -65,9 +58,6 @@ def default_password_complexity(password: str) -> None:
     Raises :class:`PasswordComplexityError` if *password* does not satisfy
     the upstream complexity rules (≥2 uppercase, ≥1 special char, ≥2 digits,
     ≥3 lowercase, ≥10 total characters).
-
-    Ported 1:1 from the upstream app-builder
-    ``validators.default_password_complexity``.
     """
     if not re.search(_PASSWORD_COMPLEXITY_RE, password):
         raise PasswordComplexityError(_PASSWORD_COMPLEXITY_MSG)

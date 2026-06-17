@@ -167,8 +167,7 @@ async def test_frontend_log_writes_action_log_not_event_name():
             state=state,
         )
 
-    # 1:1 with superset_old/views/core.py:872-873 ``return Response(status=200)``
-    # — empty body, 200 status; matches our Response(content=None, status_code=200).
+    # Empty body, 200 status; Response(content=None, status_code=200).
     from litestar.response import Response as _Response
 
     assert isinstance(result, _Response)
@@ -202,7 +201,7 @@ async def test_frontend_log_empty_events_returns_ok():
         state=state,
     )
 
-    # 1:1 with superset_old/views/core.py:873: returns empty Response(status=200).
+    # Returns empty Response(status=200).
     from litestar.response import Response as _Response
 
     assert isinstance(result, _Response)
@@ -241,9 +240,7 @@ async def test_frontend_log_no_explode_single_form_event():
 
 
 # ---------------------------------------------------------------------------
-# _render_welcome_dashboard — 1:1 parity tests
-# Mirrors Superset.welcome() → self.dashboard() from
-# superset_old/views/core.py:926-931 + 795-837.
+# _render_welcome_dashboard tests
 # ---------------------------------------------------------------------------
 
 
@@ -331,8 +328,7 @@ async def test_render_welcome_dashboard_not_found_returns_404():
 async def test_render_welcome_dashboard_access_denied_returns_404():
     """When raise_for_access raises SupersetSecurityException, return 404.
 
-    Mirrors superset_old/views/core.py:809-812: authenticated user who
-    cannot access the dashboard gets abort(404).
+    Authenticated user who cannot access the dashboard gets abort(404).
     """
     from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
     from superset.exceptions import SupersetSecurityException
@@ -385,7 +381,7 @@ async def test_render_welcome_dashboard_access_denied_returns_404():
 async def test_render_welcome_dashboard_access_ok_returns_200_template_with_title():
     """When the dashboard is accessible, return Template(200) with dashboard title.
 
-    Mirrors original: ``self.dashboard()`` returns render_template(200)
+    ``self.dashboard()`` returns render_template(200)
     with title=dashboard.dashboard_title (NOT a 302 redirect).
     The browser URL stays at /superset/welcome/.
     """
@@ -489,10 +485,6 @@ async def test_render_welcome_dashboard_no_redirect_issued():
 # can_language_pack / can_log on the "Superset" view class.
 # Liteset: must use require_permission("can_language_pack", "Superset") /
 #          require_permission("can_log", "Superset") — NOT require_authentication.
-#
-# Refs:
-#   superset_old/views/core.py:868-873 (log: @has_access)
-#   superset_old/views/core.py:901-904 (language_pack: @has_access)
 # ---------------------------------------------------------------------------
 
 

@@ -14,9 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Ported from tests/unit_tests/utils/json_tests.py.
-
-Exercises the pure-function helpers in ``superset.utils.json`` plus the
+"""Exercises the pure-function helpers in ``superset.utils.json`` plus the
 zlib compression helpers in ``superset.utils.core``.  All cases are
 Flask-free.
 """
@@ -180,9 +178,6 @@ def test_validate_json() -> None:
 
 
 def test_sensitive_fields() -> None:
-    """
-    Test masking/unmasking of sensitive fields.
-    """
     payload = {
         "password": "SECRET",
         "credentials": {

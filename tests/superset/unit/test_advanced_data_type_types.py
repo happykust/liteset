@@ -14,13 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Pure-function unit tests for the advanced data type plugins.
-
-Ported 1:1 from the vendored upstream
-``tests/unit_tests/advanced_data_type/types_tests.py``. These exercise the
-``translate_type`` / ``translate_filter`` callables on the ``internet_address``
-(cidr) and ``internet_port`` plugins. No Flask / FAB involved.
-"""
 
 import sqlalchemy
 from sqlalchemy import Column, Integer
@@ -44,7 +37,6 @@ EXPECTED_OPERATORS = [
 
 
 def test_ip_func_valid_ip() -> None:
-    """``cidr_func`` behaves as expected when a valid IP is passed in."""
     cidr_request: AdvancedDataTypeRequest = {
         "advanced_data_type": "cidr",
         "values": ["1.1.1.1"],
@@ -60,7 +52,6 @@ def test_ip_func_valid_ip() -> None:
 
 
 def test_cidr_func_invalid_ip() -> None:
-    """``cidr_func`` behaves as expected when an invalid IP is passed in."""
     cidr_request: AdvancedDataTypeRequest = {
         "advanced_data_type": "cidr",
         "values": ["abc"],
@@ -76,7 +67,6 @@ def test_cidr_func_invalid_ip() -> None:
 
 
 def test_cidr_func_empty_ip() -> None:
-    """``cidr_func`` behaves as expected when no IP is passed in."""
     cidr_request: AdvancedDataTypeRequest = {
         "advanced_data_type": "cidr",
         "values": [""],
@@ -92,7 +82,6 @@ def test_cidr_func_empty_ip() -> None:
 
 
 def test_port_translation_func_valid_port_number() -> None:
-    """``port_translation_func`` behaves as expected for a valid port number."""
     port_request: AdvancedDataTypeRequest = {
         "advanced_data_type": "port",
         "values": ["80"],
@@ -108,7 +97,6 @@ def test_port_translation_func_valid_port_number() -> None:
 
 
 def test_port_translation_func_valid_port_name() -> None:
-    """``port_translation_func`` behaves as expected for a valid port name."""
     port_request: AdvancedDataTypeRequest = {
         "advanced_data_type": "port",
         "values": ["https"],
@@ -124,7 +112,6 @@ def test_port_translation_func_valid_port_name() -> None:
 
 
 def test_port_translation_func_invalid_port_name() -> None:
-    """``port_translation_func`` behaves as expected for an invalid port name."""
     port_request: AdvancedDataTypeRequest = {
         "advanced_data_type": "port",
         "values": ["abc"],
@@ -140,7 +127,6 @@ def test_port_translation_func_invalid_port_name() -> None:
 
 
 def test_port_translation_func_invalid_port_number() -> None:
-    """``port_translation_func`` behaves as expected for an invalid port number."""
     port_request: AdvancedDataTypeRequest = {
         "advanced_data_type": "port",
         "values": ["123456789"],
@@ -156,7 +142,6 @@ def test_port_translation_func_invalid_port_number() -> None:
 
 
 def test_port_translation_func_empty_port_number() -> None:
-    """``port_translation_func`` behaves as expected when no port is passed in."""
     port_request: AdvancedDataTypeRequest = {
         "advanced_data_type": "port",
         "values": [""],
@@ -172,7 +157,6 @@ def test_port_translation_func_empty_port_number() -> None:
 
 
 def test_cidr_translate_filter_func_equals() -> None:
-    """``cidr_translate_filter_func`` with the EQUALS operator."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.EQUALS
     input_values = [16843009]
@@ -185,7 +169,6 @@ def test_cidr_translate_filter_func_equals() -> None:
 
 
 def test_cidr_translate_filter_func_not_equals() -> None:
-    """``cidr_translate_filter_func`` with the NOT_EQUALS operator."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.NOT_EQUALS
     input_values = [16843009]
@@ -198,7 +181,6 @@ def test_cidr_translate_filter_func_not_equals() -> None:
 
 
 def test_cidr_translate_filter_func_greater_than_or_equals() -> None:
-    """``cidr_translate_filter_func`` with the GREATER_THAN_OR_EQUALS operator."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.GREATER_THAN_OR_EQUALS
     input_values = [16843009]
@@ -213,7 +195,6 @@ def test_cidr_translate_filter_func_greater_than_or_equals() -> None:
 
 
 def test_cidr_translate_filter_func_greater_than() -> None:
-    """``cidr_translate_filter_func`` with the GREATER_THAN operator."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.GREATER_THAN
     input_values = [16843009]
@@ -228,7 +209,6 @@ def test_cidr_translate_filter_func_greater_than() -> None:
 
 
 def test_cidr_translate_filter_func_less_than() -> None:
-    """``cidr_translate_filter_func`` with the LESS_THAN operator."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.LESS_THAN
     input_values = [16843009]
@@ -243,7 +223,6 @@ def test_cidr_translate_filter_func_less_than() -> None:
 
 
 def test_cidr_translate_filter_func_less_than_or_equals() -> None:
-    """``cidr_translate_filter_func`` with the LESS_THAN_OR_EQUALS operator."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.LESS_THAN_OR_EQUALS
     input_values = [16843009]
@@ -258,7 +237,6 @@ def test_cidr_translate_filter_func_less_than_or_equals() -> None:
 
 
 def test_cidr_translate_filter_func_in_single() -> None:
-    """``cidr_translate_filter_func`` with the IN operator and a single IP."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.IN
     input_values = [16843009]
@@ -273,7 +251,6 @@ def test_cidr_translate_filter_func_in_single() -> None:
 
 
 def test_cidr_translate_filter_func_in_double() -> None:
-    """``cidr_translate_filter_func`` with the IN operator and two IPs."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.IN
     input_values = [{"start": 16843009, "end": 33686018}]
@@ -290,7 +267,6 @@ def test_cidr_translate_filter_func_in_double() -> None:
 
 
 def test_cidr_translate_filter_func_not_in_single() -> None:
-    """``cidr_translate_filter_func`` with the NOT_IN operator and a single IP."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.NOT_IN
     input_values = [16843009]
@@ -305,7 +281,6 @@ def test_cidr_translate_filter_func_not_in_single() -> None:
 
 
 def test_cidr_translate_filter_func_not_in_double() -> None:
-    """``cidr_translate_filter_func`` with the NOT_IN operator and two IPs."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.NOT_IN
     input_values = [{"start": 16843009, "end": 33686018}]
@@ -322,7 +297,6 @@ def test_cidr_translate_filter_func_not_in_double() -> None:
 
 
 def test_port_translate_filter_func_equals() -> None:
-    """``port_translate_filter_func`` with the EQUALS operator."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.EQUALS
     input_values = [[443]]
@@ -337,7 +311,6 @@ def test_port_translate_filter_func_equals() -> None:
 
 
 def test_port_translate_filter_func_not_equals() -> None:
-    """``port_translate_filter_func`` with the NOT_EQUALS operator."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.NOT_EQUALS
     input_values = [[443]]
@@ -352,7 +325,6 @@ def test_port_translate_filter_func_not_equals() -> None:
 
 
 def test_port_translate_filter_func_greater_than_or_equals() -> None:
-    """``port_translate_filter_func`` with the GREATER_THAN_OR_EQUALS operator."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.GREATER_THAN_OR_EQUALS
     input_values = [[443]]
@@ -367,7 +339,6 @@ def test_port_translate_filter_func_greater_than_or_equals() -> None:
 
 
 def test_port_translate_filter_func_greater_than() -> None:
-    """``port_translate_filter_func`` with the GREATER_THAN operator."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.GREATER_THAN
     input_values = [[443]]
@@ -382,7 +353,6 @@ def test_port_translate_filter_func_greater_than() -> None:
 
 
 def test_port_translate_filter_func_less_than_or_equals() -> None:
-    """``port_translate_filter_func`` with the LESS_THAN_OR_EQUALS operator."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.LESS_THAN_OR_EQUALS
     input_values = [[443]]
@@ -397,7 +367,6 @@ def test_port_translate_filter_func_less_than_or_equals() -> None:
 
 
 def test_port_translate_filter_func_less_than() -> None:
-    """``port_translate_filter_func`` with the LESS_THAN operator."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.LESS_THAN
     input_values = [[443]]
@@ -412,7 +381,6 @@ def test_port_translate_filter_func_less_than() -> None:
 
 
 def test_port_translate_filter_func_in_single() -> None:
-    """``port_translate_filter_func`` with the IN operator and a single port."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.IN
     input_values = [[443]]
@@ -427,7 +395,6 @@ def test_port_translate_filter_func_in_single() -> None:
 
 
 def test_port_translate_filter_func_in_double() -> None:
-    """``port_translate_filter_func`` with the IN operator and two ports."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.IN
     input_values = [[443, 80]]
@@ -442,7 +409,6 @@ def test_port_translate_filter_func_in_double() -> None:
 
 
 def test_port_translate_filter_func_not_in_single() -> None:
-    """``port_translate_filter_func`` with the NOT_IN operator and a single port."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.NOT_IN
     input_values = [[443]]
@@ -457,7 +423,6 @@ def test_port_translate_filter_func_not_in_single() -> None:
 
 
 def test_port_translate_filter_func_not_in_double() -> None:
-    """``port_translate_filter_func`` with the NOT_IN operator and two ports."""
     input_column = Column("user_ip", Integer)
     input_operation = FilterOperator.NOT_IN
     input_values = [[443, 80]]

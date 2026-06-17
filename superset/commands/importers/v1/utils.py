@@ -14,9 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old.commands.importers.v1.utils``.
-
-Provides the bundle-level helpers used by every per-resource import command:
+"""Bundle-level helpers used by every per-resource v1 import command.
 
 * :func:`load_yaml` — wrap ``yaml.safe_load`` with file-name attribution.
 * :func:`load_metadata` — read & validate ``metadata.yaml``.
@@ -28,9 +26,8 @@ Provides the bundle-level helpers used by every per-resource import command:
 * :func:`get_contents_from_bundle` — read a ZIP into ``{filename: text}``.
 * :func:`get_resource_mappings_batched` — async batch fetch of UUID -> id
   (or arbitrary value) mappings for sparse imports.
-* :func:`import_tag` — UUID-keyed tag upsert mirroring the original.
-* ``Importv1*Schema`` callables — full-field validators ported from the
-  Marshmallow schemas in ``superset_old.<resource>.schemas``.
+* :func:`import_tag` — UUID-keyed tag upsert.
+* ``Importv1*Schema`` callables — full-field validators for each asset type.
 """
 
 from __future__ import annotations
@@ -58,32 +55,19 @@ logger = logging.getLogger(__name__)
 METADATA_FILE_NAME = "metadata.yaml"
 IMPORT_VERSION = "1.0.0"
 
-# Maximum number of entries we will inspect in a bundle.  Mirrors
-# ``superset_old.utils.core.check_is_safe_zip`` which uses 1000.
+# Maximum number of entries we will inspect in a bundle.
 _MAX_ZIP_ENTRIES = 1000
 
 
-# --------------------------------------------------------------------------- #
-# YAML / metadata helpers
-# --------------------------------------------------------------------------- #
-
-
 def remove_root(file_path: str) -> str:
-    """Strip the first directory of a ZIP path.
-
-    Verbatim port of ``superset_old.commands.importers.v1.utils.remove_root``.
-    """
+    """Strip the first directory of a ZIP path."""
     full_path = PurePosixPath(file_path)
     relative_path = PurePosixPath(*full_path.parts[1:])
     return str(relative_path)
 
 
 def load_yaml(file_name: str, content: str) -> Any:
-    """Try to load a YAML file, raising :class:`CommandInvalidError` on parse error.
-
-    Mirrors the original — accepts dicts, lists, ``None`` (returned as-is) and
-    propagates parse errors as a key-attributed :class:`CommandInvalidError`.
-    """
+    """Load a YAML file, raising :class:`CommandInvalidError` on parse error."""
     try:
         return yaml.safe_load(content)
     except yaml.YAMLError as ex:
@@ -94,20 +78,11 @@ def load_yaml(file_name: str, content: str) -> Any:
 
 
 def load_metadata(contents: dict[str, str]) -> dict[str, str]:
-    """Apply validation and load a metadata file.
-
-    Raises :class:`IncorrectVersionError` *only* when the bundle is
-    missing the ``metadata.yaml`` file or when its ``version`` field
-    doesn't match :data:`IMPORT_VERSION` — that signals the dispatcher to
-    try a different command version. Other validation problems are
-    surfaced as :class:`CommandInvalidError` whose message is the
-    Marshmallow-style ``{METADATA_FILE_NAME: {...}}`` shape, so frontends
-    that parse the nested dict keep working.
+    """Load and validate ``metadata.yaml``; raises :class:`IncorrectVersionError` when
+    the file is missing or its ``version`` field doesn't match :data:`IMPORT_VERSION`
+    (signals the dispatcher to try a different command version).
     """
     if METADATA_FILE_NAME not in contents:
-        # if the contents have no METADATA_FILE_NAME this is probably
-        # a original export without versioning that should not be
-        # handled by this command
         raise IncorrectVersionError(f"Missing {METADATA_FILE_NAME}")
 
     metadata = load_yaml(METADATA_FILE_NAME, contents[METADATA_FILE_NAME])
@@ -118,30 +93,18 @@ def load_metadata(contents: dict[str, str]) -> dict[str, str]:
 
     errors: dict[str, list[str]] = {}
 
-    # ``version`` field — Equal validator: raise IncorrectVersionError for
-    # ANY version-field problem (missing OR wrong value) so the dispatcher
-    # can try a different command version.  This mirrors the original
-    # Marshmallow path: required=True puts "version" in ex.messages for a
-    # missing field too, and the guard ``if "version" in ex.messages`` then
-    # raises IncorrectVersionError in both cases.
     version = metadata.get("version")
     if version is None:
         # Missing field — mirrors Marshmallow required=True message.
         raise IncorrectVersionError("Missing data for required field.")
     if version != IMPORT_VERSION:
-        # Wrong value — match the original message verbatim ("Must be equal
-        # to <expected>.") — frontends pattern-match on this string.
         raise IncorrectVersionError(f"Must be equal to {IMPORT_VERSION}.")
 
-    # ``type`` is not required at this layer, but if present must be a string.
     if "type" in metadata and not isinstance(metadata["type"], str):
         errors.setdefault("type", []).append("Not a valid string.")
 
-    # ``timestamp`` is optional — only validate format if present.
-    # NOTE: a non-string (incl. the ``datetime`` objects PyYAML produces for
-    # unquoted timestamp literals) is REJECTED — Marshmallow's
-    # ``DateTime._deserialize`` calls ``from_iso_datetime`` whose regex
-    # ``.match`` raises TypeError on non-strings → "Not a valid datetime.".
+    # PyYAML parses unquoted timestamp literals as datetime objects — reject
+    # any non-string so the error message is clear.
     timestamp = metadata.get("timestamp")
     if timestamp is not None and not isinstance(timestamp, str):
         errors.setdefault("timestamp", []).append("Not a valid datetime.")
@@ -157,10 +120,9 @@ def validate_metadata_type(
     type_: str,
     exceptions: list[Exception],
 ) -> None:
-    """Validate that the type declared in ``metadata.yaml`` matches the importer.
-
-    On mismatch, append a :class:`CommandInvalidError` whose message has
-    the original Marshmallow ``{file_name: {field: [errors]}}`` shape.
+    """
+    Assert the ``type`` in ``metadata.yaml`` matches the importer;
+    appends error on mismatch.
     """
     if metadata and "type" in metadata and metadata["type"] != type_:
         exceptions.append(
@@ -170,40 +132,18 @@ def validate_metadata_type(
         )
 
 
-# --------------------------------------------------------------------------- #
-# Bundle / ZIP helpers
-# --------------------------------------------------------------------------- #
-
-
 def is_valid_config(file_name: str) -> bool:
-    """Return ``True`` if the bundle entry is a YAML config we should import.
-
-    Verbatim port of ``superset_old.commands.importers.v1.utils.is_valid_config``.
-    """
+    """Return ``True`` if the bundle entry is a YAML config we should import."""
     path = Path(file_name)
-
-    # ignore system files that might've been added to the bundle
     if path.name.startswith(".") or path.name.startswith("_"):
         return False
-
-    # ensure extension is YAML
     if path.suffix.lower() not in {".yaml", ".yml"}:
         return False
-
     return True
 
 
 def _check_is_safe_zip(zip_file: ZipFile) -> None:
-    """Verify a ZIP archive's entries satisfy our safety constraints.
-
-    1:1 port of :func:`superset_old.utils.core.check_is_safe_zip`:
-    - Rejects any individual entry whose uncompressed size exceeds
-      ``ZIPPED_FILE_MAX_SIZE`` (default 100 MB).
-    - Rejects the archive when the overall compression ratio exceeds
-      ``ZIP_FILE_MAX_COMPRESS_RATIO`` (default 200×) — zip-bomb guard.
-    - Additionally enforces the entry-count cap (1000) and path-traversal
-      rejection added in the liteset port.
-    """
+    """Guard against zip-bombs: cap entry count/size and reject path traversal."""
     # pylint: disable=import-outside-toplevel
     from superset.config import SupersetSettings
 
@@ -262,13 +202,6 @@ def get_contents_from_bundle(bundle: ZipFile) -> dict[str, str]:
     return contents
 
 
-# --------------------------------------------------------------------------- #
-# Schema validation + secret splicing
-# --------------------------------------------------------------------------- #
-
-
-# Schema callable type: takes a config dict, returns ``None`` on success,
-# or raises :class:`CommandInvalidError` on validation failure.
 SchemaCallable = Callable[[dict[str, Any]], None]
 
 
@@ -336,25 +269,14 @@ def _validate_database_masked_credentials(  # noqa: C901
     file_name: str,
     existing_uuids: dict[str, str],
 ) -> None:
-    """Raise :class:`CommandInvalidError` when a NEW database bundle entry
-    contains masked passwords / SSH-tunnel credentials without real values.
-
-    1:1 port of the Marshmallow ``@validates_schema`` methods
-    ``validate_password`` and ``validate_ssh_tunnel_credentials`` from
-    ``superset_old/databases/schemas.py:873-946``.
-
-    Only applies to databases that do NOT already exist (existing entries
-    keep their stored secrets — the caller splices those in before calling
-    this function).  ``existing_uuids`` is the UUID→password dict built
-    from the current DB rows in :func:`_existing_database_secrets`.
+    """Raise :class:`CommandInvalidError` when a NEW database entry still carries
+    masked passwords/SSH credentials without real values provided in the request.
+    Existing databases skip this check — the caller splices their stored secrets in.
     """
     uuid = config.get("uuid")
     if uuid and str(uuid) in existing_uuids:
-        # Database already exists — keep stored secrets, no validation needed.
         return
 
-    # validate_password: if the URI's embedded password is the mask and no
-    # explicit ``password`` override was provided in the request, reject.
     from superset.databases.utils import make_url_safe
 
     try:
@@ -366,7 +288,6 @@ def _validate_database_masked_credentials(  # noqa: C901
             {file_name: {"password": ["Must provide a password for the database"]}}
         )
 
-    # validate_ssh_tunnel_credentials: check SSH tunnel credential masking.
     ssh_tunnel = config.get("ssh_tunnel")
     if not ssh_tunnel:
         return
@@ -388,7 +309,7 @@ def _validate_database_masked_credentials(  # noqa: C901
     private_key_password = ssh_tunnel.get("private_key_password")
 
     if password is not None:
-        # Login method #1 (password) — must not mix with key-based method.
+        # Password auth and key auth are mutually exclusive.
         if private_key is not None or private_key_password is not None:
             from superset.commands.database.ssh_tunnel.exceptions import (
                 SSHTunnelInvalidCredentials,
@@ -406,7 +327,6 @@ def _validate_database_masked_credentials(  # noqa: C901
                 }
             )
     else:
-        # Login method #2 (private key + key password).
         if private_key is None and private_key_password is None:
             from superset.commands.database.ssh_tunnel.exceptions import (
                 SSHTunnelMissingCredentials,
@@ -437,11 +357,8 @@ async def load_configs(  # noqa: C901
 ) -> dict[str, Any]:
     """Validate every YAML in the bundle and splice in masked secrets.
 
-    Async port of
-    ``superset_old.commands.importers.v1.utils.load_configs``.
-    Schema validation failures attach the file name as the key (mirrors the
-    original ``ex.messages = {file_name: ex.messages}``) so the controller
-    layer surfaces ``{<file>: {<field>: [<msg>]}}``.
+    Schema validation failures attach the file name as the key so the
+    controller layer surfaces ``{<file>: {<field>: [<msg>]}}``.
     """
     configs: dict[str, Any] = {}
 
@@ -453,7 +370,6 @@ async def load_configs(  # noqa: C901
     ) = await _existing_database_secrets(session)
 
     for file_name, content in contents.items():
-        # skip directories
         if not content:
             continue
 
@@ -468,13 +384,11 @@ async def load_configs(  # noqa: C901
                     {file_name: {"_schema": ["Not a valid mapping"]}}
                 )
 
-            # populate passwords from the request or from existing DBs
             if file_name in passwords:
                 config["password"] = passwords[file_name]
             elif prefix == "databases" and config.get("uuid") in db_passwords:
                 config["password"] = db_passwords[config["uuid"]]
 
-            # populate ssh_tunnel_passwords from the request or from existing DBs
             if file_name in ssh_tunnel_passwords:
                 config.setdefault("ssh_tunnel", {})
                 config["ssh_tunnel"]["password"] = ssh_tunnel_passwords[file_name]
@@ -487,7 +401,6 @@ async def load_configs(  # noqa: C901
                     config["uuid"]
                 ]
 
-            # populate ssh_tunnel_private_keys from the request or from existing DBs
             if file_name in ssh_tunnel_private_keys:
                 config.setdefault("ssh_tunnel", {})
                 config["ssh_tunnel"]["private_key"] = ssh_tunnel_private_keys[file_name]
@@ -500,7 +413,6 @@ async def load_configs(  # noqa: C901
                     config["uuid"]
                 ]
 
-            # populate ssh_tunnel_priv_key_passwords from request or existing DBs
             if file_name in ssh_tunnel_priv_key_passwords:
                 config.setdefault("ssh_tunnel", {})
                 config["ssh_tunnel"]["private_key_password"] = (
@@ -515,17 +427,12 @@ async def load_configs(  # noqa: C901
                     db_ssh_tunnel_priv_key_passws[config["uuid"]]
                 )
 
-            # Normalize example data URLs before schema validation
             if prefix == "datasets" and "data" in config:
                 config["data"] = _normalize_example_data_url(config["data"])
 
             schema(config)
 
-            # Masked-credential validation for database bundles.
-            # 1:1 with ``ImportV1DatabaseSchema.validate_password`` and
-            # ``validate_ssh_tunnel_credentials`` from
-            # ``superset_old/databases/schemas.py``.
-            # Only applies to NEW databases (existing ones keep stored secrets).
+            # Validate masked credentials for new database entries.
             if prefix == "databases":
                 _validate_database_masked_credentials(config, file_name, db_passwords)
 
@@ -537,7 +444,6 @@ async def load_configs(  # noqa: C901
                 prefix,
                 exc,
             )
-            # Wrap message under the file name to mirror Marshmallow shape.
             msg = exc.message if hasattr(exc, "message") else str(exc)
             if isinstance(msg, dict) and file_name in msg:
                 exceptions.append(exc)
@@ -547,18 +453,13 @@ async def load_configs(  # noqa: C901
     return configs
 
 
-# --------------------------------------------------------------------------- #
-# Sparse-import helpers
-# --------------------------------------------------------------------------- #
-
-
 async def get_resource_mappings_batched(
     session: AsyncSession,
     model_class: type[Any],
     batch_size: int = 1000,
     value_func: Callable[[Any], Any] | None = None,
 ) -> dict[str, Any]:
-    """Async port of ``get_resource_mappings_batched``."""
+    """Batch-fetch UUID → id (or arbitrary value) mappings for sparse imports."""
     if value_func is None:
 
         def value_func(row: Any) -> int:
@@ -576,18 +477,10 @@ async def get_resource_mappings_batched(
     return mapping
 
 
-# --------------------------------------------------------------------------- #
-# Schema validators (msgspec/dict-based replacements for Marshmallow)
-# --------------------------------------------------------------------------- #
-
-
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
-
-
-# ---------- Field-level helpers ---------------------------------------------
 
 
 def _err(field: str, msg: str, errors: dict[str, list[str]]) -> None:
@@ -688,16 +581,12 @@ def _raise_if_errors(file_label: str, errors: dict[str, list[str]]) -> None:
         raise CommandInvalidError({file_label: errors})
 
 
-# ---------- Importv1*Schema ports -------------------------------------------
-
-
 def database_schema(config: dict[str, Any]) -> None:
-    """Port of ``ImportV1DatabaseSchema`` from ``superset_old/databases/schemas.py``.
+    """Validate a v1 database config dict.
 
-    Includes the ``allow_file_upload`` -> ``allow_csv_upload`` pre_load rename.
+    Old V1 exports used ``allow_csv_upload``; newer bundles use ``allow_file_upload``.
+    Rename before validation for backward compat.
     """
-    # pre_load: ``allow_file_upload`` was renamed back from ``allow_csv_upload``
-    # for backward compat with old V1 exports.
     if "allow_file_upload" in config:
         config["allow_csv_upload"] = config.pop("allow_file_upload")
 
@@ -742,7 +631,7 @@ def database_schema(config: dict[str, Any]) -> None:
 
 
 def column_schema(config: dict[str, Any]) -> None:
-    """Port of ``ImportV1ColumnSchema``."""
+    """Validate a v1 column config dict."""
     import json as _json
 
     if isinstance(config.get("extra"), str):
@@ -784,7 +673,7 @@ def column_schema(config: dict[str, Any]) -> None:
 
 
 def metric_schema(config: dict[str, Any]) -> None:
-    """Port of ``ImportV1MetricSchema``."""
+    """Validate a v1 metric config dict."""
     import json as _json
 
     if isinstance(config.get("extra"), str):
@@ -815,10 +704,9 @@ def metric_schema(config: dict[str, Any]) -> None:
 
 
 def dataset_schema(config: dict[str, Any]) -> None:  # noqa: C901
-    """Port of ``ImportV1DatasetSchema``."""
+    """Validate a v1 dataset config dict."""
     import json as _json
 
-    # pre_load fix_extra
     if isinstance(config.get("extra"), str):
         try:
             extra = config["extra"]
@@ -866,7 +754,6 @@ def dataset_schema(config: dict[str, Any]) -> None:  # noqa: C901
     _check_string(config.get("version"), "version", errors, required=True)
     _check_uuid(config.get("database_uuid"), "database_uuid", errors, required=True)
 
-    # ``columns`` and ``metrics`` are nested lists
     cols = config.get("columns") or []
     if not isinstance(cols, list):
         _err("columns", "Not a valid list.", errors)
@@ -921,7 +808,7 @@ def dataset_schema(config: dict[str, Any]) -> None:  # noqa: C901
 
 
 def chart_schema(config: dict[str, Any]) -> None:
-    """Port of ``ImportV1ChartSchema``."""
+    """Validate a v1 chart config dict."""
     errors: dict[str, list[str]] = {}
     _check_string(config.get("slice_name"), "slice_name", errors, required=True)
     _check_string(config.get("description"), "description", errors, allow_none=True)
@@ -937,7 +824,6 @@ def chart_schema(config: dict[str, Any]) -> None:
         _check_dict(config.get("params"), "params", errors)
     _check_string(config.get("query_context"), "query_context", errors, allow_none=True)
     if config.get("query_context") is not None:
-        # validates query_context as JSON
         import json as _json
 
         try:
@@ -968,7 +854,7 @@ def chart_schema(config: dict[str, Any]) -> None:
 
 
 def dashboard_schema(config: dict[str, Any]) -> None:  # noqa: C901  # complex business logic
-    """Port of ``ImportV1DashboardSchema``."""
+    """Validate a v1 dashboard config dict."""
     errors: dict[str, list[str]] = {}
     _check_string(
         config.get("dashboard_title"), "dashboard_title", errors, required=True
@@ -1021,7 +907,7 @@ def dashboard_schema(config: dict[str, Any]) -> None:  # noqa: C901  # complex b
 
 
 def saved_query_schema(config: dict[str, Any]) -> None:
-    """Port of ``ImportV1SavedQuerySchema``."""
+    """Validate a v1 saved query config dict."""
     errors: dict[str, list[str]] = {}
     _check_string(
         config.get("catalog"),
@@ -1053,7 +939,7 @@ def saved_query_schema(config: dict[str, Any]) -> None:
 
 
 def theme_schema(config: dict[str, Any]) -> None:
-    """Port of ``ImportV1ThemeSchema``."""
+    """Validate a v1 theme config dict."""
     errors: dict[str, list[str]] = {}
     _check_string(config.get("theme_name"), "theme_name", errors, required=True)
     if "json_data" not in config or config.get("json_data") is None:
@@ -1077,10 +963,6 @@ def annotation_layer_schema(config: dict[str, Any]) -> None:
     _raise_if_errors("annotation_layers/", errors)
 
 
-# Mapping prefix -> schema callable, used by :class:`ImportAssetsCommand`.
-# Matches the original ``superset_old/commands/importers/v1/assets.py``: only
-# the five core asset types are part of the v1 asset bundle. Themes and
-# annotation layers are imported via dedicated commands, not the asset bundle.
 ASSET_SCHEMAS: dict[str, SchemaCallable] = {
     "databases/": database_schema,
     "datasets/": dataset_schema,
@@ -1090,11 +972,6 @@ ASSET_SCHEMAS: dict[str, SchemaCallable] = {
 }
 
 
-# --------------------------------------------------------------------------- #
-# Tag helper (async port)
-# --------------------------------------------------------------------------- #
-
-
 async def import_tag(  # noqa: C901
     target_tag_names: list[str],
     contents: dict[str, Any],
@@ -1102,13 +979,10 @@ async def import_tag(  # noqa: C901
     object_type: str,
     session: AsyncSession,
 ) -> list[int]:
-    """Async port of ``superset_old.commands.importers.v1.utils.import_tag``.
-
-    Imports tags for charts and dashboards. Re-uses tag names if the row
-    exists, otherwise creates a custom tag. Description is read from a
-    ``tags.yaml`` entry in ``contents`` (matching the original).
     """
-    # Feature flag — the original short-circuits if TAGGING_SYSTEM is off.
+    Upsert tags for an object; reuses existing tag rows by name,
+    creates custom tags otherwise.
+    """
     try:
         from superset.utils.feature_flags import feature_flag_manager
 
@@ -1193,7 +1067,6 @@ async def import_tag(  # noqa: C901
             )
             continue
 
-    # Remove old associations not in new set.
     for assoc in existing_assocs:
         if assoc.tag_id not in new_tag_ids:
             await session.delete(assoc)

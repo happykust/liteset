@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dataset/export.py``."""
+"""Command to export datasets to a ZIP bundle."""
 
 from __future__ import annotations
 
@@ -40,13 +40,7 @@ JSON_KEYS = ("params", "template_params", "extra")
 
 
 class ExportDatasetsCommand(AsyncExportModelsCommand):
-    """Export datasets to a ZIP bundle (1:1 with the original).
-
-    Uses ``SqlaTable.export_to_dict(recursive=True, include_defaults=True,
-    export_uuids=True)`` to grab columns + metrics in the same call,
-    decodes JSON string fields for human-readable YAML, and bundles the
-    parent database alongside.
-    """
+    """Export datasets to a ZIP bundle."""
 
     _resource_type = "SqlaTable"
 
@@ -137,12 +131,6 @@ class ExportDatasetsCommand(AsyncExportModelsCommand):
             (self._file_name(dataset), self._file_content(dataset))
         ]
 
-        # Related database YAML (recursive=False) — matches the original.
-        # Guard with _export_related, mirroring
-        # superset_old/commands/dataset/export.py:94
-        # `if export_related:` — callers such as manager.py:266 pass
-        # export_related=False
-        # to suppress per-dataset database YAMLs in a full-asset bundle.
         db = getattr(dataset, "database", None)
         if db and self._export_related:
             db_payload = db.export_to_dict(
@@ -159,7 +147,6 @@ class ExportDatasetsCommand(AsyncExportModelsCommand):
                         "Unable to decode `extra` field: %s", db_payload["extra"]
                     )
 
-            # SSH tunnel
             try:
                 from superset.db.daos.database import AsyncSSHTunnelDAO
 

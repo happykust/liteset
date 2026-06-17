@@ -117,8 +117,6 @@ class AnnotationLayerController(Controller):
                 "created_by.last_name",
             ],
             list_title="List Annotation Layer",
-            # 1:1 with AnnotationLayerRestApi.order_columns — the frontend
-            # reads this to render sortable column headers.
             order_columns=[
                 "name",
                 "descr",
@@ -176,9 +174,7 @@ class AnnotationLayerController(Controller):
     ) -> dict[str, Any]:
         """POST /api/v1/annotation_layer/ — create annotation layer."""
         # Absent ``descr`` stays out of the create payload so the column keeps
-        # its SQL default (NULL) — 1:1 with Marshmallow load semantics; the
-        # 201 body echoes the loaded request dict (``result=item``,
-        # superset_old/annotation_layers/api.py:213).
+        # its SQL default (NULL); the 201 body echoes the loaded request dict.
         create_data = filter_unset({"name": data.name, "descr": data.descr})
         cmd = CreateAnnotationLayerCommand(
             dao=dao,
@@ -213,8 +209,7 @@ class AnnotationLayerController(Controller):
         await event_logger.alog_with_context(
             "annotation_layer.update", object_ref=f"annotation_layer:{pk}"
         )
-        # Upstream PUT returns result=item where item["layer"] = pk was added before
-        # returning (superset_old/annotation_layers/api.py:278).  Mirror that exactly.
+        # PUT returns result=item where item["layer"] = pk was added before returning.
         result_item = dict(update_data)
         result_item["layer"] = pk
         return {

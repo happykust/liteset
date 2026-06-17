@@ -259,7 +259,7 @@ class TestLoginPageNoCacheHeaders:
     @pytest.mark.asyncio
     async def test_authenticated_redirect_carries_no_cache_headers(self) -> None:
         """Early-return Redirect for an already-authenticated user must include
-        all three no-cache headers, mirroring the original @no_cache behaviour.
+        all three no-cache headers (Cache-Control, Pragma, Expires).
         """
         controller = MagicMock()
 

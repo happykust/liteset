@@ -14,11 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""DuckDB engine spec -- sync-compatible.
-
-Ported 1:1 from ``superset_old/db_engine_specs/duckdb.py`` with legacy
-imports removed.  Only overridden methods and attributes are included.
-"""
+"""DuckDB database engine spec."""
 
 from __future__ import annotations
 
@@ -46,11 +42,6 @@ DEFAULT_ACCESS_TOKEN_URL = (
     "https://app.motherduck.com/token-request?appName=Superset&close=y"  # noqa: S105
 )
 
-# ---------------------------------------------------------------------------
-# JSON-Schema fragment for DuckDB / MotherDuck connection parameters.
-# The original uses a Marshmallow Schema; in the port we supply the OpenAPI
-# fragment directly (same pattern as BasicParametersMixin in base.py).
-# ---------------------------------------------------------------------------
 DUCKDB_PARAMETERS_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -84,28 +75,14 @@ class DuckDBPropertiesType(TypedDict):
 
 
 class DuckDBParametersMixin:
-    """
-    Mixin for configuring DB engine specs via a dictionary.
+    """Mixin for DuckDB parameter-based config.
 
-    With this mixin the SQLAlchemy engine can be configured through
-    individual parameters, instead of the full SQLAlchemy URI. This
-    mixin is for DuckDB:
-
-        duckdb:///file_path[?key=value&key=value...]
-        duckdb:///md:database[?key=value&key=value...]
-
+    Handles ``duckdb:///file_path`` and ``duckdb:///md:database`` (MotherDuck) URIs.
     """
 
     engine = "duckdb"
-
-    # schema describing the parameters used to configure the DB
     parameters_schema: dict[str, Any] = DUCKDB_PARAMETERS_JSON_SCHEMA
-
-    # recommended driver name for the DB engine spec
     default_driver = ""
-
-    # query parameter to enable encryption in the database connection
-    # for Postgres this would be `{"sslmode": "verify-ca"}`, eg.
     encryption_parameters: dict[str, str] = {}
 
     @staticmethod
@@ -118,10 +95,8 @@ class DuckDBParametersMixin:
         parameters: DuckDBParametersType,
         encrypted_extra: dict[str, str] | None = None,
     ) -> str:
-        """
-        Build SQLAlchemy URI for connecting to a DuckDB database.
-        If an access token is specified, return a URI to connect to a MotherDuck database.
-        """  # noqa: E501
+        # Delegates to MotherDuckEngineSpec when an access token
+        # or md: prefix is present.
         if parameters is None:
             parameters = {}
         query = parameters.get("query", {})
@@ -156,9 +131,6 @@ class DuckDBParametersMixin:
     def validate_parameters(
         cls, properties: DuckDBPropertiesType
     ) -> list[SupersetError]:
-        """
-        Validates any number of parameters, for progressive validation.
-        """
         errors: list[SupersetError] = []
 
         parameters = properties.get("parameters", {})
@@ -182,9 +154,6 @@ class DuckDBParametersMixin:
 
     @classmethod
     def parameters_json_schema(cls) -> Any:
-        """
-        Return configuration parameters as OpenAPI JSON Schema.
-        """
         return cls.parameters_schema or None
 
 
@@ -195,7 +164,6 @@ class DuckDBEngineSpec(DuckDBParametersMixin, BaseEngineSpec):
 
     sqlalchemy_uri_placeholder = "duckdb:////path/to/duck.db"
 
-    # DuckDB-specific column type mappings to ensure float/double types are recognized
     column_type_mappings = (
         (
             re.compile(r"^hugeint", re.IGNORECASE),
@@ -274,9 +242,6 @@ class DuckDBEngineSpec(DuckDBParametersMixin, BaseEngineSpec):
     def get_extra_params(
         database: Database, source: QuerySource | None = None
     ) -> dict[str, Any]:
-        """
-        Add a user agent to be used in the requests.
-        """
         extra: dict[str, Any] = BaseEngineSpec.get_extra_params(database)
         engine_params: dict[str, Any] = extra.setdefault("engine_params", {})
         connect_args: dict[str, Any] = engine_params.setdefault("connect_args", {})
@@ -320,10 +285,6 @@ class MotherDuckEngineSpec(DuckDBEngineSpec):
         parameters: DuckDBParametersType,
         encrypted_extra: dict[str, str] | None = None,
     ) -> str:
-        """
-        Build SQLAlchemy URI for connecting to a MotherDuck database
-        """
-        # make a copy so that we don't update the original
         query = parameters.get("query", {}).copy()
         database = parameters.get("database", "")
         token = parameters.get("access_token", "")

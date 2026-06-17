@@ -14,13 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Permission controller — read-only endpoints for upstream permissions
-(ab_permission).
+"""Permission controller — read-only endpoints for FAB permissions (ab_permission).
 
-Mirrors the upstream ``PermissionApi`` which is a ``ModelRestApi``
-with ``include_route_methods = {"info", "get", "get_list"}``.
-
-Original: the upstream permission security API.
+Implements ``info``, ``get``, and ``get_list``, matching
+``PermissionApi.include_route_methods``.
 """
 
 from __future__ import annotations

@@ -45,14 +45,12 @@ class AsyncQueryContext:
     def __post_init__(self) -> None:
         """Apply the granularity transform to each query object.
 
-        1:1 with ``QueryContextFactory._process_query_object``
-        (``superset_old/common/query_context_factory.py:115-123``): the factory
-        runs ``_apply_granularity(qo, form_data, datasource)`` then
+        The factory runs ``_apply_granularity(qo, form_data, datasource)`` then
         ``_apply_filters(qo)`` while building each query object. ``_apply_filters``
         is self-contained and already runs in ``AsyncQueryObject.__post_init__``;
         ``_apply_granularity`` additionally needs the request ``form_data`` (for
         ``x_axis``) and the resolved datasource (for its temporal columns), which
-        are only known here — so this is the equivalent build hook.
+        are only known here.
 
         Guarded so a missing datasource / column metadata (e.g. a SQL Lab
         ``Query`` datasource that has no ``columns``) never breaks context

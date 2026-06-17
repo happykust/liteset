@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/database/export.py``."""
+"""Command for exporting database connections to a ZIP bundle."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ EXPORT_VERSION = "1.0.0"
 
 
 def _parse_extra(extra_payload: str) -> dict[str, Any]:
-    """Parse the ``extra`` JSON field with legacy fixups (1:1 with original)."""
+    """Parse the ``extra`` JSON field with legacy fixups."""
     try:
         extra = json.loads(extra_payload)
     except (json.JSONDecodeError, TypeError):
@@ -48,8 +48,7 @@ def _parse_extra(extra_payload: str) -> dict[str, Any]:
 
     # Fix for DBs saved with an invalid ``schemas_allowed_for_csv_upload``.
     # Note: if the stored value is a string that is not valid JSON, json.loads
-    # raises JSONDecodeError — intentionally NOT caught here, matching the
-    # original superset_old/commands/database/export.py:46-49 behaviour.
+    # raises JSONDecodeError — intentionally NOT caught here.
     schemas_allowed = extra.get("schemas_allowed_for_csv_upload")
     if isinstance(schemas_allowed, str):
         extra["schemas_allowed_for_csv_upload"] = json.loads(schemas_allowed)
@@ -57,16 +56,7 @@ def _parse_extra(extra_payload: str) -> dict[str, Any]:
 
 
 class ExportDatabasesCommand(AsyncExportModelsCommand):
-    """Export databases to a ZIP bundle.
-
-    1:1 port of ``superset_old/commands/database/export.py``:
-    uses :meth:`Database.export_to_dict(recursive=False,
-    include_defaults=True, export_uuids=True)` to build the payload, then
-    applies the ``allow_file_upload -> allow_csv_upload`` rename for V1
-    schema backward compat, decodes the ``extra`` JSON, masks the SSH
-    tunnel secrets via :func:`mask_password_info`, and stamps
-    ``version``.  Bundles related datasets alongside.
-    """
+    """Export databases to a ZIP bundle, with related datasets when requested."""
 
     _resource_type = "Database"
 
@@ -107,13 +97,12 @@ class ExportDatabasesCommand(AsyncExportModelsCommand):
             include_defaults=True,
             export_uuids=True,
         )
-        # ``allow_file_upload`` -> ``allow_csv_upload`` rename (V1 schema compat).
+        # V1 schema backward compat renames.
         replacements = {"allow_file_upload": "allow_csv_upload"}
         payload = {replacements.get(k, k): v for k, v in payload.items()}
 
         if payload.get("extra"):
             extra = payload["extra"] = _parse_extra(payload["extra"])
-            # ``schemas_allowed_for_file_upload`` -> ``schemas_allowed_for_csv_upload``
             if "schemas_allowed_for_file_upload" in extra:
                 extra["schemas_allowed_for_csv_upload"] = extra.pop(
                     "schemas_allowed_for_file_upload"
@@ -144,12 +133,8 @@ class ExportDatabasesCommand(AsyncExportModelsCommand):
             (self._file_name(database), self._file_content(database, ssh_tunnel))
         ]
 
-        # Related datasets — recursive export with UUID-keyed parent ref.
-        # Guard on self._export_related matches the original
-        # superset_old/commands/database/export.py:114 ``if export_related:``
-        # block; the full-bundle export manager (importexport/manager.py:266)
-        # instantiates this command with export_related=False to suppress
-        # dataset emission when ExportDatasetsCommand already produces them.
+        # export_related=False when the caller (e.g. full-bundle export manager)
+        # already produces datasets via ExportDatasetsCommand.
         if self._export_related:
             datasets = await self._dao.get_datasets(model_id)
             db_slug = get_filename(database.database_name, database.id, skip_id=True)
@@ -160,15 +145,9 @@ class ExportDatabasesCommand(AsyncExportModelsCommand):
                     include_defaults=True,
                     export_uuids=True,
                 )
-                # 1:1 with original superset_old/commands/database/export.py:122-129:
-                # only stamp version and database_uuid; do NOT decode JSON string
-                # fields (params/template_params/extra).  JSON decoding of those
-                # fields is the responsibility of ExportDatasetsCommand._file_content,
-                # not of the database exporter's inline dataset path.
                 ds_payload["version"] = EXPORT_VERSION
-                # 1:1 with the original ``str(model.database.uuid)`` — a NULL
-                # uuid serialises as the STRING "None", not YAML null (the
-                # importer's uuid-string lookup then misses identically).
+                # A NULL uuid serialises as the STRING "None", not YAML null,
+                # so the importer's uuid-string lookup would miss it.
                 ds_payload["database_uuid"] = str(getattr(database, "uuid", None))
                 ds_slug = get_filename(
                     getattr(dataset, "table_name", ""), dataset.id, skip_id=True

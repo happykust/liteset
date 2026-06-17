@@ -14,10 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Port of ``superset_old.migrations.shared.native_filters``.
+"""Legacy filter-box → native-filter migration utilities.
 
 Includes the full legacy filter-box → native-filter conversion
-(:func:`convert_filter_scopes_to_native_filters`, 1:1 with the original —
+(:func:`convert_filter_scopes_to_native_filters`;
 ``convert_filter_scopes`` lives in
 ``superset.utils.dashboard_filter_scopes_converter``) plus the cleanup half
 of ``migrate_dashboard`` (strip legacy keys, markdown placeholders, drop
@@ -47,7 +47,6 @@ def convert_filter_scopes_to_native_filters(  # noqa: C901, PLR0912, PLR0915
     """
     Convert the legacy filter scopes et al. to the native filter configuration.
 
-    1:1 port of ``superset_old/migrations/shared/native_filters.py:28-283``.
     Dashboard filter scopes are implicitly defined where an undefined scope
     implies no immunity; ``convert_filter_scopes`` provides an explicit
     definition by extracting the underlying filter-box configurations.
@@ -88,7 +87,6 @@ def convert_filter_scopes_to_native_filters(  # noqa: C901, PLR0912, PLR0915
             **(filter_scopes.get(key, {})),
         }
 
-    # Construct the native filters.
     unique_short_ids: set[str] = set()
     for filter_box in filter_boxes:
         key = str(filter_box.id)
@@ -249,7 +247,6 @@ def convert_filter_scopes_to_native_filters(  # noqa: C901, PLR0912, PLR0915
             if "filterType" in fltr:
                 filter_by_key_and_field[key][field] = fltr
 
-    # Ancestors of filter-box charts.
     ancestors_by_id = defaultdict(set)
 
     for filter_box in filter_boxes:
@@ -265,7 +262,6 @@ def convert_filter_scopes_to_native_filters(  # noqa: C901, PLR0912, PLR0915
             except KeyError:
                 pass
 
-    # Wire up the hierarchical filters.
     for this in filter_boxes:
         for other in filter_boxes:
             if this != other and any(
@@ -298,8 +294,6 @@ def convert_filter_scopes_to_native_filters(  # noqa: C901, PLR0912, PLR0915
 def migrate_dashboard(dashboard: Dashboard) -> None:  # noqa: C901
     """Convert ``dashboard`` to use native filters in place.
 
-    1:1 with
-    :func:`superset_old.migrations.shared.native_filters.migrate_dashboard`.
     The async caller is expected to have already eagerly loaded
     ``dashboard.slices``.
     """
@@ -317,11 +311,10 @@ def migrate_dashboard(dashboard: Dashboard) -> None:  # noqa: C901
             if getattr(slc, "viz_type", None) == "filter_box"
         }
 
-        # Ensure the native_filter_configuration key exists.
         json_metadata.setdefault("native_filter_configuration", [])
 
         # Convert any remaining legacy filter scopes to native filters —
-        # 1:1 with the original.  (The previous version imported a phantom
+        # (The previous version imported a phantom
         # ``native_filters_full`` module whose ImportError ALWAYS fired,
         # silently dropping legacy filter-box scopes on import.)
         json_metadata["native_filter_configuration"].extend(
@@ -332,11 +325,9 @@ def migrate_dashboard(dashboard: Dashboard) -> None:  # noqa: C901
             ),
         )
 
-        # Remove the legacy filter configuration.
         for key in ("default_filters", "filter_scopes"):
             json_metadata.pop(key, None)
 
-        # Replace the filter-box charts with markdown placeholders.
         for key, value in list(position_json.items()):  # mutable iteration
             if (
                 isinstance(value, dict)
@@ -359,7 +350,6 @@ def migrate_dashboard(dashboard: Dashboard) -> None:  # noqa: C901
                 position_json[mapping[key]] = value
                 del position_json[key]
 
-        # Replace the relevant CHART- references in children/parents arrays.
         for value in position_json.values():
             if isinstance(value, dict):
                 for relation in ("children", "parents"):
@@ -368,7 +358,6 @@ def migrate_dashboard(dashboard: Dashboard) -> None:  # noqa: C901
                             if key in mapping:
                                 value[relation][idx] = mapping[key]
 
-        # Remove the filter-box charts from the dashboard's slice list.
         if filter_boxes_by_id:
             dashboard.slices = [
                 slc for slc in slices if getattr(slc, "viz_type", None) != "filter_box"

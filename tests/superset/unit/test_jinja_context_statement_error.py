@@ -17,11 +17,11 @@
 """Regression tests: StatementError guard in _sync_find_dataset and
 _dataset_id_from_chart.
 
-The original BaseDAO.find_by_id (superset_old/daos/base.py lines 68-72) wraps
-``filter().one_or_none()`` in ``except StatementError: return None`` so that a
-non-numeric or wrong-type ID string (e.g. ``"bad"`` from a malformed
-``datasource_info.split("__")[0]``) returns None → DatasetNotFoundError (404)
-rather than propagating a DB error → 500.
+``BaseDAO.find_by_id`` wraps ``filter().one_or_none()`` in
+``except StatementError: return None`` so that a non-numeric or wrong-type ID
+string (e.g. ``"bad"`` from a malformed ``datasource_info.split("__")[0]``)
+returns None → DatasetNotFoundError (404) rather than propagating a DB
+error → 500.
 
 Liteset's _sync_find_dataset must mirror that guard.
 _dataset_id_from_chart must also convert ValueError (from int()) and StatementError
@@ -39,13 +39,8 @@ from sqlalchemy.exc import StatementError
 from superset.exceptions import SupersetTemplateException
 from superset.jinja_context import _dataset_id_from_chart, _sync_find_dataset
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_session_raises(exc: Exception) -> MagicMock:
-    """Return a mock session whose execute() raises *exc*."""
     session = MagicMock()
     session.execute.side_effect = exc
     # Context-manager protocol used by ``with Session(engine) as session``
@@ -55,7 +50,6 @@ def _make_session_raises(exc: Exception) -> MagicMock:
 
 
 def _make_session_returns(value: object) -> MagicMock:
-    """Return a mock session whose execute() chain returns *value*."""
     result = MagicMock()
     result.scalars.return_value.one_or_none.return_value = value
     session = MagicMock()
@@ -77,11 +71,6 @@ def _patched_session(session_mock: MagicMock):
     """
     with patch("sqlalchemy.orm.Session", return_value=session_mock):
         yield
-
-
-# ---------------------------------------------------------------------------
-# _sync_find_dataset — StatementError guard
-# ---------------------------------------------------------------------------
 
 
 def test_sync_find_dataset_returns_none_on_statement_error():
@@ -114,7 +103,6 @@ def test_sync_find_dataset_returns_none_on_statement_error_numeric_string():
 
 
 def test_sync_find_dataset_returns_dataset_on_success():
-    """Normal operation: the dataset object is returned unchanged."""
     fake_dataset = MagicMock()
     session_mock = _make_session_returns(fake_dataset)
     engine_mock = MagicMock()
@@ -138,10 +126,6 @@ def test_sync_find_dataset_returns_none_when_not_found():
 
     assert result is None
 
-
-# ---------------------------------------------------------------------------
-# _dataset_id_from_chart — ValueError and StatementError guard
-# ---------------------------------------------------------------------------
 
 _EXC_MSG = "Please specify the Dataset ID"
 
@@ -170,7 +154,6 @@ def test_dataset_id_from_chart_raises_on_statement_error():
 
 
 def test_dataset_id_from_chart_raises_when_chart_not_found():
-    """Chart not found (None from DB) must raise SupersetTemplateException."""
     session_mock = _make_session_returns(None)
     engine_mock = MagicMock()
 
@@ -181,7 +164,6 @@ def test_dataset_id_from_chart_raises_when_chart_not_found():
 
 
 def test_dataset_id_from_chart_returns_datasource_id_on_success():
-    """Normal operation: the chart's datasource_id is returned."""
     fake_chart = MagicMock()
     fake_chart.datasource_id = 7
     session_mock = _make_session_returns(fake_chart)

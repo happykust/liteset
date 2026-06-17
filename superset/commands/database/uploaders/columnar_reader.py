@@ -14,12 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/database/uploaders/columnar_reader.py``.
+"""Parquet/columnar file reader for database uploads.
 
-Mirrors the original Parquet/columnar reader 1:1, including the ZIP
-multi-file support.  ``file`` is normalised via :func:`_to_stream` so the
-reader accepts Litestar ``UploadFile`` / the upstream ``FileStorage`` /
-``IO[bytes]`` / raw bytes inputs.
+Supports ZIP multi-file bundles.  ``file`` is normalised via :func:`_to_stream`
+so the reader accepts ``UploadFile``, ``IO[bytes]``, or raw bytes inputs.
 """
 
 from __future__ import annotations
@@ -83,10 +81,7 @@ class ColumnarReader(BaseDataReader):
 
     @staticmethod
     def _yield_files(file: Any) -> Generator[IO[bytes], None, None]:
-        """Yield each parquet payload from ``file`` (transparently unwraps ZIPs)."""
-        # The original used ``file.filename`` (FileStorage attribute) — fall
-        # back to ``file.filename``, ``file.name``, or the original ``file``
-        # itself depending on the input type.
+        """Yield each parquet payload from ``file``; transparently unwraps ZIPs."""
         filename = getattr(file, "filename", None) or getattr(file, "name", None)
         if not filename:
             raise DatabaseUploadFailed(_("Unexpected no file extension found"))
@@ -100,8 +95,7 @@ class ColumnarReader(BaseDataReader):
             if not is_zipfile(stream):
                 raise DatabaseUploadFailed(_("Not a valid ZIP file"))
             try:
-                # ``is_zipfile`` consumes some of the stream — rewind.
-                stream.seek(0)
+                stream.seek(0)  # ``is_zipfile`` consumes some of the stream
                 with ZipFile(stream) as zip_file:
                     file_suffixes = {Path(name).suffix for name in zip_file.namelist()}
                     if len(file_suffixes) > 1:

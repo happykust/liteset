@@ -14,15 +14,12 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Encrypted field plumbing — ported 1:1 from ``superset_old/utils/encrypt.py``.
+"""Encrypted field plumbing.
 
-The original implementation depends on the app via ``init_app(app)`` and
-walks ``db.metadata.tables`` through the upstream ORM session.  This
-module exposes the same API (``EncryptedFieldFactory.create``,
-``SecretsMigrator.run``) but pulls configuration from
-:class:`superset.config.SupersetSettings` and walks the metadata via a
-synchronous engine built on top of the runtime async DSN — exactly the
-same pattern used in :mod:`superset.utils.rls`.
+Exposes ``EncryptedFieldFactory.create`` and ``SecretsMigrator.run``.
+Configuration is pulled from :class:`superset.config.SupersetSettings`;
+metadata is walked via a synchronous engine built on top of the runtime
+async DSN — the same pattern used in :mod:`superset.utils.rls`.
 
 Translatable error messages use :func:`superset.i18n.lazy_gettext`.
 """
@@ -46,12 +43,6 @@ from superset.i18n import lazy_gettext as _
 logger = logging.getLogger(__name__)
 
 ENC_ADAPTER_TAG_ATTR_NAME = "__created_by_enc_field_adapter__"
-
-
-# ---------------------------------------------------------------------------
-# EncryptedType — sqlalchemy_utils subclass with ``cache_ok = True``
-# (mirrors the original).
-# ---------------------------------------------------------------------------
 
 
 class EncryptedType(SqlaEncryptedType):
@@ -119,11 +110,6 @@ class EncryptedType(SqlaEncryptedType):
         return process
 
 
-# ---------------------------------------------------------------------------
-# Adapter abstraction
-# ---------------------------------------------------------------------------
-
-
 class AbstractEncryptedFieldAdapter(ABC):  # pylint: disable=too-few-public-methods
     """Strategy interface for constructing encrypted SA column types."""
 
@@ -141,9 +127,8 @@ class SQLAlchemyUtilsAdapter(  # pylint: disable=too-few-public-methods
 ):
     """Default adapter — wraps :class:`EncryptedType` from sqlalchemy_utils.
 
-    Mirrors the original ``SQLAlchemyUtilsAdapter`` exactly.  The ``app_config``
-    parameter has been collapsed to a plain ``secret_key`` argument now that
-    we no longer depend on the legacy app context.
+    The ``app_config`` parameter has been collapsed to a plain ``secret_key``
+    argument now that we no longer depend on the legacy app context.
     """
 
     def create(
@@ -155,11 +140,6 @@ class SQLAlchemyUtilsAdapter(  # pylint: disable=too-few-public-methods
         if secret_key is None:
             raise ValueError("Missing secret_key for encrypted field")
         return EncryptedType(*args, secret_key, **kwargs)
-
-
-# ---------------------------------------------------------------------------
-# EncryptedFieldFactory — full port (without the legacy stack)
-# ---------------------------------------------------------------------------
 
 
 def _resolve_settings() -> Any:
@@ -205,7 +185,6 @@ class EncryptedFieldFactory:
         self._adapter: AbstractEncryptedFieldAdapter | None = adapter
         self._initialised = secret_key is not None and adapter is not None
 
-    # --- initialisation hooks ------------------------------------------------
     def init_app(self, app: Any | None = None) -> None:
         """Configure the factory from :class:`SupersetSettings`.
 
@@ -228,7 +207,6 @@ class EncryptedFieldFactory:
                 self._adapter = adapter_cls
         self._initialised = True
 
-    # --- column-type construction -------------------------------------------
     def create(self, *args: Any, **kwargs: Any) -> TypeDecorator[Any]:
         """Return a new encrypted SA column type.
 
@@ -247,15 +225,6 @@ class EncryptedFieldFactory:
     @staticmethod
     def created_by_enc_field_factory(field: TypeDecorator[Any]) -> bool:
         return getattr(field, ENC_ADAPTER_TAG_ATTR_NAME, False)
-
-
-# ---------------------------------------------------------------------------
-# SecretsMigrator — re-encrypts every EncryptedType column with a new key.
-#
-# Uses a *sync* engine (mirrors ``utils.rls._metadata_sync_engine``)
-# because re-encryption is a one-shot CLI operation that runs outside any
-# Litestar request context.
-# ---------------------------------------------------------------------------
 
 
 _ASYNC_TO_SYNC_DRIVERS: dict[str, str] = {
@@ -291,10 +260,9 @@ class SecretsMigrator:
     """Walks every metadata table and re-encrypts every ``EncryptedType``
     column under the new ``SECRET_KEY``.
 
-    Direct port of ``superset_old/utils/encrypt.py:SecretsMigrator``; the
-    only behaviour change is that we no longer depend on the upstream ORM
-    (we open a sync engine ourselves) and we read both the previous *and*
-    the new key from arguments / settings instead of ``app.config``.
+    Uses a sync engine rather than the upstream ORM, and reads both the
+    previous and the new key from arguments / settings instead of
+    ``app.config``.
     """
 
     def __init__(
@@ -312,11 +280,9 @@ class SecretsMigrator:
         self._new_secret_key = new_secret_key
 
         self._engine: Engine = _metadata_sync_engine()
-        # ``get_dialect()`` returns the dialect *class* (not an instance) —
-        # mirrors ``superset_old/utils/encrypt.py``.  ``EncryptedType``'s
-        # ``process_bind_param`` / ``process_result_value`` accept the
-        # class directly (they only call ``.name`` on it), and the original
-        # code never instantiated the dialect either.
+        # ``get_dialect()`` returns the dialect *class* (not an instance).
+        # ``EncryptedType``'s ``process_bind_param`` / ``process_result_value``
+        # accept the class directly (they only call ``.name`` on it).
         self._dialect: type[Dialect] = self._engine.url.get_dialect()
 
     # ------------------------------------------------------------------
@@ -342,7 +308,7 @@ class SecretsMigrator:
         return meta_info
 
     # ------------------------------------------------------------------
-    # value coercion (1:1 port)
+    # value coercion
     # ------------------------------------------------------------------
     @staticmethod
     def _read_bytes(col_name: str, value: Any) -> bytes | None:
@@ -369,7 +335,7 @@ class SecretsMigrator:
         conn: Connection, column_names: list[str], table_name: str
     ) -> Any:
         # ``id`` is hard-coded because every encrypted-bearing model in
-        # Superset has an ``id`` PK (mirrors the original).
+        # Superset has an ``id`` PK.
         column_list = ", ".join(column_names)
         return conn.execute(
             text(f"SELECT id, {column_list} FROM {table_name}")  # noqa: S608

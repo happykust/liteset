@@ -15,10 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Core models: Database, Log, FavStar, CssTemplate, Theme, KeyValue.
-
-Pure SQLAlchemy -- no legacy WSGI dependencies.
-"""
+"""Core models: Database, Log, FavStar, CssTemplate, Theme, KeyValue."""
 
 from __future__ import annotations
 
@@ -64,10 +61,6 @@ from superset.utils.core import QuerySource
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Enums
-# ---------------------------------------------------------------------------
-
 
 class ConfigurationMethod(str, enum.Enum):
     """How a Database connection was configured."""
@@ -82,11 +75,6 @@ class FavStarClassName(str, enum.Enum):
     CHART = "slice"
     DASHBOARD = "Dashboard"
     DATASET = "SqlaTable"
-
-
-# ---------------------------------------------------------------------------
-# Models
-# ---------------------------------------------------------------------------
 
 
 class KeyValue(Base):
@@ -133,8 +121,6 @@ class Theme(AuditMixinNullable, ImportExportMixin, Base):
     is_system_default = Column(Boolean, default=False, nullable=False)
     is_system_dark = Column(Boolean, default=False, nullable=False)
 
-    # Mirrors original Superset Theme.export_fields at
-    # superset_old/models/core.py:134
     export_fields = ["theme_name", "json_data"]
 
 
@@ -162,9 +148,9 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     allow_cvas = Column(Boolean, default=False)
     allow_dml = Column(Boolean, default=False)
     force_ctas_schema = Column(String(250))
-    # 1:1 with superset_old/models/core.py: Database.extra defaults to the
-    # full JSON template (not "{}"), so new databases expose the expected
-    # metadata_params/engine_params/metadata_cache_timeout/schemas_allowed keys.
+    # ``extra`` defaults to the full JSON template (not "{}"), so new databases expose
+    # the expected metadata_params/engine_params/metadata_cache_timeout/schemas_allowed
+    # keys.
     extra = Column(
         Text,
         default=textwrap.dedent(
@@ -209,10 +195,6 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def __repr__(self) -> str:
         return self.name
 
-    # ------------------------------------------------------------------
-    # Core properties
-    # ------------------------------------------------------------------
-
     @property
     def name(self) -> str:
         return self.verbose_name if self.verbose_name else self.database_name
@@ -225,12 +207,9 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def _custom_password_store() -> Any | None:
         """Resolve the configured ``SQLALCHEMY_CUSTOM_PASSWORD_STORE`` callback.
 
-        1:1 with the original's ``app.config["SQLALCHEMY_CUSTOM_PASSWORD_STORE"]``
-        lookup (``superset_old/models/core.py``). Liteset has no legacy
-        ``app.config`` so the value is discovered from ``superset.config``
-        using the same two-path scheme as ``mutate_sql_based_on_config``:
-        the legacy uppercase module-level constant first, then the
-        Pydantic ``SupersetSettings`` lowercase attribute.
+        The value is discovered from ``superset.config`` using the same two-path scheme
+        as ``mutate_sql_based_on_config``: the legacy uppercase module-level constant
+        first, then the Pydantic ``SupersetSettings`` lowercase attribute.
         """
         try:
             from superset import config as _config
@@ -250,17 +229,14 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def sqlalchemy_uri_decrypted(self) -> str:
         """Full URI with password unmasked.
 
-        Used by every code path that opens a connection to the user
-        database (``get_async_connection``, ``get_sqla_engine`` …).
-        SA 2.0's ``str(URL)`` masks the password as ``***`` regardless
-        of the value set on the URL object — we have to use
-        ``render_as_string(hide_password=False)`` to actually emit the
-        plaintext password from the encrypted ``password`` column.
+        Used by every code path that opens a connection to the user database.
+        SA 2.0's ``str(URL)`` masks the password as ``***`` regardless of the value
+        set on the URL object — we have to use ``render_as_string(hide_password=False)``
+        to actually emit the plaintext password from the encrypted ``password`` column.
 
-        When ``SQLALCHEMY_CUSTOM_PASSWORD_STORE`` is configured the
-        password is resolved via that callback (passed the parsed URL)
-        instead of the ``password`` column — 1:1 with
-        ``superset_old/models/core.py:1078-1084``.
+        When ``SQLALCHEMY_CUSTOM_PASSWORD_STORE`` is configured the password is
+        resolved via that callback (passed the parsed URL) instead of the ``password``
+        column.
         """
         try:
             conn = make_url_safe(self.sqlalchemy_uri)
@@ -289,11 +265,9 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def get_dialect(self) -> Any:
         """Return an instantiated SQLAlchemy dialect for this database.
 
-        Ported 1:1 from the original sync ``Database.get_dialect``
-        (``superset_old/models/core.py:1125``) — used by the Jinja
-        template processor, ``WhereInMacro``, and other code paths
-        that need dialect-specific behavior (identifier quoting,
-        reserved words, literal binding).
+        Used by the Jinja template processor, ``WhereInMacro``, and other code paths
+        that need dialect-specific behavior (identifier quoting, reserved words,
+        literal binding).
         """
         sqla_url = make_url_safe(self.sqlalchemy_uri_decrypted)
         return sqla_url.get_dialect()()
@@ -301,26 +275,19 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def quote_identifier(self, name: str) -> str:
         """Conditionally quote an identifier using the dialect's preparer.
 
-        1:1 with ``Database.quote_identifier`` in
-        ``superset_old/models/core.py``
-        (line 645) — used by ``adhoc_column_to_sqla`` and
-        ``Database.compile_sqla_query`` to safely render bare column /
-        catalog / schema references.
+        Used by ``adhoc_column_to_sqla`` and ``Database.compile_sqla_query`` to
+        safely render bare column / catalog / schema references.
         """
         return self.get_dialect().identifier_preparer.quote(name)
 
     def get_reserved_words(self) -> set[str]:
-        """1:1 with original (line 649)."""
         return self.get_dialect().preparer.reserved_words
 
     def get_default_catalog(self) -> str | None:
         """Return the default catalog for this database.
 
-        1:1 with ``get_default_catalog`` in
-        ``superset_old/db_engine_specs/base.py``
-        (line 678) — most engines don't support catalogs at all and
-        return ``None``; the engine spec overrides this for engines
-        that do (BigQuery → project, Trino → catalog).
+        Most engines don't support catalogs at all and return ``None``; the engine
+        spec overrides this for engines that do (BigQuery → project, Trino → catalog).
         """
         spec = self.db_engine_spec
         if spec is not None and hasattr(spec, "get_default_catalog"):
@@ -333,11 +300,8 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def get_default_schema(self, catalog: str | None = None) -> str | None:
         """Return the default schema for this database.
 
-        1:1 with ``Database.get_default_schema`` in
-        ``superset_old/models/core.py``
-        (line 604) — delegates to the engine spec's
-        :meth:`get_default_schema`, which lets dialect-specific
-        overrides (Postgres → ``public``, BigQuery → project-default,
+        Delegates to the engine spec's :meth:`get_default_schema`, which lets
+        dialect-specific overrides (Postgres → ``public``, BigQuery → project-default,
         etc.) take effect rather than the bare SQLAlchemy
         ``inspector.default_schema_name`` fallback.
         """
@@ -361,11 +325,8 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     ) -> str | None:
         """Return the default schema for a given query.
 
-        1:1 with ``Database.get_default_schema_for_query`` in
-        ``superset_old/models/core.py``
-        — delegates to the engine spec so dialects that compute the
-        default schema dynamically (e.g. ``USE schema``-aware engines)
-        can override.
+        Delegates to the engine spec so dialects that compute the default schema
+        dynamically (e.g. ``USE schema``-aware engines) can override.
         """
         spec = self.db_engine_spec
         if spec is None:
@@ -390,15 +351,9 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     ) -> Any:
         """Return a context manager yielding a sync SQLAlchemy engine.
 
-        1:1 with ``Database.get_sqla_engine`` in
-        ``superset_old/models/core.py``.
-        Wraps ``superset.utils.database.get_sync_engine`` which is the
-        Liteset-side equivalent of the original app's sync engine
-        registry. Used by ``compile_sqla_query`` and ``get_df``.
-
-        When ``override_ssh_tunnel`` is supplied, the engine is created
-        through the SSH tunnel (opened/torn down by the context manager),
-        mirroring upstream's ``override_ssh_tunnel`` parameter.
+        Wraps ``superset.utils.database.get_sync_engine``. Used by
+        ``compile_sqla_query`` and ``get_df``. When ``override_ssh_tunnel`` is
+        supplied, the engine is created through the SSH tunnel.
         """
         from superset.utils.database import get_sync_engine
 
@@ -420,18 +375,9 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     ) -> Any:
         """Return a context manager yielding a raw DBAPI connection.
 
-        1:1 with ``Database.get_raw_connection`` in
-        ``superset_old/models/core.py``: open a sync engine, run the
-        engine-spec prequeries (which select the catalog/schema), then yield
-        the raw connection.  Used by the **sync** engine-spec helpers
-        ``BaseEngineSpec.estimate_query_cost``,
-        ``BigQueryEngineSpec.get_latest_partition`` and
-        ``GSheetsEngineSpec.get_table_metadata`` — without this method those
-        paths raise ``AttributeError``.
-
-        Note: upstream additionally wraps the body in ``check_for_oauth2`` to
-        trigger OAuth2 re-auth; that helper is async-only in the port and
-        cannot run inside this synchronous context manager, so it is omitted.
+        Opens a sync engine, runs the engine-spec prequeries (which select the
+        catalog/schema), then yields the raw connection.  Used by sync engine-spec
+        helpers (``estimate_query_cost``, ``get_latest_partition``, etc.).
         """
         from contextlib import closing, contextmanager
 
@@ -458,12 +404,8 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def has_table(self, table: Any) -> bool:
         """Check that a physical table exists on the database.
 
-        1:1 with ``Database.has_table`` in ``superset_old/models/core.py``
-        (line 1104) — including the lowercase fallback.  ``table`` is a
-        :class:`superset.sql.parse.Table`.  Synchronous (engine-backed), so
-        async callers must run it in a thread.  SA 2.0 removed
-        ``Engine.has_table``; the inspector call is the documented
-        replacement with identical semantics.
+        ``table`` is a :class:`superset.sql.parse.Table`. Synchronous
+        (engine-backed), so async callers must run it in a thread.
         """
         from sqlalchemy import inspect as sa_inspect
 
@@ -486,15 +428,11 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     ) -> Any:
         """Return a context manager yielding a SQLAlchemy Inspector.
 
-        1:1 with ``Database.get_inspector`` in
-        ``superset_old/models/core.py``
-        (line 875). Both ``catalog`` and ``schema`` are forwarded to
-        ``get_sqla_engine`` so dialects that scope inspectors per
-        catalog/schema (e.g. BigQuery / MSSQL) bind to the right
-        namespace. ``ssh_tunnel`` is forwarded as ``override_ssh_tunnel``
-        so catalog/schema enumeration works for tunnel-only databases
-        (the port's ``get_sync_engine`` only honours an *explicit*
-        override; it does not auto-resolve the stored tunnel).
+        Both ``catalog`` and ``schema`` are forwarded to ``get_sqla_engine`` so
+        dialects that scope inspectors per catalog/schema (e.g. BigQuery / MSSQL)
+        bind to the right namespace. ``ssh_tunnel`` is forwarded as
+        ``override_ssh_tunnel`` so catalog/schema enumeration works for tunnel-only
+        databases.
         """
         from contextlib import contextmanager
 
@@ -517,24 +455,20 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def update_params_from_encrypted_extra(self, params: dict[str, Any]) -> None:
         """Merge sensitive connect params from ``encrypted_extra`` into ``params``.
 
-        1:1 with ``Database.update_params_from_encrypted_extra`` in
-        ``superset_old/models/core.py`` (line 985) — a thin delegate to
-        the engine spec's
+        Thin delegate to the engine spec's
         :meth:`BaseEngineSpec.update_params_from_encrypted_extra`, which
         parses ``encrypted_extra`` JSON and updates the engine kwargs.
         Mounted on :class:`Database` so connection-building paths and
         callers that need the raw engine kwargs decorated with the
-        encrypted secrets can invoke it exactly as upstream did.
+        encrypted secrets can invoke it.
         """
         self.db_engine_spec.update_params_from_encrypted_extra(self, params)
 
     def get_metrics(self, table: Any) -> list[dict[str, Any]]:
         """Fetch metric definitions for a table via the engine spec.
 
-        1:1 with ``Database.get_metrics`` in
-        ``superset_old/models/core.py`` (line 1016). ``table`` is a
-        :class:`superset.sql.parse.Table`. Synchronous (inspector-backed),
-        so callers in the async runtime must run it in a thread.
+        ``table`` is a :class:`superset.sql.parse.Table`. Synchronous
+        (inspector-backed), so callers in the async runtime must run it in a thread.
         """
         with self.get_inspector(
             catalog=table.catalog,
@@ -603,16 +537,13 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         cache: bool = False,
         cache_timeout: int | None = None,
     ) -> set[tuple[str, str, str | None]]:
-        """1:1 with ``Database.get_all_table_names_in_schema`` in
-        ``superset_old/models/core.py``.
+        """Return all table names in the given schema, with optional caching.
 
-        The original is sync and decorated with ``cache_util.memoized_func``
-        for the upstream cache layer.  The async port wraps the sync
-        inspector call with :func:`superset.utils.cache.memoized_func` so the
-        same
-        cache-key shape is reused (``db:{id}:catalog:{c}:schema:{s}:table_list``).
-        ``force`` / ``cache`` / ``cache_timeout`` are honoured by the
-        decorator at call-time exactly as in the original.
+        Wraps the sync inspector call with :func:`superset.utils.cache.memoized_func`
+        so the same cache-key shape is reused
+        (``db:{id}:catalog:{c}:schema:{s}:table_list``).
+        ``force`` / ``cache`` / ``cache_timeout`` are honoured by the decorator
+        at call-time.
         """
 
         from superset.extensions import cache_manager
@@ -658,8 +589,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         cache: bool = False,
         cache_timeout: int | None = None,
     ) -> set[tuple[str, str, str | None]]:
-        """1:1 with ``Database.get_all_view_names_in_schema`` in
-        ``superset_old/models/core.py``."""
+        """Return all view names in the given schema, with optional caching."""
 
         from superset.extensions import cache_manager
         from superset.utils.cache import memoized_func
@@ -700,12 +630,9 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     ) -> Any:
         """Take care of metric formatting / aliasing.
 
-        1:1 with ``Database.make_sqla_column_compatible`` in
-        ``superset_old/models/core.py``
-        (line 1129). Honours the engine spec's
-        ``get_allows_alias_in_select`` and ``make_label_compatible`` —
-        crucial for Oracle's 30-char label truncation and MSSQL's
-        bracketed alias quoting.
+        Honours the engine spec's ``get_allows_alias_in_select`` and
+        ``make_label_compatible`` — crucial for Oracle's 30-char label
+        truncation and MSSQL's bracketed alias quoting.
         """
         label_expected = label or sqla_col.name
         if self.db_engine_spec.get_allows_alias_in_select(self):
@@ -717,9 +644,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def mutate_sql_based_on_config(self, sql_: str, is_split: bool = False) -> str:
         """Apply ``SQL_QUERY_MUTATOR`` config hook to the SQL.
 
-        1:1 with ``Database.mutate_sql_based_on_config`` in
-        ``superset_old/models/core.py``
-        (line 652). The mutator is loaded from ``superset.config`` —
+        The mutator is loaded from ``superset.config`` —
         ``superset_config.py`` users can register a function as
         ``SQL_QUERY_MUTATOR``. Honours ``MUTATE_AFTER_SPLIT`` so the
         mutator either runs once on the whole script or on each
@@ -730,9 +655,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         which mirrors the read-only API surface mutators commonly
         need — ``get_user_id`` / ``current_user`` / ``is_user_admin``
         — while keeping the async :class:`AsyncSecurityManager`
-        separate.  Mutators that relied on the original
-        upstream ``SecurityManager`` for those three methods continue to
-        work unchanged.
+        separate.
         """
         try:
             from superset import config as _config
@@ -761,8 +684,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
             )
 
             sm_proxy = get_sync_security_manager_proxy()
-            # 1:1 with superset_old/models/core.py:663-669 — only
-            # ``security_manager`` and ``database`` are passed; the
+            # only ``security_manager`` and ``database`` are passed; the
             # current user is reachable via ``sm_proxy.current_user``.
             return sql_mutator(
                 sql_,
@@ -780,15 +702,12 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     ) -> str:
         """Compile a SQLAlchemy ``Select`` AST to a SQL string.
 
-        1:1 with ``Database.compile_sqla_query`` in
-        ``superset_old/models/core.py``
-        (line 741). Uses the dialect's identifier preparer for
-        engine-correct quoting and handles the ``%%`` double-percent
-        fixup that some DB-API drivers require. When ``is_virtual=True``
-        and the ``OPTIMIZE_SQL`` feature flag is enabled the rendered
-        SQL is also routed through :class:`SQLScript.optimize` which
-        applies predicate-pushdown and other SQLGlot-driven
-        optimizations on the virtual-dataset SELECT.
+        Uses the dialect's identifier preparer for engine-correct quoting
+        and handles the ``%%`` double-percent fixup that some DB-API drivers
+        require. When ``is_virtual=True`` and the ``OPTIMIZE_SQL`` feature
+        flag is enabled the rendered SQL is also routed through
+        :class:`SQLScript.optimize` which applies predicate-pushdown and
+        other SQLGlot-driven optimizations on the virtual-dataset SELECT.
         """
         # Match the original by reading the dialect from the engine
         # bound to ``catalog`` / ``schema`` so dialect plug-ins that
@@ -801,8 +720,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
 
         # OPTIMIZE_SQL — only meaningful for virtual datasources where
         # SQLGlot can push predicates / prune projections through the
-        # outer SELECT. 1:1 with original (line 757-759). Failures
-        # bubble up, matching the original's behaviour.
+        # outer SELECT. Failures bubble up.
         if is_virtual and self._is_optimize_sql_enabled():
             from superset.sql.parse import SQLScript
 
@@ -815,9 +733,8 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def _is_optimize_sql_enabled() -> bool:
         """Return whether the ``OPTIMIZE_SQL`` feature flag is enabled.
 
-        Matches the original's ``is_feature_enabled('OPTIMIZE_SQL')``
-        check. Wrapped in a static method so callers don't have to
-        import :mod:`superset.utils.feature_flags` directly.
+        Wrapped in a static method so callers don't have to import
+        :mod:`superset.utils.feature_flags` directly.
         """
         from superset.utils.feature_flags import feature_flag_manager
 
@@ -829,8 +746,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
 
         Returns the callable or ``None`` if unavailable. Resolved lazily
         so Celery workers pick up the operator's configured logger without
-        a legacy app context. 1:1 with the lazy-import block in
-        ``get_df``.
+        a legacy app context.
         """
         # The config module has no module-level QUERY_LOGGER attribute —
         # the operator's value reaches SupersetSettings via the
@@ -852,9 +768,8 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     ) -> None:
         """Invoke QUERY_LOGGER if configured.
 
-        Mirrors the ``_log_query`` closure from the original ``get_df``
-        implementation. Resolves the security-manager proxy lazily so
-        callers without a full app context do not raise.
+        Resolves the security-manager proxy lazily so callers without a
+        full app context do not raise.
         """
         if not log_query:
             return
@@ -877,23 +792,17 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     ) -> Any:
         """Execute SQL and return a pandas DataFrame.
 
-        Sync variant of the chart-data execute path. 1:1 with
-        ``superset_old/models/core.py:Database.get_df`` (line 672) —
-        runs the script statement-by-statement, applies the mutator on
-        the final result, and returns a DataFrame.
+        Sync variant of the chart-data execute path. Runs the script
+        statement-by-statement through the **engine spec**
+        (``execute`` + ``fetch_data``) and materialises rows via
+        :class:`SupersetResultSet`, so column de-duplication / type
+        coercion match every other code path.
 
         Used by helpers.ExploreMixin.exc_query and the prequery
         pipeline (series-limit fallback for engines without subquery
         joins). Most production paths in Liteset are async — this
         method exists so the synchronous helpers code path remains
         runnable when invoked from a worker thread.
-
-        1:1 with ``superset_old/models/core.py:Database.get_df``: runs the
-        script statement-by-statement through the **engine spec**
-        (``execute`` + ``fetch_data``) and materialises rows via
-        :class:`SupersetResultSet`, so column de-duplication / type
-        coercion match every other code path (the previous implementation
-        bypassed the engine spec and built the DataFrame from raw rows).
         """
         from contextlib import closing
 
@@ -904,12 +813,12 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         script = SQLScript(sql, self.db_engine_spec.engine)
         statements = list(script.statements)
 
-        # 1:1 with superset_old/models/core.py:680-681: open a throw-away
-        # engine context purely to capture ``engine.url`` for QUERY_LOGGER.
+        # open a throw-away engine context purely to capture
+        # ``engine.url`` for QUERY_LOGGER.
         with self.get_sqla_engine(catalog=catalog, schema=schema) as engine:
             engine_url = engine.url
 
-        # QUERY_LOGGER audit hook — 1:1 with superset_old/models/core.py:683-693.
+        # QUERY_LOGGER audit hook.
         log_query = self._resolve_log_query()
 
         with self.get_sqla_engine(catalog=catalog, schema=schema) as engine:
@@ -930,8 +839,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
                         statement.format(),
                         is_split=True,
                     )
-                    # QUERY_LOGGER + event_logger.log_context — 1:1 with
-                    # superset_old/models/core.py:703-709.
+                    # QUERY_LOGGER + event_logger.log_context.
                     self._call_log_query(log_query, engine_url, sql_, schema)
                     from superset.events import event_logger as _event_logger
 
@@ -953,16 +861,13 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def fetch_rows(self, cursor: Any, last: bool) -> list[tuple[Any, ...]] | None:
         """Fetch rows for the final statement only.
 
-        1:1 with ``superset_old/models/core.py:Database.fetch_rows``:
-        intermediate statements are drained and discarded; only the last
+        Intermediate statements are drained and discarded; only the last
         statement's rows are returned via the engine spec's ``fetch_data``.
-        Decorated with ``@event_logger.log_this`` — 1:1 with line 720.
         """
         from superset.events import event_logger as _event_logger
 
         # Use log_this_with_context(action=..., object_ref=...) so both the
-        # logged action and object_ref match the original @event_logger.log_this
-        # on the method directly (superset_old/models/core.py:720). Without an
+        # logged action and object_ref are recorded correctly. Without an
         # explicit object_ref the inner function's __qualname__ would be recorded
         # as "Database.fetch_rows.<locals>._fetch" rather than "Database.fetch_rows".
         @_event_logger.log_this_with_context(
@@ -983,17 +888,14 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     ) -> Any:
         """Materialise raw DB-API rows into a normalised DataFrame.
 
-        1:1 with ``superset_old/models/core.py:Database.load_into_dataframe``
-        — goes through :class:`SupersetResultSet` so column de-duplication
+        Goes through :class:`SupersetResultSet` so column de-duplication
         and type coercion match the rest of the codebase.
-        Decorated with ``@event_logger.log_this`` — 1:1 with line 728.
         """
         from superset.events import event_logger as _event_logger
         from superset.result_set import SupersetResultSet
 
         # Use log_this_with_context(action=..., object_ref=...) so both the
-        # logged action and object_ref match the original @event_logger.log_this
-        # on the method directly (superset_old/models/core.py:728). Without an
+        # logged action and object_ref are recorded correctly. Without an
         # explicit object_ref the inner function's __qualname__ would be recorded
         # as "Database.load_into_dataframe.<locals>._load" instead.
         @_event_logger.log_this_with_context(
@@ -1010,7 +912,6 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def post_process_df(df: Any) -> Any:
         """Serialise list/dict object columns to JSON strings.
 
-        1:1 with ``superset_old/models/core.py:Database.post_process_df``.
         Note: ``json_dumps_w_dates`` comes from :mod:`superset.utils.json`
         (the module-level ``json`` in this file is the stdlib one).
         """
@@ -1042,8 +943,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     ) -> str:
         """Generate a ``select *`` statement in the proper dialect.
 
-        1:1 with ``superset_old/models/core.py:Database.select_star`` —
-        delegates to the engine spec, binding the engine to the table's
+        Delegates to the engine spec, binding the engine to the table's
         catalog/schema so per-catalog dialects resolve correctly.
         """
         with self.get_sqla_engine(catalog=table.catalog, schema=table.schema) as engine:
@@ -1066,7 +966,6 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     ) -> str:
         """Apply (or tighten) a LIMIT on the last statement of ``sql``.
 
-        1:1 with ``superset_old/models/core.py:Database.apply_limit_to_sql``.
         The limit is only applied when it is stricter than the existing one
         (or when ``force`` is set), using the engine spec's ``limit_method``.
         """
@@ -1080,10 +979,6 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
             statement.set_limit_value(limit, self.db_engine_spec.limit_method)
 
         return script.format()
-
-    # ------------------------------------------------------------------
-    # Engine spec
-    # ------------------------------------------------------------------
 
     @property
     def db_engine_spec(self) -> type[BaseEngineSpec]:
@@ -1105,25 +1000,20 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def grains(self) -> tuple[TimeGrain, ...]:
         """Defines time granularity database-specific expressions.
 
-        1:1 with ``superset_old/models/core.py:Database.grains`` — delegates to
-        the engine spec's ``get_time_grains``. Consumed by the chart-data
-        ``result_type=timegrains`` branch.
+        Delegates to the engine spec's ``get_time_grains``. Consumed by the
+        chart-data ``result_type=timegrains`` branch.
         """
         return self.db_engine_spec.get_time_grains()
-
-    # ------------------------------------------------------------------
-    # Extra / encrypted_extra helpers
-    # ------------------------------------------------------------------
 
     def get_extra(self, source: QuerySource | None = None) -> dict[str, Any]:
         return self.db_engine_spec.get_extra_params(self, source)
 
     def get_schema_access_for_file_upload(self) -> set[str]:
-        """1:1 with ``Database.get_schema_access_for_file_upload``
-        (superset_old/models/core.py:1055-1068): ``literal_eval`` for legacy
-        string-encoded lists, plus the configurable
-        ``ALLOWED_USER_CSV_SCHEMA_FUNC`` hook (the request-scoped current
-        user read is replaced by the request-scoped ContextVar)."""
+        """Return schemas allowed for file upload.
+
+        Uses ``literal_eval`` for legacy string-encoded lists, plus the
+        configurable ``ALLOWED_USER_CSV_SCHEMA_FUNC`` hook.
+        """
         from ast import literal_eval
 
         allowed_databases = self.get_extra().get("schemas_allowed_for_file_upload", [])
@@ -1165,10 +1055,6 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         if hasattr(self.db_engine_spec, "mask_encrypted_extra"):
             return self.db_engine_spec.mask_encrypted_extra(self.encrypted_extra)
         return self.encrypted_extra
-
-    # ------------------------------------------------------------------
-    # Capability flags (derived from extra / db_engine_spec)
-    # ------------------------------------------------------------------
 
     @property
     def allows_subquery(self) -> bool:
@@ -1214,10 +1100,6 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         """Additional schema display config for engines with complex schemas."""
         return self.get_extra().get("schema_options", {})
 
-    # ------------------------------------------------------------------
-    # Cache-related properties
-    # ------------------------------------------------------------------
-
     @property
     def metadata_cache_timeout(self) -> dict[str, Any]:
         return self.get_extra().get("metadata_cache_timeout", {})
@@ -1253,10 +1135,6 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     @property
     def connect_args(self) -> dict[str, Any]:
         return self.get_extra().get("engine_params", {}).get("connect_args", {})
-
-    # ------------------------------------------------------------------
-    # Parameters / engine information
-    # ------------------------------------------------------------------
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -1322,10 +1200,6 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
             )
         return []
 
-    # ------------------------------------------------------------------
-    # data — dict serialization for API responses
-    # ------------------------------------------------------------------
-
     @property
     def data(self) -> dict[str, Any]:
         return {
@@ -1346,10 +1220,6 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
             "engine_information": self.engine_information,
         }
 
-    # ------------------------------------------------------------------
-    # Perm
-    # ------------------------------------------------------------------
-
     @hybrid_property
     def perm(self) -> str:
         return f"[{self.database_name}].(id:{self.id})"
@@ -1366,10 +1236,6 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     @property
     def sql_url(self) -> str:
         return f"/superset/sql/{self.id}/"
-
-    # ------------------------------------------------------------------
-    # URL helpers
-    # ------------------------------------------------------------------
 
     @classmethod
     def get_password_masked_url_from_uri(cls, uri: str) -> URL:
@@ -1404,10 +1270,9 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     def get_effective_user(self, object_url: URL) -> str | None:
         """Get the effective user, especially during impersonation.
 
-        1:1 with ``superset_old/models/core.py`` — prefer the current request
-        user (from the async ``_current_user_ctx`` context-var via
-        ``get_username()``), falling back to the URL's own username when
-        impersonation is enabled.
+        Prefers the current request user (from the async ``_current_user_ctx``
+        context-var via ``get_username()``), falling back to the URL's own
+        username when impersonation is enabled.
 
         :param object_url: SQL Alchemy URL object
         :return: The effective username
@@ -1422,24 +1287,17 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
             else None
         )
 
-    # ------------------------------------------------------------------
-    # OAuth2 (1:1 with superset_old/models/core.py)
-    # ------------------------------------------------------------------
-
     def is_oauth2_enabled(self) -> bool:
         """Return True when OAuth2 is enabled for this database.
 
-        Mirrors ``Database.is_oauth2_enabled`` from the original — checks
-        first for an in-row override in ``encrypted_extra``, then for a
-        global engine-spec-level config.
+        Checks first for an in-row override in ``encrypted_extra``, then
+        for a global engine-spec-level config.
         """
         try:
             client_config = self.get_oauth2_config()
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-            # 1:1 with the original, which catches marshmallow's
-            # ``ValidationError`` here. Our msgspec validator
-            # (:func:`validate_oauth2_client_config`) raises ``ValueError``
-            # for a missing required field (e.g. ``scope``) or a bad
+            # Catches validation errors from validate_oauth2_client_config —
+            # a missing required field (e.g. ``scope``) or a bad
             # ``request_content_type`` — both must be treated as
             # "not configured", not propagated.
             logger.warning("Invalid OAuth2 client configuration for database %s", self)
@@ -1452,17 +1310,11 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
         Per-database overrides live in ``encrypted_extra.oauth2_client_info``;
         falls back to the global engine-spec-level config.
 
-        1:1 with ``Database.get_oauth2_config`` in
-        ``superset_old/models/core.py`` (line 1162), which does
-        ``OAuth2ClientConfigSchema().load(oauth2_client_info)``. We route
-        the in-row override through
-        :func:`superset.utils.oauth2.validate_oauth2_client_config` —
-        the msgspec port of that schema — so the same validation is
-        enforced: ``scope`` is *required* (a missing scope raises rather
-        than silently defaulting to ``""``), ``request_content_type`` is
-        restricted to ``json``/``data``, and ``redirect_uri`` defaults to
-        the deployment callback. A malformed override surfaces as a
-        ``ValueError`` exactly as the original marshmallow load would.
+        The in-row override is routed through
+        :func:`superset.utils.oauth2.validate_oauth2_client_config` so the
+        same validation is enforced: ``scope`` is *required*, ``request_content_type``
+        is restricted to ``json``/``data``, and ``redirect_uri`` defaults to the
+        deployment callback. A malformed override surfaces as a ``ValueError``.
         """
         encrypted_extra = self.get_encrypted_extra()
         if oauth2_client_info := encrypted_extra.get("oauth2_client_info"):

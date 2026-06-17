@@ -24,9 +24,7 @@ import msgspec
 class LogPostSchema(msgspec.Struct, forbid_unknown_fields=True):
     """POST body for ``/api/v1/log/``.
 
-    Mirrors the original ``LogRestApi`` which does not declare
-    ``add_columns`` — upstream defaults it to ``[<pk>]`` (only
-    ``id``). Therefore POSTs containing any other field
+    Only ``id`` is accepted; POSTs containing any other field
     (``action``, ``json``, ``dashboard_id``, …) are rejected as unknown
     via ``forbid_unknown_fields=True``. An empty body is accepted (200).
     """

@@ -481,7 +481,7 @@ async def test_create_tag_relationship(async_session: AsyncSession) -> None:
 #   Nested(Schema)._serialize(None, ...) → None  → "null" in JSON
 #   Schema.dump(42)    → {}  (all getattr misses → every field omitted)
 #
-# superset_old/daos/tag.py:190/213/236 store ``obj.created_by_fk`` (int or None)
+# The DAO stores ``obj.created_by_fk`` (int or None)
 # which Marshmallow then serialises:
 #   integer FK → {}
 #   None        → null

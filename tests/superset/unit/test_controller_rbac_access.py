@@ -18,7 +18,7 @@
 dropped on several READ endpoints (live-probed as a Gamma user).
 
 Each endpoint here must enforce datasource/dashboard access BEFORE returning
-data — 1:1 with upstream, which calls ``datasource.raise_for_access()`` /
+data, calling ``datasource.raise_for_access()`` /
 ``dashboard.raise_for_access()`` (and the ``dashboard_access_filters`` base
 filter). Without these, a low-privilege user could read column values, chart
 definitions, or generated SQL of objects they cannot access.
@@ -51,10 +51,6 @@ def _denied() -> SupersetSecurityException:
         )
     )
 
-
-# ---------------------------------------------------------------------------
-# datasource column values — must raise_for_access(datasource=...) → 403
-# ---------------------------------------------------------------------------
 
 _get_column_values = _fn(DatasourceController, "get_column_values")
 
@@ -97,13 +93,7 @@ async def test_column_values_access_check_runs_before_reading_values():
         current_user=MagicMock(),
     )
     assert result.status_code == 403
-    # Values must NOT have been read after a denial.
     datasource.async_values_for_column.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# dashboard /charts /datasets /tabs — must access-filter (→404) + raise_for_access
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("method", ["get_charts", "get_datasets", "get_tabs"])
@@ -112,7 +102,6 @@ async def test_dashboard_subendpoint_access_filtered_404(method):
     404, not leak its charts/datasets/tab structure."""
     controller = DashboardController(owner=MagicMock())
     dao = MagicMock()
-    # The access base-filter excludes the dashboard → loader returns None.
     dao.get_full_by_id_or_slug = AsyncMock(return_value=None)
     sm = MagicMock()
     sm.raise_for_access = AsyncMock()
@@ -156,20 +145,15 @@ async def test_dashboard_subendpoint_raise_for_access_denies(method):
     sm.raise_for_access.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------
-# GET /chart/{id}/data/ — access-scoped lookup → 404 (not 403 leaking ds name)
-# ---------------------------------------------------------------------------
-
 _get_chart_data = _fn(ChartController, "get_chart_data")
 
 
 async def test_chart_data_get_access_filtered_404():
     """A chart the user can't access must 404 (access base-filter excludes it),
-    not 403 leaking the backing datasource name. Mirrors upstream
-    ``datamodel.get(pk, base_filters)``."""
+    not 403 leaking the backing datasource name."""
     controller = ChartController(owner=MagicMock())
     dao = MagicMock()
-    dao.find_all = AsyncMock(return_value=[])  # access filter excludes the chart
+    dao.find_all = AsyncMock(return_value=[])
     sm = MagicMock()
     state = MagicMock()
     state.settings = MagicMock(global_async_queries=False)
@@ -188,14 +172,7 @@ async def test_chart_data_get_access_filtered_404():
                 current_user=MagicMock(),
                 state=state,
             )
-    # The lookup must be the access-scoped find_all, not an unfiltered find_by_id.
     dao.find_all.assert_awaited_once()
-
-
-# ---------------------------------------------------------------------------
-# dashboard copy + get_embedded — must access-filter (→404) like the full GET
-# (upstream wraps both in @with_dashboard → DashboardDAO.get_by_id_or_slug 403/404)
-# ---------------------------------------------------------------------------
 
 
 async def test_dashboard_copy_access_filtered_404():
@@ -204,7 +181,7 @@ async def test_dashboard_copy_access_filtered_404():
 
     controller = DashboardController(owner=MagicMock())
     dao = MagicMock()
-    dao.get_full_by_id_or_slug = AsyncMock(return_value=None)  # filtered out
+    dao.get_full_by_id_or_slug = AsyncMock(return_value=None)
     sm = MagicMock()
     sm.raise_for_access = AsyncMock()
     with patch(
@@ -228,7 +205,7 @@ async def test_dashboard_get_embedded_access_filtered_404():
     """Gamma must NOT read the embedded config of an inaccessible dashboard."""
     controller = DashboardController(owner=MagicMock())
     dao = MagicMock()
-    dao.get_full_by_id_or_slug = AsyncMock(return_value=None)  # filtered out
+    dao.get_full_by_id_or_slug = AsyncMock(return_value=None)
     sm = MagicMock()
     sm.raise_for_access = AsyncMock()
     with patch(
@@ -245,10 +222,6 @@ async def test_dashboard_get_embedded_access_filtered_404():
                 current_user=MagicMock(),
             )
 
-
-# ---------------------------------------------------------------------------
-# datasource detail GET — exposes schema/columns/SQL; must raise_for_access → 403
-# ---------------------------------------------------------------------------
 
 _get_datasource = _fn(DatasourceController, "get_datasource")
 
@@ -278,7 +251,7 @@ async def test_dashboard_create_permalink_access_filtered_404():
 
     controller = DashboardController(owner=MagicMock())
     dao = MagicMock()
-    dao.get_full_by_id_or_slug = AsyncMock(return_value=None)  # filtered out
+    dao.get_full_by_id_or_slug = AsyncMock(return_value=None)
     sm = MagicMock()
     sm.raise_for_access = AsyncMock()
     user = MagicMock()
@@ -297,11 +270,6 @@ async def test_dashboard_create_permalink_access_filtered_404():
                 security_manager=sm,
                 current_user=user,
             )
-
-
-# ---------------------------------------------------------------------------
-# explore — must raise_for_access(datasource=) → 403 (upstream get_explore)
-# ---------------------------------------------------------------------------
 
 
 async def test_explore_datasource_denied_returns_403():
@@ -330,11 +298,6 @@ async def test_explore_datasource_denied_returns_403():
     assert result.status_code == 403
 
 
-# ---------------------------------------------------------------------------
-# database tables — must filter to accessible tables (gamma → empty), not leak
-# ---------------------------------------------------------------------------
-
-
 async def test_database_tables_filters_inaccessible():
     from superset.controllers.database import DatabaseController
 
@@ -344,7 +307,6 @@ async def test_database_tables_filters_inaccessible():
     dao.find_by_id = AsyncMock(return_value=db)
     dao.get_table_extra_lookup = AsyncMock(return_value={})
     sm = MagicMock()
-    # No DB access and no accessible schemas → table/view names must be dropped.
     sm.can_access_database = AsyncMock(return_value=False)
     sm.get_schemas_accessible_by_user = AsyncMock(return_value=[])
 
@@ -419,8 +381,8 @@ def test_database_get_ssh_tunnel_requires_can_write() -> None:
 
 
 def test_user_avatar_requires_authentication() -> None:
-    """GET /user/{id}/avatar.png must require authentication — 1:1 with upstream
-    which 401s anonymous callers; the port used exclude_from_auth (R15-02)."""
+    """GET /user/{id}/avatar.png must require authentication.
+    The port had used exclude_from_auth (R15-02) allowing anonymous access."""
     from superset.controllers.user import UserPublicController
     from superset.guards.rbac import require_authentication
 

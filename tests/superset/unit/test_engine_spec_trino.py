@@ -98,9 +98,7 @@ def test_trino_fallback_error():
 
 
 def test_sync_trino_get_extra_params_source_user_agent() -> None:
-    """get_extra_params must set connect_args['source'] to the user-agent string
-    (1:1 with superset_old; gap was: source key was simply missing in the port).
-    """
+    """get_extra_params must set connect_args['source'] to the user-agent string."""
     from superset.db_engine_specs.trino import TrinoEngineSpec
 
     database = MagicMock()
@@ -196,8 +194,8 @@ def test_sync_trino_custom_auth_denied() -> None:
 async def test_trino_get_columns_falls_back_on_no_such_table() -> None:
     """get_columns must fall back to SHOW COLUMNS when NoSuchTableError is raised.
 
-    1:1 with superset_old/db_engine_specs/trino.py:459 — only NoSuchTableError
-    triggers the SHOW COLUMNS fallback; other exceptions must propagate.
+    Only NoSuchTableError triggers the SHOW COLUMNS fallback; other exceptions
+    must propagate.
     """
     mock_conn = AsyncMock()
 
@@ -223,8 +221,7 @@ async def test_trino_get_columns_falls_back_on_no_such_table() -> None:
 async def test_trino_get_columns_propagates_other_errors() -> None:
     """Non-NoSuchTableError exceptions must propagate, not be silently swallowed.
 
-    1:1 with superset_old/db_engine_specs/trino.py:459 — the original only
-    catches NoSuchTableError; connection failures, permission errors, etc.
+    Only NoSuchTableError is caught; connection failures, permission errors, etc.
     must reach the caller.
     """
     mock_conn = AsyncMock()

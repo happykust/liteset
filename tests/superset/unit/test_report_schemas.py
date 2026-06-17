@@ -48,7 +48,7 @@ def _decode_post(payload: bytes) -> ReportSchedulePostSchema:
 
 
 # ---------------------------------------------------------------------------
-# creation_method — POST schema (superset_old/reports/schemas.py:195-200)
+# creation_method — POST schema
 # ``fields.Enum(required=False)`` with NO allow_none:
 #   absent  → not in Marshmallow output dict (server_default='alerts_reports')
 #   null    → HTTP 422
@@ -107,7 +107,7 @@ def test_post_creation_method_valid_value_passes_through() -> None:
 
 
 # ---------------------------------------------------------------------------
-# validator_config_json — POST schema (superset_old/reports/schemas.py:211)
+# validator_config_json — POST schema
 # ``fields.Nested(ValidatorConfigJSONSchema)`` with NO allow_none:
 #   absent  → not in Marshmallow output dict (column default='{}' applies)
 #   null    → HTTP 422
@@ -170,7 +170,7 @@ def test_post_validator_config_json_valid_value_passes_through() -> None:
 
 # ---------------------------------------------------------------------------
 # ReportSchedulePutSchema — validator_config_json null rejection
-# (superset_old/reports/schemas.py:349 — fields.Nested with NO allow_none)
+# (fields.Nested with NO allow_none)
 # ---------------------------------------------------------------------------
 
 
@@ -220,8 +220,8 @@ def test_put_validator_config_json_valid_value_passes_through() -> None:
 
 # ---------------------------------------------------------------------------
 # ReportSchedulePutSchema — extra null rejection
-# (superset_old/reports/schemas.py:371 — fields.Dict(dump_default=None) with
-# NO allow_none; dump_default only affects serialisation, not loading)
+# (fields.Dict(dump_default=None) with NO allow_none; dump_default only
+# affects serialisation, not loading)
 # ---------------------------------------------------------------------------
 
 

@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dashboard/delete.py``."""
+"""Dashboard delete commands."""
 
 from __future__ import annotations
 
@@ -54,10 +54,8 @@ class DeleteDashboardCommand(AsyncBaseCommand[None]):
         self._dashboard = await self._dao.find_by_id(self._dashboard_id)
         if not self._dashboard:
             raise ObjectNotFoundError("Dashboard", self._dashboard_id)
-        # Visibility scope — upstream ``DashboardDAO.find_by_ids`` applies
-        # ``DashboardAccessFilter`` (base_filter), so a dashboard outside the
-        # caller's scope is a 404 BEFORE the reports/ownership checks; a 403
-        # here would disclose its existence (R14-06).
+        # Return 404 (not 403) for inaccessible dashboards to avoid
+        # disclosing existence.
         from superset.commands.utils import filter_visible_ids
         from superset.db.filters import dashboard_access_filters
         from superset.models.dashboard import Dashboard
@@ -72,9 +70,8 @@ class DeleteDashboardCommand(AsyncBaseCommand[None]):
         )
         if self._dashboard_id not in visible:
             raise ObjectNotFoundError("Dashboard", self._dashboard_id)
-        # Check there are no associated ReportSchedules — 1:1 with the
-        # original, which raises BEFORE the ownership check (a dashboard with
-        # alerts/reports reports "reports exist", not "forbidden").
+        # Check reports before ownership: "reports exist" error takes precedence over
+        # "forbidden" so the caller understands why deletion is blocked.
         from superset.db.daos.report import AsyncReportScheduleDAO
 
         reports = await AsyncReportScheduleDAO(self._dao.session).find_by_dashboard_ids(
@@ -93,10 +90,6 @@ class DeleteDashboardCommand(AsyncBaseCommand[None]):
     async def run(self) -> None:
         assert self._dashboard is not None
         dashboard_id = self._dashboard.id
-        # Remove implicit tags before deleting — 1:1 with
-        # ``DashboardUpdater.after_delete`` which fires only when the
-        # TAGGING_SYSTEM feature flag is enabled (listeners are only registered
-        # when the flag is on; see ``superset_old/app.py:158``).
         if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
             await delete_tagged_objects(self._dao.session, "dashboard", dashboard_id)
         await self._dao.delete([self._dashboard])
@@ -123,9 +116,7 @@ class BulkDeleteDashboardsCommand(AsyncBaseCommand[None]):
         self._dashboards = await self._dao.find_by_ids(self._dashboard_ids)
         found_ids = {int(d.id) for d in self._dashboards}
         missing = set(self._dashboard_ids) - found_ids
-        # Visibility scope — ids outside the caller's DashboardAccessFilter
-        # scope read as missing, exactly like upstream's filtered
-        # ``find_by_ids`` (R14-06).
+        # Treat inaccessible IDs as missing to avoid disclosing their existence.
         from superset.commands.utils import filter_visible_ids
         from superset.db.filters import dashboard_access_filters
         from superset.models.dashboard import Dashboard
@@ -141,9 +132,6 @@ class BulkDeleteDashboardsCommand(AsyncBaseCommand[None]):
         missing |= found_ids - visible
         if missing:
             raise ObjectNotFoundError("Dashboard", str(sorted(missing)))
-        # Check there are no associated ReportSchedules — 1:1 with the
-        # original ``DeleteDashboardCommand``, which raises BEFORE the
-        # ownership check.
         from superset.db.daos.report import AsyncReportScheduleDAO
 
         reports = await AsyncReportScheduleDAO(self._dao.session).find_by_dashboard_ids(
@@ -154,7 +142,6 @@ class BulkDeleteDashboardsCommand(AsyncBaseCommand[None]):
             raise DashboardDeleteFailedReportsExistError(
                 f"There are associated alerts or reports: {report_names}"
             )
-        # Ownership check
         if self._security_manager is not None:
             for dashboard in self._dashboards:
                 await self._security_manager.raise_for_ownership(
@@ -162,10 +149,6 @@ class BulkDeleteDashboardsCommand(AsyncBaseCommand[None]):
                 )
 
     async def run(self) -> None:
-        # Remove implicit tags before deleting — 1:1 with
-        # ``DeleteDashboardCommand.run()`` which ports
-        # ``DashboardUpdater.after_delete`` (fires per-row when TAGGING_SYSTEM
-        # is enabled; see ``superset_old/app.py:158``).
         if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
             for dashboard in self._dashboards:
                 await delete_tagged_objects(

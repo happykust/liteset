@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/database/validate.py``."""
+"""Command for validating database engine connection parameters."""
 
 from __future__ import annotations
 
@@ -37,7 +37,6 @@ BYPASS_VALIDATION_ENGINES = {"bigquery", "snowflake"}
 class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
     """Validate database engine parameters.
 
-    Ported from superset_old/commands/database/validate.py.
     Delegates validation to the engine spec's ``validate_parameters``
     method, then optionally builds an ephemeral database and tries to
     connect.  Engines that are only validated on-create (BigQuery,
@@ -57,8 +56,6 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
         if not self._data.get("engine"):
             raise CommandInvalidError("engine is required")
 
-        # If an existing database ID is provided, load it so we can
-        # unmask encrypted extras later.
         database_id = self._data.get("id")
         if database_id is not None and self._dao is not None:
             self._model = await self._dao.find_by_id(database_id)
@@ -69,13 +66,11 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
         engine = self._data["engine"]
         driver = self._data.get("driver")
 
-        # Skip engines that are only validated on-create
         if engine in BYPASS_VALIDATION_ENGINES:
             return {"errors": []}
 
         spec_class = get_engine_spec(engine, driver)
 
-        # Check that the engine supports parameter-based configuration
         if not hasattr(spec_class, "parameters_schema"):
             from superset.exceptions import SupersetErrorsException
 
@@ -97,18 +92,8 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
 
         errors: list[dict[str, Any]] = []
 
-        # Run engine-specific parameter validation.
-        #
-        # ``spec_class.validate_parameters`` is a synchronous classmethod
-        # that calls ``is_hostname_valid`` / ``is_port_open`` — both of
-        # which wrap ``socket.getaddrinfo`` and ``socket.connect``.  Those
-        # block for seconds when DNS or the target host is down, which
-        # starves the asyncio event loop and cascades into 5+ sequential
-        # validate requests each taking 4s on a non-resolvable host like
-        # ``badhost``.  In the original backend each request was
-        # on its own worker thread, so the blocking was hidden per-call.
-        # Run the sync validator on the threadpool to restore that
-        # concurrency model.
+        # ``validate_parameters`` calls socket.getaddrinfo/connect which block
+        # for seconds when DNS or the host is down — run in a thread.
         import asyncio
 
         try:
@@ -120,7 +105,7 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
                     if isinstance(err, dict):
                         errors.append(err)
                     else:
-                        # SupersetError objects — convert to SIP-40 dict
+                        # SupersetError objects — convert to SIP-40 dict shape.
                         errors.append(
                             {
                                 "message": getattr(err, "message", str(err)),
@@ -134,8 +119,6 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
                             }
                         )
         except NotImplementedError:
-            # Engine doesn't implement custom validation — fall through
-            # to basic checks below.
             pass
         except Exception as ex:
             errors.append({"message": str(ex)})
@@ -149,7 +132,6 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
                 message=errors[0].get("message", "Validation error"),
             )
 
-        # Basic required-field checks for parameter-based configs
         parameters = self._data.get("parameters", {})
         if parameters:
             for field_name in ("host", "database"):
@@ -170,12 +152,8 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
                 message=errors[0].get("message", "Validation error"),
             )
 
-        # Connection ping — 1:1 with upstream
-        # ``ValidateDatabaseParametersCommand.run``: the engine-spec checks
-        # above only verify hostname/port reachability, so build an ephemeral
-        # DB from the parameters and actually connect (``do_ping``). This
-        # catches a reachable host with WRONG credentials / a non-DB service
-        # (the port previously returned OK → user got a false "valid").
+        # Full connection ping: the engine-spec checks only verify reachability;
+        # this catches wrong credentials or a non-DB service at the port.
         import json as _json
 
         from superset.commands.database.test_connection import _ping
@@ -205,11 +183,8 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
             impersonate_user=self._data.get("impersonate_user", False),
             encrypted_extra=_json.dumps(encrypted_extra),
         )
-        # If the URI still carries the password MASK (an existing-DB validation
-        # where the real password wasn't unmasked — e.g. only non-credential
-        # params were echoed back), pinging would always auth-fail. Skip the
-        # ping in that case so editing an existing DB doesn't false-fail; the
-        # engine-spec param validation above already ran.
+        # If the URI still carries the password mask (existing-DB edit where
+        # credentials weren't echoed back), skip the ping to avoid false-fail.
         from superset.constants import PASSWORD_MASK
 
         if PASSWORD_MASK in (sqlalchemy_uri or ""):
@@ -227,7 +202,7 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
 
         alive, ping_error = await asyncio.to_thread(_do_ping)
         if not alive:
-            # OAuth2-needed → accept (flow triggers on first query); 1:1 upstream.
+            # OAuth2-needed → accept; the dance triggers on the first real query.
             if (
                 ping_error is not None
                 and database.is_oauth2_enabled()
@@ -247,7 +222,6 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
                     ping_error, context
                 )
                 raise SupersetErrorsException(conn_errors, status=400) from ping_error
-            # Reachable + connected but ping returned False → offline (422).
             raise SupersetErrorsException(
                 errors=[
                     {

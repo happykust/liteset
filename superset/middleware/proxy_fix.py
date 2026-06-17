@@ -61,9 +61,8 @@ def _get_trusted_value(
     decoded = raw.decode("latin-1")
     parts = [p.strip() for p in decoded.split(",")]
 
-    # Mirror the upstream exactly: trust the value only when the chain is at
-    # least ``num_proxies`` long, then take the ``num_proxies``-th from
-    # the right.  A shorter chain is untrusted -> None.
+    # A chain shorter than num_proxies means the attacker-controllable leftmost
+    # value would be taken → treat as untrusted.
     if len(parts) < num_proxies:
         return None
 
@@ -128,28 +127,20 @@ class ProxyFixMiddleware(ASGIMiddleware):
             await next_app(scope, receive, send)
             return
 
-        # Build a fast lookup of header name -> raw value.
-        # ASGI headers are a list of [name, value] byte pairs.
         headers: dict[bytes, bytes] = {}
         for name, value in scope.get("headers", []):
-            # Use the first occurrence of each header (consistent
-            # with the upstream behaviour).
             headers.setdefault(name, value)
 
-        # --- X-Forwarded-For -> scope["client"] ---
         forwarded_for = _get_trusted_value(
             headers.get(b"x-forwarded-for"),
             self.x_for,
         )
         if forwarded_for is not None:
-            # Client is (host, port).  We only know the IP from the
-            # header; preserve the original port if present.
             original_port = 0
             if scope.get("client") is not None:
                 original_port = scope["client"][1]  # type: ignore[index]
             scope["client"] = (forwarded_for, original_port)
 
-        # --- X-Forwarded-Proto -> scope["scheme"] ---
         forwarded_proto = _get_trusted_value(
             headers.get(b"x-forwarded-proto"),
             self.x_proto,
@@ -157,14 +148,11 @@ class ProxyFixMiddleware(ASGIMiddleware):
         if forwarded_proto is not None:
             scope["scheme"] = forwarded_proto.lower()
 
-        # --- X-Forwarded-Host -> Host header ---
         forwarded_host = _get_trusted_value(
             headers.get(b"x-forwarded-host"),
             self.x_host,
         )
         if forwarded_host is not None:
-            # Replace the Host header in the scope so that downstream
-            # code (e.g. url_for, request.host) sees the original host.
             new_headers: list[tuple[bytes, bytes]] = []
             host_replaced = False
             for h_name, h_value in scope.get("headers", []):
@@ -177,12 +165,10 @@ class ProxyFixMiddleware(ASGIMiddleware):
                 new_headers.append((b"host", forwarded_host.encode("latin-1")))
             scope["headers"] = new_headers
 
-            # Also update scope["server"] host portion if present.
             if scope.get("server") is not None:
                 _, port = scope["server"]  # type: ignore[misc]
                 scope["server"] = (forwarded_host.split(":")[0], port)
 
-        # --- X-Forwarded-Port -> scope["server"] port ---
         forwarded_port = _get_trusted_value(
             headers.get(b"x-forwarded-port"),
             self.x_port,
@@ -201,16 +187,13 @@ class ProxyFixMiddleware(ASGIMiddleware):
                     forwarded_port,
                 )
 
-        # --- X-Forwarded-Prefix -> scope["root_path"] ---
         forwarded_prefix = _get_trusted_value(
             headers.get(b"x-forwarded-prefix"),
             self.x_prefix,
         )
         if forwarded_prefix is not None:
-            # REPLACE root_path with the forwarded prefix — 1:1 with the
-            # upstream ProxyFix (``environ["SCRIPT_NAME"] = x_forwarded_prefix``).
-            # Prepending instead would double-count the prefix in a sub-path
-            # deployment where the server already set ``root_path``.
+            # REPLACE (not prepend) root_path — prepending would double-count
+            # the prefix when the server already set root_path in a sub-path deployment.
             prefix = forwarded_prefix.rstrip("/")
             if prefix:
                 scope["root_path"] = prefix

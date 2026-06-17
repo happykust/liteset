@@ -14,13 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Tests for LegacyApiController.
-
-``/api/v1/query`` and ``/api/v1/explore/form_data`` are NOT deprecated stubs —
+"""``/api/v1/query`` and ``/api/v1/explore/form_data`` are NOT deprecated stubs —
 they are real, functional endpoints served by ``QueryController`` and
 ``ExploreFormDataController`` respectively. ``LegacyApiController`` only hosts
-the still-active ``/api/v1/time_range/`` endpoint (ported 1:1 from the original
-``superset/views/api.py``).
+the still-active ``/api/v1/time_range/`` endpoint.
 """
 
 from __future__ import annotations
@@ -39,7 +36,6 @@ _time_range = LegacyApiController.time_range.fn
 
 
 async def test_time_range_with_valid_q() -> None:
-    """GET /api/v1/time_range/?q=<rison> resolves a human-readable range."""
     request = MagicMock()
     request.query_params = {"q": prison.dumps("Last week")}
 
@@ -53,7 +49,6 @@ async def test_time_range_with_valid_q() -> None:
 
 
 async def test_time_range_missing_q() -> None:
-    """Missing ``q`` raises a validation error (1:1 with the original view)."""
     request = MagicMock()
     request.query_params = {}
 
@@ -62,12 +57,10 @@ async def test_time_range_missing_q() -> None:
 
 
 def test_query_is_a_real_endpoint() -> None:
-    """``/api/v1/query`` is a functional REST resource, not a deprecated stub."""
     assert QueryController.path == "/api/v1/query"
 
 
 def test_form_data_is_a_real_endpoint() -> None:
-    """``/api/v1/explore/form_data`` is a functional resource, not a stub."""
     assert ExploreFormDataController.path == "/api/v1/explore/form_data"
 
 

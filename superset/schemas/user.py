@@ -37,18 +37,15 @@ class CurrentUserResponse(msgspec.Struct):
     email: str
     is_active: bool
     is_anonymous: bool
-    # ``login_count`` is required and integer in the original
-    # ``UserResponseSchema`` (superset_old/views/users/schemas.py:38) — the
-    # OpenAPI spec marks it as a non-nullable int, so we default to 0
-    # rather than None when the underlying user has never logged in.
+    # ``login_count`` is a non-nullable int in the OpenAPI spec; default to 0
+    # when the user has never logged in.
     login_count: int = 0
     roles: list[RoleResponseSchema] = []
 
 
 class CurrentUserUpdateRequest(msgspec.Struct):
-    # Upstream ``CurrentUserPutSchema`` applies ``Length(1, 64)`` to both name
-    # fields (superset_old/views/users/schemas.py:44-53).  msgspec enforces
-    # these as decode-time constraints via ``Annotated[str, Meta(...)]``.
+    # Both name fields are constrained to 1-64 characters; enforced as
+    # decode-time constraints via ``Annotated[str, Meta(...)]``.
     first_name: Annotated[str, Meta(min_length=1, max_length=64)] | None = None
     last_name: Annotated[str, Meta(min_length=1, max_length=64)] | None = None
     # Password length is intentionally unconstrained at the schema level;

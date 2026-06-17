@@ -87,17 +87,14 @@ def load_examples_from_configs(  # noqa: C901
                 config["database_id"] = database_ids[db_uuid]
 
             if config.get("schema") is None:
-                # 1:1 with original ImportExamplesCommand which uses
-                # get_example_default_schema() to get the examples DB schema
+                # Uses get_example_default_schema() to get the examples DB schema
                 examples_eng = _ctx.get_example_engine(examples_db)
                 config["schema"] = _ctx.get_schema(examples_eng)
 
             try:
                 ds = _import_dataset(config, force_data=force_data)
             except Exception as exc:
-                # 1:1 with original ImportExamplesCommand which catches
-                # MultipleResultsFound for duplicate datasets (see
-                # superset_old/commands/importers/v1/examples.py:136)
+                # Catches MultipleResultsFound for duplicate datasets.
                 # Multiple results can be found for datasets. There was a bug in
                 # load-examples that resulted in datasets being loaded with a NULL
                 # schema. Users could then add a new dataset with the same name in
@@ -129,9 +126,8 @@ def load_examples_from_configs(  # noqa: C901
                 if chart:
                     chart_ids[str(config.get("uuid", ""))] = chart.id
 
-    # Import dashboards — wrap in try/except KeyError: continue to match
-    # superset_old/commands/importers/v1/examples.py:176-179 which skips
-    # dashboards whose chart/dataset ID references cannot be resolved.
+    # Import dashboards — wrap in try/except KeyError: continue to
+    # skip dashboards whose chart/dataset ID references cannot be resolved.
     for filename, config in configs.items():
         if filename.startswith("dashboards/") and config:
             try:
@@ -290,9 +286,8 @@ def _import_dataset(config: dict[str, Any], force_data: bool = False) -> Any:
         .first()
     )
     if existing:
-        # 1:1 with original import_dataset(overwrite=True, ignore_permissions=True)
-        # used by ImportExamplesCommand: update all export_fields attributes
-        # and sync (delete-then-re-insert) columns + metrics from config.
+        # Update all export_fields attributes and sync (delete-then-re-insert)
+        # columns + metrics from config.
         # Without this, re-runs after YAML updates leave stale field values,
         # and new/removed columns or metrics are never applied.
         existing.table_name = table_name
@@ -336,8 +331,7 @@ def _import_dataset(config: dict[str, Any], force_data: bool = False) -> Any:
         _import_dataset_metrics(existing, config.get("metrics", []))
         _ctx.session.flush()
 
-        # 1:1 with superset_old/commands/dataset/importers/v1/utils.py:175-186:
-        # the ``data_uri and (not table_exists or force_data)`` check runs for
+        # The ``data_uri and (not table_exists or force_data)`` check runs for
         # existing metadata records too — if the physical table was dropped,
         # a plain re-run of load-examples must recreate it.
         data_uri = config.get("data")
@@ -377,8 +371,7 @@ def _import_dataset(config: dict[str, Any], force_data: bool = False) -> Any:
         always_filter_main_dttm=config.get("always_filter_main_dttm", False),
         is_sqllab_view=config.get("is_sqllab_view", False),
         # import_from_dict sets every export_fields key on the new record
-        # too (superset_old/commands/dataset/importers/v1/utils.py:160) —
-        # keep parity with the UPDATE branch above.
+        # too — keep parity with the UPDATE branch above.
         catalog=config.get("catalog"),
         params=_serialize_extra(config.get("params")),
         default_endpoint=config.get("default_endpoint"),
@@ -395,8 +388,7 @@ def _import_dataset(config: dict[str, Any], force_data: bool = False) -> Any:
     _ctx.session.flush()
 
     # Load data from CSV if data URI is present.
-    # 1:1 with superset_old/commands/dataset/importers/v1/utils.py:175-186:
-    # only load data when the physical table does not already exist, or when
+    # Only load data when the physical table does not already exist, or when
     # force_data=True, to avoid overwriting pre-existing table data.
     data_uri = config.get("data")
     if data_uri:
@@ -589,11 +581,9 @@ def _import_chart(config: dict[str, Any]) -> Any:
     from superset.models.slice import Slice
 
     slice_name = config.get("slice_name", "")
-    # Deduplicate by UUID — 1:1 with the original ``import_chart``
-    # (superset_old/commands/chart/importers/v1/utils.py:52:
-    # ``filter_by(uuid=config["uuid"])``). A slice_name-based lookup lets a
-    # chart whose uuid already exists (under a different name) fall through to an
-    # INSERT, raising a ``slices.uuid`` UniqueViolation on re-run / shared uuid.
+    # Deduplicate by UUID. A slice_name-based lookup lets a chart whose uuid
+    # already exists (under a different name) fall through to an INSERT,
+    # raising a ``slices.uuid`` UniqueViolation on re-run / shared uuid.
     chart_uuid = config.get("uuid")
     existing = (
         _ctx.session.query(Slice).filter_by(uuid=uuid_module.UUID(chart_uuid)).first()
@@ -657,11 +647,9 @@ def _import_dashboard(
     from superset.utils import json
 
     slug = config.get("slug", "")
-    # Deduplicate by UUID — 1:1 with the original ``import_dashboard``
-    # (superset_old/commands/dashboard/importers/v1/utils.py:203:
-    # ``filter_by(uuid=config["uuid"])``). A slug-based lookup breaks on the
-    # six example dashboards shipping ``slug: null`` — every re-run of
-    # load-examples would INSERT a duplicate row instead of updating.
+    # Deduplicate by UUID. A slug-based lookup breaks on the six example
+    # dashboards shipping ``slug: null`` — every re-run of load-examples
+    # would INSERT a duplicate row instead of updating.
     existing = (
         _ctx.session.query(Dashboard)
         .filter_by(uuid=uuid_module.UUID(config["uuid"]))
@@ -698,9 +686,7 @@ def _import_dashboard(
         dash.json_metadata = json.dumps(metadata)  # type: ignore[assignment]
 
     # Link charts to dashboard via dashboard_slices — insert-only, never
-    # delete existing relationships.  1:1 with the original
-    # ``ImportExamplesCommand._import()`` which queries all existing
-    # ``(dashboard_id, slice_id)`` pairs and only inserts missing ones.
+    # delete existing relationships.
     _ctx.session.flush()  # ensure dash.id is assigned before FK insert
 
     chart_uuids = _find_chart_uuids(position) if isinstance(position, dict) else set()
@@ -734,10 +720,8 @@ def _import_dashboard(
 def _find_chart_uuids(position: dict[str, Any]) -> set[str]:
     """Extract chart UUIDs from dashboard position_json.
 
-    Returns a SET like the original ``find_chart_uuids``
-    (superset_old/commands/dashboard/importers/v1/utils.py:33-34) — a UUID
-    appearing in several CHART components must not produce duplicate
-    ``dashboard_slices`` rows (UniqueConstraint → IntegrityError).
+    Returns a set; a UUID appearing in several CHART components must not produce
+    duplicate ``dashboard_slices`` rows (UniqueConstraint → IntegrityError).
     """
     uuids = set()
     for component in position.values():
@@ -798,18 +782,16 @@ def _update_metadata_chart_ids(  # noqa: C901
 
     id_map = _build_old_to_new_id_map(position, chart_ids)
 
-    # timed_refresh_immune_slices: 1:1 with the original
-    # superset_old/commands/dashboard/importers/v1/utils.py:77-79 which uses
-    # id_map[old_id] (bare access — raises KeyError for unmapped IDs).
-    # The caller must wrap in try/except KeyError: continue to skip the
-    # whole dashboard when any chart is unmapped, matching original behaviour.
+    # timed_refresh_immune_slices: uses id_map[old_id] (bare access — raises
+    # KeyError for unmapped IDs). The caller must wrap in try/except
+    # KeyError: continue to skip the whole dashboard when any chart is unmapped.
     if "timed_refresh_immune_slices" in metadata:
         metadata["timed_refresh_immune_slices"] = [
             id_map[old_id] for old_id in metadata["timed_refresh_immune_slices"]
         ]
 
-    # expanded_slices: 1:1 with the original (lines 100-103) — raises KeyError
-    # for unmapped IDs; caller must catch KeyError to skip the dashboard.
+    # expanded_slices: raises KeyError for unmapped IDs; caller must catch
+    # KeyError to skip the dashboard.
     if "expanded_slices" in metadata:
         metadata["expanded_slices"] = {
             str(id_map[int(old_id)]): value
@@ -817,10 +799,9 @@ def _update_metadata_chart_ids(  # noqa: C901
         }
 
     if "default_filters" in metadata:
-        # 1:1 with the original (lines 105-113): no try/except — let
-        # json.JSONDecodeError / TypeError propagate so the caller's
-        # `except KeyError: continue` does NOT catch it and the import aborts,
-        # matching the original behaviour on malformed default_filters.
+        # No try/except — let json.JSONDecodeError / TypeError propagate so the
+        # caller's `except KeyError: continue` does NOT catch it and the import
+        # aborts on malformed default_filters.
         default_filters = _json.loads(metadata["default_filters"])
         metadata["default_filters"] = _json.dumps(
             {
@@ -831,17 +812,15 @@ def _update_metadata_chart_ids(  # noqa: C901
         )
 
     if "filter_scopes" in metadata:
-        # 1:1 with the original (lines 84-97): outer keys and immune entries
-        # not in id_map are DROPPED (not kept with stale IDs).
+        # Outer keys and immune entries not in id_map are DROPPED (not kept
+        # with stale IDs).
         metadata["filter_scopes"] = {
             str(id_map[int(old_id)]): columns
             for old_id, columns in metadata["filter_scopes"].items()
             if int(old_id) in id_map
         }
-        # 1:1 with update_id_refs (superset_old/commands/dashboard/importers/
-        # v1/utils.py:91-97): no defensive isinstance/"immune" guards — a
-        # malformed config raises (KeyError/AttributeError) exactly like the
-        # original instead of being silently skipped.
+        # No defensive isinstance/"immune" guards — a malformed config raises
+        # (KeyError/AttributeError) instead of being silently skipped.
         for columns in metadata["filter_scopes"].values():
             for attributes in columns.values():
                 attributes["immune"] = [
@@ -858,9 +837,9 @@ def _update_metadata_chart_ids(  # noqa: C901
                 target["datasetId"] = dataset_info[dataset_uuid]["datasource_id"]
         scope_excluded = native_filter.get("scope", {}).get("excluded", [])
         if scope_excluded:
-            # 1:1 with original (utils.py:139-141): drop IDs not in id_map;
-            # id_map.get(old_id, old_id) kept stale IDs pointing to arbitrary
-            # charts in the target DB, causing incorrect filter scoping.
+            # Drop IDs not in id_map; id_map.get(old_id, old_id) kept stale
+            # IDs pointing to arbitrary charts in the target DB, causing
+            # incorrect filter scoping.
             native_filter["scope"]["excluded"] = [
                 id_map[old_id] for old_id in scope_excluded if old_id in id_map
             ]
@@ -871,7 +850,7 @@ def _update_metadata_chart_ids(  # noqa: C901
         "excluded", []
     )
     if global_scope_excluded:
-        # 1:1 with original (utils.py:157-159): drop unmapped IDs.
+        # Drop unmapped IDs.
         cross_filter_global_config["scope"]["excluded"] = [
             id_map[old_id] for old_id in global_scope_excluded if old_id in id_map
         ]
@@ -896,7 +875,7 @@ def _update_metadata_chart_ids(  # noqa: C901
                 if isinstance(scope, dict):
                     excluded_scope = scope.get("excluded", [])
                     if excluded_scope:
-                        # 1:1 with original (utils.py:182-186): drop unmapped IDs.
+                        # Drop unmapped IDs.
                         chart_config["crossFilters"]["scope"]["excluded"] = [
                             id_map[old_id]
                             for old_id in excluded_scope
@@ -972,9 +951,8 @@ def _import_datasets_from_configs(
 
     dataset_info: dict[str, Any] = {}
     examples_db = _ctx.get_example_database()
-    # Resolve the examples DB schema once — 1:1 with
-    # superset_old/commands/importers/v1/examples.py:125-127 which always
-    # calls ``get_example_default_schema()`` before importing any dataset.
+    # Resolve the examples DB schema once — always calls
+    # ``get_example_default_schema()`` before importing any dataset.
     examples_eng = _ctx.get_example_engine(examples_db)
     default_schema = _ctx.get_schema(examples_eng)
 
@@ -984,8 +962,7 @@ def _import_datasets_from_configs(
             config["database_id"] = (
                 database_ids[db_uuid] if db_uuid in database_ids else examples_db_id
             )
-            # Resolve schema=None to the engine default — mirrors the original
-            # ImportExamplesCommand._import (examples.py:125-127).
+            # Resolve schema=None to the engine default.
             if config.get("schema") is None:
                 config["schema"] = default_schema
             ds = _import_dataset(config, force_data=force_data)
@@ -1023,8 +1000,7 @@ def _import_dashboards_from_configs(
     """Import dashboard configs."""
     for filename, config in configs.items():
         if filename.startswith("dashboards/") and config:
-            # Mirror superset_old/commands/importers/v1/examples.py:176-179:
-            # skip dashboards whose chart references cannot be resolved.
+            # Skip dashboards whose chart references cannot be resolved.
             try:
                 _import_dashboard(config, chart_ids, dataset_info)
             except KeyError:
@@ -1038,17 +1014,11 @@ def load_configs_from_directory(
 ) -> None:
     """Load all the examples from a given directory.
 
-    1:1 port of ``superset_old/examples/utils.load_configs_from_directory``.
     Reads YAML files relative to *root*, strips the ``type`` key from
     ``metadata.yaml`` (so any exported model can be imported directly from an
-    unzipped bundle directory), then delegates to :func:`load_examples_from_configs`
-    after temporarily replacing the configs directory.
-
-    The original delegates to ``ImportExamplesCommand(contents, …).run()``;
-    the port reuses the equivalent direct-import pipeline via
-    :func:`_import_database`, :func:`_import_dataset`, :func:`_import_chart`,
-    and :func:`_import_dashboard` that :func:`load_examples_from_configs`
-    already calls.
+    unzipped bundle directory), then imports via :func:`_import_database`,
+    :func:`_import_dataset`, :func:`_import_chart`, and
+    :func:`_import_dashboard`.
     """
     from superset.examples import _ctx
 

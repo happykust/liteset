@@ -14,25 +14,23 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""OAuth2 helpers — async port of ``superset_old/utils/oauth2.py``.
+"""OAuth2 helpers.
 
 Provides:
 
 * :class:`OAuth2ClientConfig`, :class:`OAuth2State`, :class:`OAuth2TokenResponse`
   TypedDicts.
 * :func:`encode_oauth2_state` / :func:`decode_oauth2_state` — JWT-backed
-  signed-token round-trip for the OAuth2 ``state`` parameter (1:1 with the
-  jwt-based encoding from the original).
+  signed-token round-trip for the OAuth2 ``state`` parameter.
 * :func:`get_oauth2_access_token` — returns a valid access token for the
   ``(database_id, user_id)`` pair, refreshing it via the engine spec when the
   cached token is expired.  Async (uses :class:`httpx.AsyncClient` for token
   refresh requests).
-* :func:`refresh_oauth2_token` — async port of the original public
-  ``refresh_oauth2_token`` helper.
-* :func:`check_for_oauth2` — :func:`@asynccontextmanager` matching the
-  original signature ``check_for_oauth2(database)``.
+* :func:`refresh_oauth2_token` — async token refresh helper.
+* :func:`check_for_oauth2` — asynccontextmanager with signature
+  ``check_for_oauth2(database)``.
 * :class:`OAuth2StateSchema` / :class:`OAuth2ClientConfigSchema` — msgspec
-  structs that mirror the marshmallow schemas in the original.
+  validation structs for OAuth2 state and client config.
 """
 
 from __future__ import annotations
@@ -62,22 +60,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Lifetime of a state token.  1:1 with the original
-# ``superset_old/utils/oauth2.py:JWT_EXPIRATION``.
+# Lifetime of a state token.
 JWT_EXPIRATION = timedelta(minutes=5)
 
 
-# ---------------------------------------------------------------------------
-# TypedDicts (1:1 with superset_old/superset_typing.py)
-# ---------------------------------------------------------------------------
-
-
 class OAuth2ClientConfig(TypedDict):
-    """Configuration for an OAuth2 client.
-
-    Fields mirror the marshmallow schema in
-    ``superset_old/utils/oauth2.py:OAuth2ClientConfigSchema``.
-    """
+    """Configuration for an OAuth2 client."""
 
     id: str
     secret: str
@@ -108,11 +96,6 @@ class OAuth2State(TypedDict):
     tab_id: str
 
 
-# ---------------------------------------------------------------------------
-# Settings access
-# ---------------------------------------------------------------------------
-
-
 def _get_settings() -> "SupersetSettings":
     """Return a :class:`SupersetSettings` instance.
 
@@ -134,25 +117,15 @@ def _get_secret_key() -> str:
 
 
 def _get_jwt_algorithm() -> str:
-    """Return the JWT algorithm configured for OAuth2 state signing.
-
-    Mirrors ``app.config["DATABASE_OAUTH2_JWT_ALGORITHM"]`` from the
-    original.
-    """
+    """Return the JWT algorithm configured for OAuth2 state signing."""
     settings = _get_settings()
     return getattr(settings, "database_oauth2_jwt_algorithm", "HS256") or "HS256"
-
-
-# ---------------------------------------------------------------------------
-# Schemas (msgspec ports of the marshmallow schemas in the original)
-# ---------------------------------------------------------------------------
 
 
 class OAuth2StateSchema(msgspec.Struct, kw_only=True):
     """Validates the OAuth2 ``state`` payload after JWT decoding.
 
-    1:1 port of ``superset_old/utils/oauth2.py:OAuth2StateSchema`` — required
-    fields with type validation; extra keys (e.g. ``exp``) are tolerated.
+    Required fields with type validation; extra keys (e.g. ``exp``) are tolerated.
     """
 
     database_id: int
@@ -162,10 +135,7 @@ class OAuth2StateSchema(msgspec.Struct, kw_only=True):
 
 
 class OAuth2ClientConfigSchema(msgspec.Struct, kw_only=True):
-    """Validates an OAuth2 client config dict.
-
-    1:1 port of ``superset_old/utils/oauth2.py:OAuth2ClientConfigSchema``.
-    """
+    """Validates an OAuth2 client config dict."""
 
     id: str
     secret: str
@@ -182,12 +152,9 @@ _ALLOWED_REQUEST_CONTENT_TYPES = frozenset({"json", "data"})
 def _default_oauth2_redirect_uri() -> str:
     """Return the default OAuth2 redirect URI.
 
-    The original calls ``url_for("DatabaseRestApi.oauth2", _external=True)``
-    inside the marshmallow ``load_default``.  Without a request
-    context we synthesise the absolute URI from
-    ``WEBDRIVER_BASEURL + DATABASE_OAUTH2_REDIRECT_URI`` (matching the
-    deployment-supplied callback).  Falls back to the bare path when no
-    base URL is configured.
+    Synthesises the absolute URI from ``WEBDRIVER_BASEURL +
+    DATABASE_OAUTH2_REDIRECT_URI`` when no request context is available.
+    Falls back to the bare path when no base URL is configured.
     """
     settings = _get_settings()
     override = getattr(settings, "database_oauth2_redirect_uri", "") or ""
@@ -207,7 +174,6 @@ def validate_oauth2_client_config(client: dict[str, Any]) -> OAuth2ClientConfig:
 
     Raises :class:`ValueError` when a required field is missing or the
     ``request_content_type`` is not one of ``json``/``data``.
-    Mirrors :class:`OAuth2ClientConfigSchema` from the original.
     """
     try:
         validated = msgspec.convert(client, OAuth2ClientConfigSchema)
@@ -233,17 +199,10 @@ def validate_oauth2_client_config(client: dict[str, Any]) -> OAuth2ClientConfig:
     )
 
 
-# ---------------------------------------------------------------------------
-# State encode / decode
-# ---------------------------------------------------------------------------
-
-
 def encode_oauth2_state(state: dict[str, Any]) -> str:
     """Encode the OAuth2 ``state`` into a signed JWT.
 
-    1:1 with ``encode_oauth2_state`` in
-    ``superset_old/utils/oauth2.py``: signs
-    with ``SECRET_KEY`` + ``DATABASE_OAUTH2_JWT_ALGORITHM`` and stamps an
+    Signs with ``SECRET_KEY`` + ``DATABASE_OAUTH2_JWT_ALGORITHM`` and stamps an
     ``exp`` claim 5 minutes in the future.  Periods are escaped for
     compatibility with Google OAuth2.
     """
@@ -268,8 +227,7 @@ def decode_oauth2_state(encoded_state: str) -> dict[str, Any]:
     """Decode and validate a JWT produced by :func:`encode_oauth2_state`.
 
     JWT exceptions (``jwt.ExpiredSignatureError``, ``jwt.InvalidTokenError``)
-    propagate to the caller unmodified — 1:1 with the original
-    ``superset_old/utils/oauth2.py:decode_oauth2_state``.
+    propagate to the caller unmodified.
     """
     # Reverse the period-escape applied during encoding.
     encoded_state = encoded_state.replace("%2E", ".")
@@ -304,11 +262,6 @@ def decode_oauth2_state(encoded_state: str) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Access-token retrieval / refresh
-# ---------------------------------------------------------------------------
-
-
 @backoff.on_exception(
     backoff.expo,
     CreateKeyValueDistributedLockFailedException,
@@ -324,8 +277,6 @@ async def get_oauth2_access_token(
     session: "AsyncSession",
 ) -> str | None:
     """Return a valid OAuth2 access token, refreshing it on demand.
-
-    Mirrors ``superset_old/utils/oauth2.py:get_oauth2_access_token``:
 
     * Looks up the row in ``database_user_oauth2_tokens``.
     * Returns the cached ``access_token`` when still valid.
@@ -385,8 +336,7 @@ async def refresh_oauth2_token(
 
     The IDP exchange + DB write are performed under a KV-backed distributed
     lock so concurrent dashboards refreshing the same ``(user_id, database_id)``
-    pair don't all hit the IDP and risk losing a rotated refresh token (1:1
-    with ``superset_old/utils/oauth2.py:refresh_oauth2_token``).
+    pair don't all hit the IDP and risk losing a rotated refresh token.
     """
     async with KeyValueDistributedLock(
         namespace="refresh_oauth2_token",
@@ -427,11 +377,9 @@ def sync_refresh_oauth2_token(
 ) -> str | None:
     """Use the refresh token to get a new access token and persist it (sync).
 
-    1:1 with upstream ``superset_old/utils/oauth2.py:refresh_oauth2_token``
-    (originally synchronous): the IDP exchange + DB write run under a
-    KV-backed distributed lock so concurrent sync refreshes for the same
-    ``(user_id, database_id)`` pair don't all hit the IDP and risk losing a
-    rotated refresh token.
+    The IDP exchange + DB write run under a KV-backed distributed lock so
+    concurrent sync refreshes for the same ``(user_id, database_id)`` pair
+    don't all hit the IDP and risk losing a rotated refresh token.
 
     ``token`` must be attached to ``session`` — the caller
     (:func:`sync_get_oauth2_access_token`) loads it in the same session it
@@ -480,13 +428,11 @@ def sync_get_oauth2_access_token(
 ) -> str | None:
     """Synchronous OAuth2 access-token lookup for the connection path.
 
-    1:1 with upstream's (originally synchronous)
-    ``get_oauth2_access_token``, reading ``database_user_oauth2_tokens`` via
-    the sync metadata session (``get_sync_session`` / psycopg2). Used by
-    :func:`get_sync_engine` to thread a per-user OAuth2 Bearer into
-    impersonation — the OAuth2 engines (Trino / BigQuery / Snowflake /
-    Databricks / GSheets) are sync-only, so this is the connection path that
-    matters.
+    Reads ``database_user_oauth2_tokens`` via the sync metadata session
+    (``get_sync_session`` / psycopg2).  Used by :func:`get_sync_engine`
+    to thread a per-user OAuth2 Bearer into impersonation — the OAuth2
+    engines (Trino / BigQuery / Snowflake / Databricks / GSheets) are
+    sync-only, so this is the connection path that matters.
 
     * Returns the cached ``access_token`` when still valid.
     * If expired but a ``refresh_token`` is present, refreshes it inline via
@@ -515,7 +461,7 @@ def sync_get_oauth2_access_token(
                 and datetime.now() < token.access_token_expiration
             ):
                 return cast("str | None", token.access_token)
-            # Expired but refreshable: refresh inline (1:1 upstream).
+            # Expired but refreshable: refresh inline.
             if token.refresh_token:
                 return sync_refresh_oauth2_token(
                     config,
@@ -525,8 +471,8 @@ def sync_get_oauth2_access_token(
                     token,
                     session,
                 )
-            # Expired and no refresh token: drop the row (1:1 upstream) so the
-            # OAuth2 dance re-triggers.
+            # Expired and no refresh token: drop the row so the OAuth2
+            # dance re-triggers.
             session.delete(token)
             session.commit()
             return None
@@ -535,19 +481,13 @@ def sync_get_oauth2_access_token(
         return None
 
 
-# ---------------------------------------------------------------------------
-# OAuth2 dance trigger (1:1 with original ``check_for_oauth2``)
-# ---------------------------------------------------------------------------
-
-
 @asynccontextmanager
 async def check_for_oauth2(database: "Database") -> AsyncIterator[None]:
     """Run async code and trigger the OAuth2 dance on driver-level failure.
 
-    1:1 port of ``superset_old/utils/oauth2.py:check_for_oauth2`` — the
-    original is a ``@contextmanager``; here the body may emit awaits and
-    ``start_oauth2_dance`` is async (it raises ``OAuth2RedirectError``
-    after building the authorization URL).
+    Async contextmanager; the body may emit awaits and ``start_oauth2_dance``
+    is async (it raises ``OAuth2RedirectError`` after building the
+    authorization URL).
 
     Usage::
 
@@ -562,21 +502,11 @@ async def check_for_oauth2(database: "Database") -> AsyncIterator[None]:
         raise
 
 
-# ---------------------------------------------------------------------------
-# OAuth2 timeout helper (used by engine specs)
-# ---------------------------------------------------------------------------
-
-
 def get_oauth2_timeout() -> timedelta:
     """Return the configured OAuth2 HTTP-request timeout."""
     settings = _get_settings()
     seconds = int(getattr(settings, "database_oauth2_timeout", 30))
     return timedelta(seconds=seconds)
-
-
-# ---------------------------------------------------------------------------
-# Engine-spec OAuth2 helpers (used by base / per-engine specs)
-# ---------------------------------------------------------------------------
 
 
 def get_oauth2_clients() -> dict[str, dict[str, Any]]:

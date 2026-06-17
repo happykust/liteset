@@ -14,19 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for DatabaseController.select_star — NoSuchTableError → 404.
-
-Regression guard for the original behaviour documented in
-``superset_old/databases/api.py:1236-1238``:
-
-    except NoSuchTableError:
-        return self.response(404, message='Table not found on the database')
-
-Prior to the fix, ``_engine_select_star_sync`` swallowed ``NoSuchTableError``
-in the broad ``except Exception`` fallback and returned plain SQL, so the
-endpoint always returned HTTP 200 even for non-existent tables.
-"""
-
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -43,10 +30,6 @@ from superset.controllers.database import (
 from superset.exceptions import ObjectNotFoundError
 from superset.sql.parse import Table
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _get_raw_method(method_name: str):
     handler = getattr(DatabaseController, method_name)
@@ -58,7 +41,6 @@ _select_star_with_schema = _get_raw_method("select_star_with_schema")
 
 
 def _make_database_mock(*, raise_no_such_table: bool = False) -> MagicMock:
-    """Return a mock Database whose engine spec raises NoSuchTableError."""
     db_engine_spec = MagicMock()
     if raise_no_such_table:
         db_engine_spec.select_star.side_effect = NoSuchTableError("no_such")
@@ -77,18 +59,9 @@ def _make_database_mock(*, raise_no_such_table: bool = False) -> MagicMock:
     return database
 
 
-# ---------------------------------------------------------------------------
-# _engine_select_star_sync — unit tests
-# ---------------------------------------------------------------------------
-
-
 def test_engine_select_star_sync_reraises_no_such_table() -> None:
-    """``_engine_select_star_sync`` must NOT swallow ``NoSuchTableError``.
-
-    Original: ``database.select_star(table, latest_partition=True)`` raises
-    ``NoSuchTableError`` which propagates to the endpoint; liteset must not
-    catch it in the broad ``except Exception`` fallback.
-    """
+    """``_engine_select_star_sync`` must NOT swallow ``NoSuchTableError`` in the
+    broad ``except Exception`` fallback — the error must propagate to the endpoint."""
     database = _make_database_mock(raise_no_such_table=True)
     table = Table("nonexistent_table", None)
 
@@ -97,7 +70,6 @@ def test_engine_select_star_sync_reraises_no_such_table() -> None:
 
 
 def test_engine_select_star_sync_returns_sql_on_success() -> None:
-    """Normal path: valid table → SQL string returned."""
     database = _make_database_mock(raise_no_such_table=False)
     table = Table("my_table", None)
 
@@ -106,7 +78,6 @@ def test_engine_select_star_sync_returns_sql_on_success() -> None:
 
 
 def test_engine_select_star_sync_fallback_on_generic_error() -> None:
-    """Non-NoSuchTableError exceptions still produce fallback SQL (not re-raised)."""
     db_engine_spec = MagicMock()
     db_engine_spec.select_star.side_effect = RuntimeError("generic engine error")
     del db_engine_spec.quote_table  # ensure the quote_table branch is skipped
@@ -122,25 +93,14 @@ def test_engine_select_star_sync_fallback_on_generic_error() -> None:
     database.sqlalchemy_uri = "postgresql://localhost/db"
 
     table = Table("my_table", "public")
-    # Should NOT raise — fallback SQL is returned
     sql = _engine_select_star_sync(database, table)
     assert "my_table" in sql
     assert "public" in sql
 
 
-# ---------------------------------------------------------------------------
-# select_star endpoint — NoSuchTableError → ObjectNotFoundError (404)
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_select_star_no_such_table_raises_404() -> None:
-    """GET /{pk}/select_star/{table_name}/ on a non-existent table → 404.
-
-    Mirrors ``superset_old/databases/api.py:1236-1238``:
-        except NoSuchTableError:
-            return self.response(404, message='Table not found on the database')
-    """
+    """GET /{pk}/select_star/{table_name}/ on a non-existent table → 404."""
     dao = AsyncMock()
     dao.find_by_id.return_value = MagicMock()
 
@@ -167,7 +127,6 @@ async def test_select_star_no_such_table_raises_404() -> None:
 
 @pytest.mark.asyncio
 async def test_select_star_success_returns_sql() -> None:
-    """GET /{pk}/select_star/{table_name}/ on an existing table → 200 with SQL."""
     dao = AsyncMock()
     dao.find_by_id.return_value = MagicMock()
 
@@ -191,11 +150,6 @@ async def test_select_star_success_returns_sql() -> None:
         )
 
     assert result.result == expected_sql
-
-
-# ---------------------------------------------------------------------------
-# select_star_with_schema endpoint — NoSuchTableError → ObjectNotFoundError (404)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -227,7 +181,6 @@ async def test_select_star_with_schema_no_such_table_raises_404() -> None:
 
 @pytest.mark.asyncio
 async def test_select_star_with_schema_success_returns_sql() -> None:
-    """GET /{pk}/select_star/{table}/{schema}/ on an existing table → SQL."""
     dao = AsyncMock()
     dao.find_by_id.return_value = MagicMock()
 

@@ -80,7 +80,7 @@ async def test_clear_prefix(mock_redis):
     from unittest.mock import MagicMock
 
     mock_pipe = MagicMock()
-    mock_pipe.delete = MagicMock()  # sync mock to avoid coroutine warnings
+    mock_pipe.delete = MagicMock()
     mock_pipe.execute = AsyncMock()
     mock_pipe.__aenter__ = AsyncMock(return_value=mock_pipe)
     mock_pipe.__aexit__ = AsyncMock(return_value=False)
@@ -138,10 +138,10 @@ async def test_binary_cache_default_is_non_decoding():
 
 def test_metastore_namespace_seeds_from_config_key():
     """filter_state and explore_form_data metastore slots must get DISTINCT
-    UUID namespaces, seeded from the config-key NAME — 1:1 with upstream
-    (``cache_config.get("CACHE_KEY_PREFIX", cache_config_key)``). Collapsing
+    UUID namespaces, seeded from the config-key name via
+    ``cache_config.get("CACHE_KEY_PREFIX", cache_config_key)``. Collapsing
     both to ``get_uuid_namespace("")`` drops per-slot isolation and fails to
-    read back rows an upstream Superset wrote under the named namespace."""
+    read back rows written under the named namespace."""
     from unittest.mock import MagicMock
 
     from superset.cache.manager import _build_metastore_cache_from_config

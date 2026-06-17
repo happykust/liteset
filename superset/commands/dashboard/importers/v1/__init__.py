@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dashboard/importers/v1/__init__.py``."""
+"""Dashboard importer (v1 ZIP bundle format)."""
 
 from __future__ import annotations
 
@@ -48,23 +48,11 @@ if TYPE_CHECKING:
 
 
 class ImportDashboardsCommand(AsyncImportModelsCommand):
-    """Import dashboards from a ZIP bundle.
-
-    Ported 1:1 from superset_old/commands/dashboard/importers/v1/.
-    This is the MOST COMPLEX import. Resolves dependencies:
-    databases -> datasets -> charts -> dashboards.
-
-    Handles:
-    - UUID-based dedup at every level
-    - position_json and json_metadata JSON deserialization/serialization
-    - update_id_refs — full ID reference update (chart IDs, filter scopes,
-      expanded slices, default filters, native filters, cross-filter scoping)
-    - dashboard_slices M2M relationship management via explicit inserts
-    - All dashboard fields (css, certified_by, certification_details, etc.)
-    - Owner management
+    """
+    Import dashboards from a ZIP bundle
+    (databases -> datasets -> charts -> dashboards).
     """
 
-    # 1:1 with upstream metadata-type validation (``Dashboard``).
     _expected_type = "Dashboard"
 
     def __init__(
@@ -92,10 +80,6 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
         return result is not None
 
     async def run(self) -> None:  # noqa: C901
-        """Orchestrate import: databases -> datasets -> charts -> dashboards.
-
-        Ported 1:1 from ImportDashboardsCommand._import in the original.
-        """
         if self._configs is None:
             raise CommandInvalidError("validate() must be called before run()")
         if self._dao is None:
@@ -108,7 +92,6 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
         configs = self._configs
         session = self._dao.session
 
-        # 1. Discover charts, datasets, themes associated with dashboards
         chart_uuids: set[str] = set()
         dataset_uuids: set[str] = set()
         theme_uuids: set[str] = set()
@@ -121,7 +104,6 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
                 if config.get("theme_uuid"):
                     theme_uuids.add(config["theme_uuid"])
 
-        # 2. Discover datasets associated with needed charts
         for file_name, config in configs.items():
             if (
                 file_name.startswith("charts/")
@@ -132,7 +114,6 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
                 if ds_uuid:
                     dataset_uuids.add(ds_uuid)
 
-        # 3. Discover databases associated with needed datasets
         database_uuids: set[str] = set()
         for file_name, config in configs.items():
             if (
@@ -144,7 +125,6 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
                 if db_uuid:
                     database_uuids.add(db_uuid)
 
-        # 4a. Import related themes (overwrite=False)
         from superset.commands.theme_import import import_theme
 
         theme_ids: dict[str, int] = {}
@@ -158,7 +138,6 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
                 if theme is not None:
                     theme_ids[str(theme.uuid)] = theme.id
 
-        # 4b. Import related databases (overwrite=False)
         database_ids: dict[str, int] = {}
         for file_name, config in configs.items():
             if (
@@ -169,7 +148,6 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
                 db = await _import_database(session, config)
                 database_ids[str(db.uuid)] = db.id
 
-        # 5. Import datasets with correct parent ref (overwrite=False)
         dataset_info: dict[str, dict[str, Any]] = {}
         for file_name, config in configs.items():
             if (
@@ -185,7 +163,6 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
                     "datasource_name": dataset.table_name,
                 }
 
-        # 6. Import charts with correct parent ref (overwrite=False)
         charts: list[Any] = []
         chart_ids: dict[str, int] = {}
         for file_name, config in configs.items():
@@ -194,7 +171,6 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
                 and isinstance(config, dict)
                 and config.get("dataset_uuid") in dataset_info
             ):
-                # Update datasource id, type, and name
                 dataset_dict = dataset_info[config["dataset_uuid"]]
                 config = update_chart_config_dataset(config, dataset_dict)
 
@@ -208,7 +184,6 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
                 charts.append(chart)
                 chart_ids[str(chart.uuid)] = chart.id
 
-                # Tag import for the chart (gated on TAGGING_SYSTEM).
                 if "tags" in config and config["tags"]:
                     try:
                         await import_tag(
@@ -224,7 +199,6 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
                             chart.id,
                         )
 
-        # 7. Get existing dashboard-chart relationships
         existing_relationships_stmt = sa_select(
             dashboard_slices.c.dashboard_id,
             dashboard_slices.c.slice_id,
@@ -232,14 +206,12 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
         existing_result = await session.execute(existing_relationships_stmt)
         existing_relationships = set(existing_result.fetchall())
 
-        # 8. Import dashboards
         dashboards: list[Dashboard] = []
         dashboard_chart_ids: list[tuple[int, int]] = []
         for file_name, config in configs.items():
             if file_name.startswith("dashboards/") and isinstance(config, dict):
                 config = update_id_refs(config, chart_ids, dataset_info)
 
-                # Resolve theme_uuid -> theme_id (1:1 with original).
                 if "theme_uuid" in config:
                     if config["theme_uuid"] in theme_ids:
                         config["theme_id"] = theme_ids[config["theme_uuid"]]
@@ -256,7 +228,6 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
                 )
                 dashboards.append(dashboard)
 
-                # Build M2M dashboard-chart entries
                 for uuid_str in find_chart_uuids(config.get("position", {})):
                     if uuid_str not in chart_ids:
                         break
@@ -264,7 +235,6 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
                     if (dashboard.id, chart_id) not in existing_relationships:
                         dashboard_chart_ids.append((dashboard.id, chart_id))
 
-                # Tag import for the dashboard (gated on TAGGING_SYSTEM).
                 if "tags" in config and config["tags"]:
                     try:
                         await import_tag(
@@ -280,7 +250,6 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
                             dashboard.id,
                         )
 
-        # 9. Insert dashboard_slices M2M relationships via explicit inserts
         if dashboard_chart_ids:
             values = [
                 {"dashboard_id": dashboard_id, "slice_id": chart_id}
@@ -288,12 +257,11 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
             ]
             await session.execute(dashboard_slices.insert(), values)
 
-        # 10. Migrate any filter-box charts to native dashboard filters.
         from superset.migrations.shared.native_filters import migrate_dashboard
 
         for dashboard in dashboards:
             try:
-                # Ensure ``slices`` is loaded before mutation.
+                # Refresh slices before migrate_dashboard mutates them.
                 await session.refresh(dashboard, ["slices"])
                 migrate_dashboard(dashboard)
             except Exception:  # noqa: BLE001
@@ -302,23 +270,16 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
                     getattr(dashboard, "id", None),
                 )
 
-        # 11. Remove obsolete filter-box charts
         for chart in charts:
             if getattr(chart, "viz_type", None) == "filter_box":
                 await session.delete(chart)
 
     async def _import_single(self, file_name: str, content: dict[str, Any]) -> None:
-        # Not used — run() handles the full orchestration
-        pass
+        pass  # run() handles the full orchestration
 
     def _raw_contents(self) -> dict[str, str] | None:
-        """Return the raw bundle ``{filename: yaml_text}`` mapping if available.
-
-        Used by the tag importer (``import_tag``) which reads ``tags.yaml``
-        descriptions from the original ZIP.
-        """
-        # AsyncImportModelsCommand stores the BytesIO under self._contents;
-        # rewinding + re-reading is acceptable given imports are infrequent.
+        """Return the raw bundle ``{filename: yaml_text}`` mapping
+        for the tag importer."""
         try:
             import io
             import zipfile

@@ -136,8 +136,6 @@ def test_get_datatype_delegates_to_sync_spec() -> None:
     (e.g. MySQLdb FIELD_TYPE integers) are resolved to type-name strings.
     Without delegation BaseAsyncEngineSpec.get_datatype returns None for
     integer codes, making column_type_mutators permanently inoperative.
-    1:1 with BaseEngineSpec.fetch_data calling cls.get_datatype where cls is
-    the engine's own spec (superset_old/db_engine_specs/base.py:996).
     """
 
     class SyncSpecWithIntOids:
@@ -162,10 +160,7 @@ def test_get_datatype_delegates_to_sync_spec() -> None:
 
 async def test_fetch_data_column_type_mutators_with_int_oid() -> None:
     """fetch_data must apply column_type_mutators for engines where the DBAPI
-    returns integer OID codes in cursor.description.  The fix ensures that
-    SyncFallbackEngineSpec.get_datatype delegates to the sync spec's
-    get_datatype, matching the original BaseEngineSpec.fetch_data behaviour
-    (superset_old/db_engine_specs/base.py:991-998).
+    returns integer OID codes in cursor.description.
 
     Without the fix, cls.get_datatype(246) returns None (BaseAsyncEngineSpec
     only handles string type codes), so get_sqla_column_type(None) returns None
@@ -405,8 +400,8 @@ async def test_get_table_names_delegates() -> None:
 async def test_get_table_names_fallback() -> None:
     spec = make_async_spec(SyncSpecWithoutOverrides)
 
-    # Base async get_table_names now uses a SQLAlchemy Inspector via
-    # ``conn.run_sync`` (same as upstream), not a raw ``conn.execute(text(...))``.
+    # Base async get_table_names uses a SQLAlchemy Inspector via
+    # ``conn.run_sync``, not a raw ``conn.execute(text(...))``.
     mock_inspector = MagicMock()
     mock_inspector.get_table_names.return_value = ["users"]
 

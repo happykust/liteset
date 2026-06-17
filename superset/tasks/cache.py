@@ -16,7 +16,6 @@
 # under the License.
 """Cache warming Celery tasks for Superset.
 
-Ported 1:1 from the original ``superset/tasks/cache.py``.
 Strategy classes query the database via :func:`superset.db.session.get_sync_session`
 and :func:`fetch_url` sends HTTP PUT requests to warm chart caches.
 """
@@ -40,11 +39,6 @@ logger = get_task_logger(__name__)
 logger.setLevel(logging.INFO)
 
 
-# ---------------------------------------------------------------------------
-# Type definitions
-# ---------------------------------------------------------------------------
-
-
 class CacheWarmupPayload(TypedDict, total=False):
     chart_id: int
     dashboard_id: int | None
@@ -55,20 +49,11 @@ class CacheWarmupTask(TypedDict):
     username: str | None
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def get_task(
     chart: Any,
     dashboard: Any | None = None,
 ) -> CacheWarmupTask:
-    """Return task for warming up a given chart/table cache.
-
-    Ported from the original ``get_task``. Reads ``CACHE_WARMUP_EXECUTORS``
-    from settings to determine which user should execute the warm-up.
-    """
+    """Return a cache warm-up task dict for the given chart."""
     from superset.config import SupersetSettings
 
     settings = SupersetSettings()  # type: ignore[call-arg]
@@ -89,12 +74,7 @@ def get_task(
 
 
 def _get_warmup_url() -> str:
-    """Build the chart warm-up cache URL from settings.
-
-    The original used ``get_url_path("ChartRestApi.warm_up_cache")`` which
-    relied on the legacy ``url_for()``. In Liteset we construct the URL
-    directly from ``webdriver_baseurl`` + the known API path.
-    """
+    """Build the chart warm-up cache URL from settings."""
     from superset.config import SupersetSettings
 
     settings = SupersetSettings()  # type: ignore[call-arg]
@@ -103,7 +83,6 @@ def _get_warmup_url() -> str:
 
 
 def _is_secure_url(url: str) -> bool:
-    """Check if the URL uses HTTPS."""
     return url.startswith("https://")
 
 
@@ -112,8 +91,7 @@ def _fetch_csrf_token(
 ) -> dict[str, str]:
     """Fetch a CSRF token for API requests.
 
-    1:1 port of ``superset_old/tasks/utils.py:fetch_csrf_token`` with two
-    deployment-specific deviations:
+    Has two deployment-specific deviations from the canonical CSRF helper:
 
     * URL — the original used ``get_url_path("SecurityRestApi.csrf_token")``
       (legacy ``url_for``); here we build it directly from ``WEBDRIVER_BASEURL``.
@@ -161,21 +139,10 @@ def _fetch_csrf_token(
 
 
 def _get_auth_cookies(user: Any) -> dict[str, str]:
-    """Generate authentication cookies for a user.
-
-    Uses :class:`~superset.utils.machine_auth.MachineAuthProvider` — the same
-    provider used by the thumbnail Celery tasks and the webdriver helper — so
-    the minted cookie is accepted by
-    :class:`~superset.middleware.auth.SupersetAuthMiddleware`.
-
-    Falls back to the process-level factory singleton
-    (:data:`superset.extensions.machine_auth_provider_factory`) when
-    available; otherwise mints a settings-bound provider on the fly.
-    """
+    """Generate authentication cookies for a user via MachineAuthProvider."""
     try:
         from superset.utils.machine_auth import MachineAuthProvider
 
-        # Try the process-level singleton first (set up during startup).
         try:
             from superset.extensions import machine_auth_provider_factory
 
@@ -185,7 +152,6 @@ def _get_auth_cookies(user: Any) -> dict[str, str]:
         except (ImportError, AttributeError):
             pass
 
-        # Fall back: mint a provider bound to the current settings.
         from superset.config import SupersetSettings
 
         settings = SupersetSettings()  # type: ignore[call-arg]
@@ -195,11 +161,6 @@ def _get_auth_cookies(user: Any) -> dict[str, str]:
     except Exception:
         logger.warning("Failed to generate auth cookies", exc_info=True)
         return {}
-
-
-# ---------------------------------------------------------------------------
-# Strategy classes
-# ---------------------------------------------------------------------------
 
 
 class Strategy:
@@ -392,23 +353,9 @@ class DashboardTagsStrategy(Strategy):
 strategies = [DummyStrategy, TopNDashboardsStrategy, DashboardTagsStrategy]
 
 
-# ---------------------------------------------------------------------------
-# Celery tasks
-# ---------------------------------------------------------------------------
-
-
 @celery_app.task(name="fetch_url")
 def fetch_url(data: str, headers: dict[str, str]) -> dict[str, Any]:
-    """Fetch a URL to warm up the chart cache.
-
-    Sends an HTTP PUT request with the provided *data* payload and
-    *headers* to the chart warm-up cache endpoint.
-    Returns a dict indicating success or failure.
-
-    The non-200 branch reports ``status_code`` as an ``int`` (the raw
-    ``response.code``), matching the original ``fetch_url`` task exactly; the
-    return type is therefore ``dict[str, Any]`` rather than ``dict[str, str]``.
-    """
+    """Send an HTTP PUT to the chart warm-up cache endpoint and return a status dict."""
     result: dict[str, Any] = {}
     try:
         url = _get_warmup_url()
@@ -417,7 +364,6 @@ def fetch_url(data: str, headers: dict[str, str]) -> dict[str, Any]:
             logger.info("URL '%s' is secure. Adding Referer header.", url)
             headers.update({"Referer": url})
 
-        # Fetch CSRF token for API request
         headers.update(_fetch_csrf_token(headers))
 
         logger.info("Fetching %s with payload %s", url, data)
@@ -451,7 +397,6 @@ def cache_warmup(
     """Warm up cache.
 
     This task periodically hits charts to warm up the cache.
-    Ported from the original ``cache_warmup`` task.
     """
     import json as json_module
 
@@ -478,7 +423,6 @@ def cache_warmup(
 
     results: dict[str, list[str]] = {"scheduled": [], "errors": []}
 
-    # Load users for cookie generation via sync session
     session = get_sync_session()
     try:
         for task in strategy.get_tasks():

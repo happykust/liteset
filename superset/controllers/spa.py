@@ -136,11 +136,7 @@ _FRONTEND_CONF_KEYS: tuple[str, ...] = (
     "TABLE_VIZ_MAX_ROW_SERVER",
 )
 # NOTE: GUEST_TOKEN_HEADER_NAME is NOT in FRONTEND_CONF_KEYS.
-# The original only passes it in the embedded dashboard bootstrap
-# config at bootstrapData.config.GUEST_TOKEN_HEADER_NAME (see
-# superset_old/embedded/view.py).  The frontend reads it from
-# bootstrapData.config?.GUEST_TOKEN_HEADER_NAME only in the
-# embedded entry point (superset-frontend/src/embedded/index.tsx).
+# The frontend reads it only from the embedded entry point bootstrap payload.
 
 # Mapping: FRONTEND_CONF_KEY -> (settings_attribute, default_value).
 # Superset config uses UPPER_CASE; Liteset settings uses lower_snake_case.
@@ -309,10 +305,7 @@ def _get_conf_value(settings: Any, key: str) -> Any:
 
 
 def _get_environment_tag(settings: Any) -> dict[str, str]:
-    """Resolve environment tag from ENVIRONMENT_TAG_CONFIG logic.
-
-    Mirrors the original ``get_environment_tag()`` from views/base.py.
-    """
+    """Resolve environment tag from ENVIRONMENT_TAG_CONFIG logic."""
     env_tag_config: dict[str, Any] = getattr(
         settings,
         "environment_tag_config",
@@ -567,10 +560,8 @@ def _extract_data_permissions(
 def _build_theme_data(settings: Any) -> dict[str, Any]:
     """Build the theme section of bootstrap_data (config-based).
 
-    Mirrors ``get_theme_bootstrap_data()`` from the original views/base.py
-    for the non-DB path.  When ``ENABLE_UI_THEME_ADMINISTRATION`` is True
-    the caller should use ``_build_theme_data_async`` instead to load
-    themes from DB via ``AsyncThemeDAO``.
+    When ``ENABLE_UI_THEME_ADMINISTRATION`` is True the caller should use
+    ``_build_theme_data_async`` instead to load themes from DB.
     """
     from superset.commands.theme import _is_valid_theme
 
@@ -589,9 +580,6 @@ def _build_theme_data(settings: Any) -> dict[str, Any]:
     if callable(dark_theme):
         dark_theme = dark_theme()
 
-    # Validate theme configurations — 1:1 with original
-    # get_theme_bootstrap_data() which calls is_valid_theme() and
-    # replaces invalid themes with {}.
     if not _is_valid_theme(default_theme):
         logger.warning(
             "Invalid default theme configuration: %s, using empty theme",
@@ -632,8 +620,7 @@ async def _build_theme_data_async(
 ) -> dict[str, Any]:
     """Build the theme section with DB lookup when UI admin is enabled.
 
-    Mirrors ``get_theme_bootstrap_data()`` from the original views/base.py:
-    when ``ENABLE_UI_THEME_ADMINISTRATION`` is True, loads themes from DB
+    When ``ENABLE_UI_THEME_ADMINISTRATION`` is True, loads themes from DB
     via ``AsyncThemeDAO`` (falling back to config if no DB row is found).
     """
     from superset.commands.theme import _is_valid_theme
@@ -674,9 +661,6 @@ async def _build_theme_data_async(
             exc_info=True,
         )
 
-    # Validate theme configurations — 1:1 with original
-    # get_theme_bootstrap_data() which calls is_valid_theme() after
-    # both the DB and config fallback paths.
     if not _is_valid_theme(default_theme):
         logger.warning(
             "Invalid default theme configuration: %s, using empty theme",
@@ -699,11 +683,7 @@ async def _build_theme_data_async(
 
 
 def _build_bootstrap_data(user: Any, settings: Any, **kw: Any) -> dict[str, Any]:
-    """Build the complete bootstrap_data dict for the React SPA shell.
-
-    Closely mirrors the original Apache Superset ``common_bootstrap_payload()``
-    + ``bootstrap_user_data()`` + ``get_theme_bootstrap_data()``.
-    """
+    """Build the complete bootstrap_data dict for the React SPA shell."""
     # --- conf: all FRONTEND_CONF_KEYS ---
     frontend_config: dict[str, Any] = {}
     for key in _FRONTEND_CONF_KEYS:
@@ -837,10 +817,7 @@ def _build_bootstrap_data(user: Any, settings: Any, **kw: Any) -> dict[str, Any]
     if callable(overrides_func):
         common.update(overrides_func(common))
 
-    # Theme is written AFTER the overrides — 1:1 with upstream
-    # ``cached_common_bootstrap_data`` (views/base.py:447-449) where
-    # ``get_theme_bootstrap_data()`` always wins over a custom overrides
-    # function.
+    # Theme is always written after the overrides func so it cannot be overridden.
     common["theme"] = theme
 
     # --- user ---
@@ -867,9 +844,6 @@ async def _render_welcome_dashboard(
 ) -> Any:
     """Render the SPA shell for the user's configured welcome dashboard.
 
-    Mirrors ``Superset.welcome() → self.dashboard()`` from
-    superset_old/views/core.py:926-931 + 795-837.
-
     Returns a :class:`~litestar.response.Template` (200) if the dashboard
     is found and accessible, a 404 :class:`~litestar.response.Response`
     when the dashboard is missing or the user is denied, or ``None`` when
@@ -879,10 +853,7 @@ async def _render_welcome_dashboard(
     from superset.exceptions import SupersetSecurityException
     from superset.models.user import UserAttribute
 
-    # No try/except around the two queries — 1:1 with the original
-    # (superset_old/views/core.py:926-930 ``db.session.query(...).scalar()``
-    # and ``Dashboard.get()`` via ``qry.one_or_none()``): a genuine DB error
-    # propagates as a 500, it is NOT downgraded to a 404/welcome-page.
+    # A genuine DB error propagates as 500, not downgraded to 404/welcome-page.
     async with session_factory() as _wa_session:
         welcome_dashboard_id = (
             await _wa_session.execute(
@@ -907,7 +878,6 @@ async def _render_welcome_dashboard(
         )
 
         if _welcome_dash is None:
-            # Mirrors original: abort(404) for authenticated user when not found.
             return Response(content=b"Not Found", status_code=404)
 
         # Access check (mirrors dashboard.raise_for_access() + can_dashboard
@@ -917,20 +887,16 @@ async def _render_welcome_dashboard(
 
             _sec_mgr = await provide_security_manager(_dash_session, state)
 
-            # View-level permission check: 1:1 with @has_access on
-            # Superset.dashboard — the upstream @has_access returns 403
-            # (Forbidden) for an AUTHENTICATED user lacking the permission,
-            # not 404.
+            # @has_access returns 403 (not 404) for authenticated users
+            # lacking the perm.
             # NOTE: ``user`` is keyword-only on AsyncSecurityManager.has_access;
-            # the previous positional call raised TypeError which the broad
-            # except below silently turned into a 404 for everyone.
+            # a positional call raises TypeError which the broad except silently turns
+            # into a 404 for everyone.
             if not await _sec_mgr.has_access("can_dashboard", "Superset", user=user):
                 return Response(content=b"Forbidden", status_code=403)
 
             await _sec_mgr.raise_for_access(dashboard=_welcome_dash, user=user)
         except SupersetSecurityException:
-            # Mirrors original: abort(404) for authenticated user on access denial
-            # (superset_old/views/core.py:809-812).
             return Response(content=b"Not Found", status_code=404)
         except Exception:
             _log.getLogger(__name__).debug(
@@ -940,11 +906,7 @@ async def _render_welcome_dashboard(
             )
             return Response(content=b"Not Found", status_code=404)
 
-    # Render the SPA shell at /superset/welcome/ with the dashboard title.
-    # 1:1 with self.dashboard() return: title=dashboard.dashboard_title,
-    # same bootstrap payload, browser URL stays at /superset/welcome/.
-    # ``standalone_mode`` mirrors ``ReservedUrlParameters.is_standalone_mode()``
-    # (superset_old/utils/core.py:347-352): truthy unless absent/"false"/"0".
+    # ``standalone_mode`` is truthy unless the param is absent/"false"/"0".
     _standalone_param = request.query_params.get("standalone")
     _standalone_mode = bool(
         _standalone_param and _standalone_param != "false" and _standalone_param != "0"
@@ -989,12 +951,8 @@ class SPAController(Controller):
     async def language_pack(self, lang: str) -> Response[Any]:
         """GET /superset/language_pack/<lang>/ — serve a JSON translation pack.
 
-        Mirrors the original ``SupersetView.language_pack`` from
-        ``superset_old/views/core.py``.  Returns the ``messages.json``
-        file from ``superset/translations/<lang>/LC_MESSAGES/`` when it
-        exists, or a 404 JSON error otherwise.
-
-        Only language codes matching ``^[a-z]{2,3}(_[A-Z]{2})?$`` are
+        Returns the ``messages.json`` from ``superset/translations/<lang>/LC_MESSAGES/``
+        or a 404. Only language codes matching ``^[a-z]{2,3}(_[A-Z]{2})?$`` are
         accepted (e.g. ``en``, ``pt_BR``) — invalid codes get a 400.
         """
         if not re.match(r"^[a-z]{2,3}(_[A-Z]{2})?$", lang):
@@ -1027,9 +985,6 @@ class SPAController(Controller):
 
     @get(
         ["/lang/{locale:str}", "/lang/{locale:str}/"],
-        # 1:1 with the upstream ``LocaleView.index`` (@expose, no permission
-        # check beyond login-irrelevance) — the menu's
-        # ``config.languages[*].url`` entries point here.
         opt={"exclude_from_auth": True},
     )
     async def set_language(
@@ -1040,10 +995,8 @@ class SPAController(Controller):
     ) -> Response[Any]:
         """GET /lang/<locale> — switch the UI language.
 
-        Mirrors the upstream ``LocaleView.index``: unsupported locale → 404;
-        otherwise persist the choice and redirect back.  Upstream stored the
-        locale in the legacy session; the Litestar port persists it in the
-        ``language`` cookie that :class:`LocaleMiddleware` reads first.
+        Unsupported locale → 404; otherwise persists the choice in the
+        ``language`` cookie that :class:`LocaleMiddleware` reads and redirects back.
         """
         settings = getattr(state, "settings", None)
         languages = getattr(settings, "languages", None) or {}
@@ -1074,13 +1027,8 @@ class SPAController(Controller):
     ) -> Any:
         """GET /dashboard/new/ — create blank dashboard and redirect to edit mode.
 
-        Mirrors the original ``Dashboard.new`` view which uses
-        ``@has_access`` with ``method_permission_name = {"new": "write"}``
-        and ``class_permission_name = "Dashboard"``, requiring
-        ``can_write`` on ``Dashboard``.
-        Creates a row with title ``[ untitled dashboard ]``,
-        assigns current user as owner, then 302-redirects to
-        ``/superset/dashboard/{id}/?edit=true``.
+        Creates a row with title ``[ untitled dashboard ]``, assigns the current
+        user as owner, then 302-redirects to ``/superset/dashboard/{id}/?edit=true``.
         """
         user = getattr(request, "user", None)
         if not getattr(user, "is_authenticated", False):
@@ -1113,19 +1061,13 @@ class SPAController(Controller):
     ) -> Any:
         """GET /register/activation/<activation_hash>/ -- activate pending registration.
 
-        Mirrors ``SupersetRegisterUserView.activation`` from
-        ``superset_old/views/auth.py:59-91``:
-
         1. Look up the pending ``RegisterUser`` row by ``registration_hash``.
-        2. If not found: flash "Registration not found" (danger) and redirect
-           to index (/).
-        3. Call ``add_user`` to create the actual ``ab_user`` row with the
-           registration data (hashed_password is stored as-is).
-        4. If ``add_user`` fails: flash generic error (danger) and redirect
-           to index (/).
-        5. On success: delete the ``RegisterUser`` row and render the SPA
-           shell with ``username``, ``first_name``, ``last_name`` in
-           bootstrap_data (mirrors ``render_app_template`` extra context).
+        2. If not found: flash "Registration not found" (danger) and redirect to /.
+        3. Create the ``ab_user`` row with the registration data (hashed_password
+           is stored as-is).
+        4. If user creation fails: flash generic error (danger) and redirect to /.
+        5. On success: delete the ``RegisterUser`` row and render the SPA shell
+           with ``username``, ``first_name``, ``last_name`` in bootstrap_data.
         """
         import urllib.parse
 
@@ -1135,7 +1077,6 @@ class SPAController(Controller):
 
         _logger = _log.getLogger(__name__)
 
-        # --- Error message constants (mirrors upstream SupersetRegisterUserView) -
         _error_message = "Not possible to register you at the moment, try again later"
         _false_error_message = "Registration not found"
         _logmsg_err_no_hash = "Attempt to activate user with false hash: %s"
@@ -1164,7 +1105,7 @@ class SPAController(Controller):
                     }
         except Exception:  # noqa: BLE001
             _logger.exception("Error looking up registration hash %s", activation_hash)
-            raise  # DB error propagates as 500 -- mirrors original (no try/except)
+            raise  # DB error propagates as 500
 
         # Step 2: not found -> flash + redirect
         if reg_data is None:
@@ -1195,8 +1136,8 @@ class SPAController(Controller):
                 role_result = await session.execute(role_stmt)
                 role = role_result.scalars().one_or_none()
 
-                # add_user: create User row with hashed_password stored as-is
-                # (mirrors upstream add_user with hashed_password kwarg)
+                # Create User row with hashed_password stored as-is (already hashed
+                # by add_register_user).
                 new_user = User()
                 new_user.first_name = reg_data["first_name"]
                 new_user.last_name = reg_data["last_name"]
@@ -1303,24 +1244,18 @@ class SPAController(Controller):
 
         request_path = request.url.path
 
-        # Root path always redirects to /superset/welcome/.
-        # Mirrors SupersetIndexView.index in
-        # superset_old/initialization/__init__.py:850-853.
         if request_path in ("/", ""):
             return Redirect(path="/superset/welcome/")
 
         # /superset/welcome/ requires an authenticated user — Public role
-        # permissions do NOT bypass this gate.  Mirrors Superset.welcome in
-        # superset_old/views/core.py:923-924.
+        # permissions do NOT bypass this gate.
         if request_path.rstrip("/") == "/superset/welcome":
             if not is_auth:
                 return Redirect(path="/login/")
 
-            # If the user has a welcome_dashboard_id configured in
-            # UserAttribute, render the dashboard SPA shell in-place at
-            # /superset/welcome/ (NO redirect).
-            # Mirrors Superset.welcome() → self.dashboard() in
-            # superset_old/views/core.py:926-931 + 795-837.
+            # If the user has a welcome_dashboard_id configured in UserAttribute,
+            # render the dashboard SPA shell in-place at /superset/welcome/
+            # (no redirect).
             _uid = getattr(user, "id", None)
             _sf = getattr(state, "session_factory", None)
             if _uid is not None and _sf is not None:
@@ -1338,8 +1273,6 @@ class SPAController(Controller):
 
         bootstrap = _build_bootstrap_data(user, settings)
 
-        # When ENABLE_UI_THEME_ADMINISTRATION is True, override the
-        # theme section with DB-loaded themes (mirrors original).
         enable_ui_admin = getattr(settings, "enable_ui_theme_administration", False)
         session_factory = getattr(state, "session_factory", None)
         if enable_ui_admin and session_factory is not None:
@@ -1396,13 +1329,9 @@ class SPAController(Controller):
     ) -> Response[None]:
         """POST /superset/log/ -- frontend event logging.
 
-        Mirrors the original ``Superset.log`` (superset_old/views/core.py:868-873)
-        which is decorated with ``@api``, ``@has_access``, ``@event_logger.log_this``
-        and returns ``Response(status=200)`` (empty body).
-
         The React frontend fires analytics events here.
-        ``?explode=events`` sends a JSON array of event
-        dicts in the ``events`` form field.
+        ``?explode=events`` sends a JSON array of event dicts in the ``events``
+        form field. Returns an empty 200 body.
         """
         logger = _log.getLogger("superset.frontend_log")
         try:
@@ -1453,5 +1382,4 @@ class SPAController(Controller):
         except Exception:  # noqa: BLE001
             logger.debug("Frontend log failed", exc_info=True)
 
-        # 1:1 with original: Response(status=200) — empty body.
         return Response(content=None, status_code=200)

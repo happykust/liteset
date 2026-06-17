@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for superset/databases/utils.py — 1:1 parity with superset_old."""
+"""Unit tests for superset/databases/utils.py."""
 
 from __future__ import annotations
 
@@ -32,8 +32,7 @@ from superset.exceptions import CommandException, CommandInvalidError, SupersetE
 def test_database_invalid_error_is_command_invalid_error() -> None:
     """DatabaseInvalidError must be a CommandInvalidError subclass (status 422).
 
-    Original: superset_old/commands/database/exceptions.py::DatabaseInvalidError
-    inherits CommandInvalidError → CommandException → SupersetException.
+    Inherits CommandInvalidError → CommandException → SupersetException.
     Unhandled escapes must be caught by superset_exception_handler at 422,
     not generic_exception_handler at 500.
     """
@@ -74,9 +73,8 @@ def test_make_url_safe_url_passthrough() -> None:
 
 
 # ---------------------------------------------------------------------------
-# get_table_metadata — requires the five Database introspection wrappers
-# (superset_old/models/core.py:1000-1053); without them every
-# /database/{pk}/table_metadata/ call died with AttributeError → 422.
+# get_table_metadata — requires the five Database introspection wrappers;
+# without them every /database/{pk}/table_metadata/ call dies with AttributeError → 422.
 # ---------------------------------------------------------------------------
 
 
@@ -92,8 +90,7 @@ def test_database_model_has_introspection_methods() -> None:
         "select_star",
     ):
         assert callable(getattr(Database, method, None)), (
-            f"Database.{method} is required by get_table_metadata "
-            "(superset_old/models/core.py:1000-1053)"
+            f"Database.{method} is required by get_table_metadata"
         )
 
 

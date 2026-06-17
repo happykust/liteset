@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/chart/create.py``."""
+"""Command for creating charts."""
 
 from __future__ import annotations
 
@@ -59,10 +59,6 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
             raise CommandInvalidError("slice_name is required")
         # ``viz_type`` is optional in original Superset (charts/schemas.py:199)
         # — charts can be saved without a chosen visualization.
-
-        # Validate/Populate datasource — 1:1 with
-        # ``superset_old/commands/chart/create.py`` which calls
-        # ``get_datasource_by_id`` and stores ``datasource_name``.
         datasource_id = self._data.get("datasource_id")
         datasource_type = self._data.get("datasource_type", "table")
         if datasource_id:
@@ -75,21 +71,16 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
                 raise DatasourceNotFoundValidationError()
             self._data["datasource_name"] = datasource.name
 
-        # Validate/Populate dashboards — ported 1:1 from
-        # ``superset_old/commands/chart/create.py::CreateChartCommand.validate``.
-        # All requested dashboards must exist AND the current user must be
-        # an owner of each of them (admins are treated as owners of all
-        # resources, mirroring ``SecurityManager.raise_for_ownership``),
-        # otherwise creation is rejected.
+        # Validate dashboards: all requested dashboards must exist and the current
+        # user must be an owner of each (admins are treated as owners of all
+        # resources); otherwise creation is rejected.
         dashboard_ids = self._data.get("dashboards", []) or []
         if dashboard_ids:
             dashboards = await self._dao.find_dashboards_by_ids(dashboard_ids)
             if len(dashboards) != len(dashboard_ids):
                 raise DashboardsNotFoundValidationError()
-            # Visibility scope — upstream resolves the ids via the FILTERED
-            # ``DashboardDAO.find_by_ids`` (DashboardAccessFilter), so a
-            # dashboard the user can't see reads as "not found" (422), never
-            # 403 — which would disclose its existence (R14-06).
+            # Visibility scope: dashboards outside the user's access scope appear
+            # as "not found" (422), not 403, to avoid disclosing their existence.
             from superset.commands.utils import filter_visible_ids
             from superset.db.filters import dashboard_access_filters
             from superset.models.dashboard import Dashboard
@@ -114,8 +105,6 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
                         )
                     except SupersetSecurityException as ex:
                         raise DashboardsForbiddenError() from ex
-            # Store resolved Dashboard objects so ``run()`` can assign directly
-            # without a second DAO round-trip.
             self._data["dashboards"] = dashboards
 
     async def run(self) -> "Slice":
@@ -123,7 +112,6 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
 
         from superset.models.slice import Slice
 
-        # Filter out relationship fields to avoid passing raw IDs to model constructor
         create_data = {
             k: v
             for k, v in self._data.items()
@@ -136,7 +124,6 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
             chart.last_saved_by_fk = self._user_id  # type: ignore[assignment]
         chart.last_saved_at = datetime.now()  # type: ignore[assignment]
 
-        # Resolve owners — defaults to the current user when none provided
         resolved_owner_ids: list[int] = []
         if self._security_manager is not None:
             owners = await populate_owner_list(
@@ -163,10 +150,6 @@ class CreateChartCommand(AsyncBaseCommand["Slice"]):
         self._dao.session.add(chart)
         await self._dao.session.flush()
 
-        # Add implicit type: and owner: tags — 1:1 with
-        # ``ChartUpdater.after_insert`` which only fires when the
-        # TAGGING_SYSTEM feature flag is enabled (listeners are only
-        # registered when the flag is on; see ``superset_old/app.py:158``).
         if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
             owner_ids = resolved_owner_ids
             await add_implicit_tags_after_insert(

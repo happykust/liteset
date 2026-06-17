@@ -14,8 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Key-value store utility functions -- ported 1:1 from
-superset_old/key_value/utils.py.
+"""Key-value store utility functions.
 
 All functions are synchronous (pure computation, no I/O).
 """
@@ -38,10 +37,7 @@ HASHIDS_MIN_LENGTH = 11
 
 
 def json_dumps_w_dates(payload: dict[Any, Any], sort_keys: bool = False) -> str:
-    """Dump payload to JSON with datetime objects converted to epoch millis.
-
-    Ported from ``superset_old/utils/json.py::json_dumps_w_dates``.
-    """
+    """Dump payload to JSON with datetime objects converted to epoch millis."""
     return dumps(payload, default=json_int_dttm_ser, sort_keys=sort_keys)
 
 

@@ -61,7 +61,6 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
     model_cls = SqlaTable
 
     async def get_database_by_id(self, database_id: int) -> Database | None:
-        """Get a Database by its ID."""
         return await self.session.get(Database, database_id)
 
     async def find_by_id_with_options(
@@ -92,14 +91,12 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
     ) -> bool:
         """Check that no dataset exists with the given name/schema/database combo.
 
-        1:1 with ``superset_old/daos/dataset.py::validate_uniqueness`` /
-        ``validate_update_uniqueness``: ``schema`` and ``catalog`` are filtered
-        UNCONDITIONALLY (``== None`` → ``IS NULL``) so two datasets sharing a
-        name in *different* catalogs/schemas do not collide. The caller is
-        responsible for coalescing ``catalog`` to the database default (the
-        original does so inside this method via ``table.catalog or
-        database.get_default_catalog()``; the async commands resolve it from the
-        Database object before calling, since the DAO only has ``database_id``).
+        ``schema`` and ``catalog`` are filtered UNCONDITIONALLY (``== None`` →
+        ``IS NULL``) so two datasets sharing a name in *different*
+        catalogs/schemas do not collide. The caller is responsible for
+        coalescing ``catalog`` to the database default before calling (the async
+        commands resolve it from the Database object since the DAO only has
+        ``database_id``).
         """
         stmt = select(SqlaTable).where(
             SqlaTable.table_name == table_name,
@@ -120,7 +117,6 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         dataset_id: int,
         column_ids: list[int],
     ) -> bool:
-        """Verify that all column IDs belong to the given dataset."""
         if not column_ids:
             return True
         stmt = select(TableColumn.id).where(
@@ -136,7 +132,6 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         dataset_id: int,
         metric_ids: list[int],
     ) -> bool:
-        """Verify that all metric IDs belong to the given dataset."""
         if not metric_ids:
             return True
         stmt = select(SqlMetric.id).where(
@@ -152,13 +147,8 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         dataset_id: int,
         columns_names: list[str],
     ) -> bool:
-        """Check for duplicate column names in a dataset.
-
-        Returns True if none of the given column names already exist
-        on the dataset.
-
-        Ports the original ``DatasetDAO.validate_columns_uniqueness`` logic.
-        """
+        """Return True if none of the given column names
+        already exist on the dataset."""
         if not columns_names:
             return True
         stmt = select(TableColumn.id).where(
@@ -173,13 +163,8 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         dataset_id: int,
         metrics_names: list[str],
     ) -> bool:
-        """Check for duplicate metric names in a dataset.
-
-        Returns True if none of the given metric names already exist
-        on the dataset.
-
-        Ports the original ``DatasetDAO.validate_metrics_uniqueness`` logic.
-        """
+        """Return True if none of the given metric names
+        already exist on the dataset."""
         if not metrics_names:
             return True
         stmt = select(SqlMetric.id).where(
@@ -194,7 +179,6 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         item: SqlaTable,
         attributes: dict[str, Any],
     ) -> SqlaTable:
-        """Update dataset with special handling for columns and metrics."""
         attributes = {**attributes}
         force_update = False
 
@@ -227,11 +211,11 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
 
     @staticmethod
     def validate_python_date_format(dt_format: str) -> bool:
-        """1:1 with ``superset_old/daos/dataset.py:validate_python_date_format``.
+        """Validate a ``python_date_format`` value.
 
-        A ``python_date_format`` is valid when it is either the literal
-        ``epoch_s`` / ``epoch_ms`` sentinel, or a strftime format whose
-        rendered output parses back as an ISO datetime.
+        Valid when the format is either the literal ``epoch_s`` / ``epoch_ms``
+        sentinel, or a strftime format whose rendered output parses back as an
+        ISO datetime.
         """
         if dt_format in ("epoch_s", "epoch_ms"):
             return True
@@ -246,8 +230,7 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
     def _validate_date_formats(property_columns: list[dict[str, Any]]) -> None:
         """Validate ``python_date_format`` for every column up-front.
 
-        1:1 with ``superset_old/daos/dataset.py:222-232``: raises
-        ``ValueError`` on the first invalid format before any persist.
+        Raises ``ValueError`` on the first invalid format before any persist.
         """
         for column in property_columns:
             if (
@@ -266,10 +249,6 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         model: SqlaTable,
         property_columns: list[dict[str, Any]],
     ) -> None:
-        """Delete ALL existing columns then bulk-insert new ones.
-
-        1:1 with ``superset_old/daos/dataset.py:234-245`` (override path).
-        """
         from sqlalchemy import delete as sa_delete
 
         await self.session.execute(
@@ -280,7 +259,6 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
             col_data["table_id"] = model.id
             new_col = TableColumn(**col_data)
             self.session.add(new_col)
-        # Expire the stale collection so subsequent access reloads.
         await self.session.flush()
         await self.session.refresh(model, ["columns"])
 
@@ -290,12 +268,6 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         property_columns: list[dict[str, Any]],
         override_columns: bool = False,
     ) -> None:
-        """Update dataset columns: insert new, update existing, delete removed.
-
-        When ``override_columns=True``, deletes ALL existing columns and
-        bulk-inserts the new ones — 1:1 with
-        ``superset_old/daos/dataset.py:234-245``.
-        """
         self._validate_date_formats(property_columns)
 
         await self.session.refresh(model, ["columns"])
@@ -333,7 +305,6 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         model: SqlaTable,
         property_metrics: list[dict[str, Any]],
     ) -> None:
-        """Update dataset metrics: insert new, update existing, delete removed."""
         await self.session.refresh(model, ["metrics"])
         existing_metrics = {m.id: m for m in model.metrics}
 
@@ -362,19 +333,15 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
     async def fetch_metadata(self, model: SqlaTable) -> MetadataResult:
         """Introspect table columns + metrics and merge them onto the dataset.
 
-        Async port of ``SqlaTable.fetch_metadata`` in
-        ``superset_old/connectors/sqla/models.py`` (line 1699). The original is
-        synchronous and ends with ``db.session.merge(self)``; here the blocking
-        introspection (``external_metadata`` + ``Database.get_metrics``) runs in
-        a thread while the ORM column diff, collection mutation and persistence
-        happen on the async session. ``database``/``columns``/``metrics`` are
-        eager-refreshed first so neither the threaded introspection nor the
+        The blocking introspection (``external_metadata`` + ``Database.get_metrics``)
+        runs in a thread while the ORM column diff, collection mutation and
+        persistence happen on the async session. ``database``/``columns``/``metrics``
+        are eager-refreshed first so neither the threaded introspection nor the
         relationship diff triggers a lazy load under asyncpg (``MissingGreenlet``).
-        The caller owns the surrounding transaction (commit), matching create /
-        refresh which flush within the request-scoped session.
+        The caller owns the surrounding transaction (commit).
 
         Returns the :class:`MetadataResult` diff (added / removed / modified
-        column names), 1:1 with the original.
+        column names).
         """
         import asyncio
 
@@ -434,8 +401,6 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
 
         # add back calculated (virtual) columns
         columns.extend([col for col in old_columns if col.expression])
-        # Reassigning the (already-loaded) collection lets the
-        # ``all, delete-orphan`` cascade drop columns no longer present.
         model.columns = columns
 
         if not model.main_dttm_col:
@@ -451,7 +416,6 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         self,
         dataset_id: int,
     ) -> dict[str, list[Any]]:
-        """Get charts and dashboards related to a dataset."""
         chart_stmt = select(Slice).where(
             Slice.datasource_id == dataset_id,
             Slice.datasource_type == "table",
@@ -482,7 +446,6 @@ class AsyncDatasetColumnDAO(BaseAsyncDAO[TableColumn]):
         dataset_id: int,
         column_id: int,
     ) -> TableColumn | None:
-        """Find a column by dataset and column ID."""
         return await self.find_one_or_none(table_id=dataset_id, id=column_id)
 
 
@@ -494,5 +457,4 @@ class AsyncDatasetMetricDAO(BaseAsyncDAO[SqlMetric]):
         dataset_id: int,
         metric_id: int,
     ) -> SqlMetric | None:
-        """Find a metric by dataset and metric ID."""
         return await self.find_one_or_none(table_id=dataset_id, id=metric_id)

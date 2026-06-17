@@ -120,8 +120,8 @@ def test_query_context_empty_form_data_default(mock_datasource):
 
 def test_query_context_applies_granularity_on_build():
     """__post_init__ replaces the temporal x-axis column with the granularity
-    and removes the redundant temporal filter (1:1 with the upstream factory's
-    _process_query_object -> _apply_granularity)."""
+    and removes the redundant temporal filter
+    (_process_query_object -> _apply_granularity)."""
     ds = MagicMock()
     col = MagicMock()
     col.column_name = "order_date"

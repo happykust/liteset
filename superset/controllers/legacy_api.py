@@ -63,7 +63,7 @@ def _parse_rison_time_ranges(raw: str | None) -> Any:
 
 
 class LegacyApiController(Controller):
-    """Legacy ``/api/v1/*`` routes ported from ``superset/views/api.py``."""
+    """Legacy ``/api/v1/*`` routes from ``superset/views/api.py``."""
 
     path = "/api/v1"
     tags = ["Legacy"]

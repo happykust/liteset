@@ -16,8 +16,7 @@
 # under the License.
 """Public types for advanced data type plugins.
 
-Ported 1:1 from superset_old/advanced_data_type/types.py — these
-types are part of the plugin contract, so any third-party plugin
+These types are part of the plugin contract, so any third-party plugin
 imported via the ``ADVANCED_DATA_TYPES`` config will keep working.
 """
 

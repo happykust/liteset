@@ -50,10 +50,6 @@ from superset.models.helpers import (
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Association tables
-# ---------------------------------------------------------------------------
-
 dashboard_slices = Table(
     "dashboard_slices",
     metadata,
@@ -106,11 +102,6 @@ DashboardRoles = Table(
 )
 
 
-# ---------------------------------------------------------------------------
-# Dashboard model
-# ---------------------------------------------------------------------------
-
-
 class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
     """A Superset dashboard."""
 
@@ -131,7 +122,6 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
     external_url = Column(Text, nullable=True)
 
     def __repr__(self) -> str:
-        # 1:1 superset_old/models/dashboard.py:184 — /related/ dropdown text.
         return f"Dashboard<{self.id or self.slug}>"
 
     # -- relationships --------------------------------------------------------
@@ -191,20 +181,12 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
     def datasources(self) -> set[Any] | None:
         """Enumerate all distinct datasource objects across the dashboard's slices.
 
-        Mirrors the original Dashboard.datasources property
-        (superset_old/models/dashboard.py:196-212). Groups slices by their
-        datasource model class (cls_model), then batch-queries each model to
-        return a deduplicated set of BaseDatasource instances.
+        Groups slices by their datasource model class (cls_model) and
+        batch-queries each model to return a deduplicated set of instances.
 
-        In liteset, ``Slice.cls_model`` is not ported, but the only concrete
-        datasource type is SqlaTable, so we import it directly and batch-query
-        by datasource_id.
-
-        Returns ``None`` when the object is bound to an ``AsyncSession``.  In
-        that case synchronous I/O on the session's sync proxy raises
-        ``MissingGreenlet``; callers (security/manager.py ``raise_for_access``
-        and ``can_access_dashboard``) fall back to the async-safe
-        slice-iteration path when ``datasources is None``.
+        Returns ``None`` when the object is bound to an ``AsyncSession`` because
+        synchronous I/O on the session's sync proxy raises ``MissingGreenlet``;
+        callers fall back to an async-safe slice-iteration path in that case.
         """
         from sqlalchemy import select
         from sqlalchemy.ext.asyncio import async_object_session
@@ -269,9 +251,7 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
         try:
             raw = self.json_metadata or "{}"
             # Strip trailing commas before closing braces/brackets so that
-            # legacy rows written by older tools (which allowed trailing commas)
-            # parse correctly, matching the original json_to_dict behaviour
-            # (superset_old/models/helpers.py:140-146).
+            # legacy rows written by older tools parse correctly.
             raw = re.sub(r",[ \t\r\n]+}", "}", raw)
             raw = re.sub(r",[ \t\r\n]+\]", "]", raw)
             parsed = json.loads(raw)
@@ -292,9 +272,7 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
 
     @property
     def charts(self) -> list[str]:
-        """Slice names of every attached chart, mirroring the original
-        ``Dashboard.charts`` property used for thumbnail digest hashing.
-        """
+        """Slice names of every attached chart (used for thumbnail digest hashing)."""
         return [slc.slice_name or "<empty>" for slc in (self.slices or [])]
 
     @property

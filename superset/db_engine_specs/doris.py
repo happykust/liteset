@@ -15,11 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Apache Doris engine spec -- sync-compatible.
-
-Ported 1:1 from ``superset_old/db_engine_specs/doris.py`` with legacy
-imports removed.  Only overridden methods and attributes are included.
-"""
+"""Apache Doris database engine spec."""
 
 from __future__ import annotations
 
@@ -45,10 +41,6 @@ DEFAULT_SCHEMA = "information_schema"
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Regular expressions to catch custom errors
-# ---------------------------------------------------------------------------
-
 CONNECTION_ACCESS_DENIED_REGEX = re.compile(
     "Access denied for user '(?P<username>.*?)'"
 )
@@ -63,11 +55,6 @@ SYNTAX_ERROR_REGEX = re.compile(
     "check the manual that corresponds to your MySQL server "
     "version for the right syntax to use near '(?P<server_error>.*)"
 )
-
-
-# ---------------------------------------------------------------------------
-# Custom types
-# ---------------------------------------------------------------------------
 
 
 class TINYINT(Integer):
@@ -281,21 +268,18 @@ class DorisEngineSpec(MySQLEngineSpec):
 
     @classmethod
     def get_default_catalog(cls, database: Database) -> str:
-        # first check the URI to see if a default catalog is set
         if database.url_object.database and "." in database.url_object.database:
             return database.url_object.database.split(".")[0]
 
-        # if not, iterate over existing catalogs and find the current one —
-        # 1:1 with upstream (``SHOW CATALOGS`` → row where ``IsCurrent``).
+        # Probe SHOW CATALOGS for the row where IsCurrent is set.
         try:
             with database.get_sqla_engine() as engine:
                 for catalog in engine.execute("SHOW CATALOGS"):
                     if catalog.IsCurrent:
                         return catalog.CatalogName
-        except Exception:  # noqa: BLE001 — fall back if the probe query fails
+        except Exception:  # noqa: BLE001
             logger.warning("Could not resolve current Doris catalog", exc_info=True)
 
-        # fallback to "internal"
         return DEFAULT_CATALOG
 
     @classmethod

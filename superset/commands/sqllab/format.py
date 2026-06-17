@@ -16,11 +16,9 @@
 # under the License.
 """``POST /api/v1/sqllab/format_sql/`` command.
 
-1:1 with the original handler
-``superset_old/sqllab/api.py::format_sql`` (lines 231-236) which dispatched
-to ``SQLScript(model["sql"], model.get("engine")).format()`` *without*
-catching parse/format errors — so an unparseable snippet propagates as a
-``SupersetParseError`` (HTTP 422), rather than echoing the raw SQL with 200.
+Dispatches to ``SQLScript(sql, engine).format()`` without catching parse
+errors — an unparseable snippet propagates as a ``SupersetParseError``
+(HTTP 422), rather than echoing the raw SQL with 200.
 """
 
 from __future__ import annotations
@@ -37,10 +35,9 @@ logger = logging.getLogger(__name__)
 class FormatSQLCommand(AsyncBaseCommand[str]):
     """Format SQL using engine-aware ``SQLScript.format()``.
 
-    Mirrors the original handler exactly: parse failures are *not* swallowed.
-    ``SQLScript(...).format()`` raises ``SupersetParseError`` (status 422) on
-    an unparseable statement and that propagates to the client, instead of
-    returning the unformatted SQL with a 200.
+    Parse failures are *not* swallowed: ``SQLScript(...).format()`` raises
+    ``SupersetParseError`` (status 422) on an unparseable statement and that
+    propagates to the client, instead of returning the unformatted SQL with a 200.
     """
 
     def __init__(self, sql: str, engine: str | None = None) -> None:
@@ -59,9 +56,4 @@ class FormatSQLCommand(AsyncBaseCommand[str]):
     def _format_sync(self) -> str:
         from superset.sql.parse import SQLScript
 
-        # 1:1 with ``superset_old/sqllab/api.py::format_sql`` —
-        # ``SQLScript(sql, engine).format()`` with no error suppression.
-        # ``engine`` is ``None`` when the caller omitted it, exactly as the
-        # original passed ``model.get("engine")``; ``SQLGLOT_DIALECTS.get``
-        # tolerates ``None`` (falls back to the sqlglot default dialect).
         return SQLScript(self._sql, self._engine).format()  # type: ignore[arg-type]

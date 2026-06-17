@@ -15,8 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of
-``superset_old.commands.query.importers.v1.utils.import_saved_query``."""
+"""Utilities for importing saved queries from a v1 bundle."""
 
 from __future__ import annotations
 
@@ -37,9 +36,10 @@ async def import_saved_query(
     config: dict[str, Any],
     overwrite: bool = False,
 ) -> SavedQuery:
-    """Async 1:1 port of ``import_saved_query`` from the original codebase.
+    """Upsert a saved query from a bundle config dict.
 
-    UUID-based dedup. Strips non-model fields (``uuid``, ``version``,
+    UUID-based dedup: updates an existing row if the UUID matches, otherwise
+    creates a new one. Strips non-model fields (``uuid``, ``version``,
     ``database_uuid``) before constructing the row.
     """
     from sqlalchemy import select as sa_select

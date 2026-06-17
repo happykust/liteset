@@ -530,9 +530,9 @@ async def test_embedded_upsert_update(async_session: AsyncSession) -> None:
 
 async def test_get_datasets_for_dashboard_includes_query_datasources():
     """get_datasets_for_dashboard must return Query/SavedQuery datasources too,
-    not only SqlaTable — 1:1 with upstream datasets_trimmed_for_slices which
-    groups slices across all datasource types. A chart backed by a SQL Lab
-    Query was previously dropped from GET /dashboard/{id}/datasets."""
+    not only SqlaTable — datasets_trimmed_for_slices groups slices across all
+    datasource types. A chart backed by a SQL Lab Query was previously dropped
+    from GET /dashboard/{id}/datasets."""
     from unittest.mock import AsyncMock, MagicMock
 
     from superset.db.daos.dashboard import AsyncDashboardDAO

@@ -169,8 +169,7 @@ class AsyncMySQLEngineSpec(BaseAsyncEngineSpec):
         ),
         (
             re.compile(
-                # NOTE: no closing quote after the capture group — 1:1 with
-                # SYNTAX_ERROR_REGEX (superset_old/db_engine_specs/mysql.py:59-61).
+                # NOTE: no closing quote after the capture group.
                 r"check the manual that corresponds to your MySQL server "
                 r"version for the right syntax to use near '(?P<server_error>.*)"
             ),
@@ -199,7 +198,6 @@ class AsyncMySQLEngineSpec(BaseAsyncEngineSpec):
 
     @classmethod
     def epoch_to_dttm(cls) -> str:
-        """SQL expression to convert epoch (seconds) to datetime."""
         return "from_unixtime({col})"
 
     @classmethod
@@ -209,10 +207,6 @@ class AsyncMySQLEngineSpec(BaseAsyncEngineSpec):
         dttm: datetime,
         db_extra: dict[str, Any] | None = None,
     ) -> str | None:
-        """Convert a Python datetime to a MySQL date/datetime literal.
-
-        Uses STR_TO_DATE for safe parsing on the MySQL side.
-        """
         sqla_type = cls.get_sqla_column_type(target_type)
 
         if isinstance(sqla_type, types.Date):
@@ -227,11 +221,6 @@ class AsyncMySQLEngineSpec(BaseAsyncEngineSpec):
         cls,
         conn: AsyncConnection,
     ) -> str | None:
-        """Get the MySQL CONNECTION_ID() for the current connection.
-
-        This ID can later be passed to :meth:`cancel_query` to kill
-        the connection and any running query on it.
-        """
         result = await conn.execute(text("SELECT CONNECTION_ID()"))
         row = result.fetchone()
         if row:
@@ -244,13 +233,6 @@ class AsyncMySQLEngineSpec(BaseAsyncEngineSpec):
         conn: AsyncConnection,
         cancel_query_id: str,
     ) -> bool:
-        """Cancel a running query by killing its MySQL connection.
-
-        :param conn: A new async connection (not the one being cancelled).
-        :param cancel_query_id: The CONNECTION_ID() returned by
-            :meth:`get_cancel_query_id`.
-        :return: ``True`` if the KILL succeeded, ``False`` otherwise.
-        """
         try:
             await conn.execute(text(f"KILL CONNECTION {cancel_query_id}"))
         except Exception:
@@ -268,9 +250,7 @@ class AsyncMySQLEngineSpec(BaseAsyncEngineSpec):
         connect_args: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         # Call super() first so enforce_uri_query_params (including
-        # {"asyncmy": {"local_infile": 0}}) is merged — matches original
-        # MySQLEngineSpec.adjust_engine_params calling super() in
-        # superset_old/db_engine_specs/mysql.py:215.
+        # {"asyncmy": {"local_infile": 0}}) is merged.
         uri, args = super().adjust_engine_params(uri, connect_args)
         args.setdefault("charset", "utf8mb4")
         args.setdefault("connect_timeout", 10)

@@ -14,14 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Flask-free port of the vendored upstream
-``tests/unit_tests/datasets/schema_tests.py``.
+"""Tests for ``AsyncDatasetDAO.validate_python_date_format``.
 
-Liteset does not use Marshmallow; the ``python_date_format`` validation lives
-on ``AsyncDatasetDAO.validate_python_date_format`` (a 1:1 port of the upstream
-``superset_old/daos/dataset.py`` helper) and returns a ``bool`` instead of
-raising ``marshmallow.ValidationError``.  The two upstream parametrize lists
-(accepted / rejected formats) are preserved verbatim; only the assertion shape
+Liteset does not use Marshmallow; the validation returns a ``bool`` instead of
+raising ``marshmallow.ValidationError``.  The parametrize lists
+(accepted / rejected formats) match upstream; only the assertion shape
 changes from ``raises(ValidationError)`` to ``is False``.
 """
 

@@ -14,18 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Import / Export CLI commands.
-
-Async port of ``superset_old/cli/importexport.py`` (V1 bundle commands) plus
-``superset_old/examples/utils.load_configs_from_directory`` (import-directory).
-
-Supported commands:
-* ``export-dashboards``    — V1 ZIP bundle
-* ``import-dashboards``    — V1 ZIP bundle
-* ``export-datasources``   — V1 ZIP bundle
-* ``import-datasources``   — V1 ZIP bundle
-* ``import-directory``     — walk directory of YAML configs (example loader)
-"""
+"""Import / Export CLI commands (V1 ZIP bundles and directory loader)."""
 
 from __future__ import annotations
 
@@ -58,11 +47,6 @@ def _make_session() -> tuple[async_sessionmaker[AsyncSession], AsyncEngine]:
     return create_session_factory(engine), engine
 
 
-# ------------------------------------------------------------------
-# export-dashboards
-# ------------------------------------------------------------------
-
-
 @click.command("export-dashboards")
 @click.option(
     "--dashboard-file",
@@ -72,10 +56,6 @@ def _make_session() -> tuple[async_sessionmaker[AsyncSession], AsyncEngine]:
 )
 def export_dashboards(dashboard_file: Optional[str] = None) -> None:
     """Export dashboards to ZIP file"""
-    # 1:1 port of superset_old/cli/importexport.py export_dashboards.
-    # The original uses ExportDashboardsCommand(dashboard_ids).run() which
-    # yields (file_name, file_content_callable) pairs; the port's async
-    # ExportDashboardsCommand.execute() returns io.BytesIO directly.
     import anyio
 
     async def _export() -> None:
@@ -123,11 +103,6 @@ def export_dashboards(dashboard_file: Optional[str] = None) -> None:
     anyio.run(_export)
 
 
-# ------------------------------------------------------------------
-# export-datasources
-# ------------------------------------------------------------------
-
-
 @click.command("export-datasources")
 @click.option(
     "--datasource-file",
@@ -137,7 +112,6 @@ def export_dashboards(dashboard_file: Optional[str] = None) -> None:
 )
 def export_datasources(datasource_file: Optional[str] = None) -> None:
     """Export datasources to ZIP file"""
-    # 1:1 port of superset_old/cli/importexport.py export_datasources.
     import anyio
 
     async def _export() -> None:
@@ -185,11 +159,6 @@ def export_datasources(datasource_file: Optional[str] = None) -> None:
     anyio.run(_export)
 
 
-# ------------------------------------------------------------------
-# import-dashboards
-# ------------------------------------------------------------------
-
-
 @click.command("import-dashboards")
 @click.option(
     "--path",
@@ -205,9 +174,6 @@ def export_datasources(datasource_file: Optional[str] = None) -> None:
 )
 def import_dashboards(path: str, username: Optional[str]) -> None:
     """Import dashboards from ZIP file"""
-    # 1:1 port of superset_old/cli/importexport.py import_dashboards.
-    # Original: get_contents_from_bundle -> ImportDashboardsCommand(contents).run()
-    # Port: read zip as BytesIO -> ImportDashboardsCommand(buf).execute()
     import anyio
 
     async def _import() -> None:
@@ -234,10 +200,7 @@ def import_dashboards(path: str, username: Optional[str]) -> None:
 
             async with session_factory() as session:
                 # Resolve --username inside the import session so the ORM user
-                # can be attached as owner — mirrors the original's
-                # ``g.user = security_manager.find_user(username=...)`` before
-                # ImportDashboardsCommand (superset_old/cli/importexport.py:
-                # 149-164); without it imports are owner-less.
+                # can be attached as owner; without it imports are owner-less.
                 user = None
                 if username is not None:
                     from sqlalchemy import select
@@ -247,10 +210,8 @@ def import_dashboards(path: str, username: Optional[str]) -> None:
                     stmt = select(User).where(User.username == username)
                     user = (await session.execute(stmt)).scalars().first()
                     if user is None:
-                        # FAB ``find_user`` returns None silently on a miss
-                        # and the original proceeds with an owner-less import
-                        # (superset_old/cli/importexport.py:149-150) — do NOT
-                        # abort. ``import_datasources`` below behaves the same.
+                        # FAB ``find_user`` returns None silently on a miss;
+                        # do NOT abort. ``import_datasources`` below behaves the same.
                         click.secho(
                             f"User not found: {username}; importing without owner",
                             fg="yellow",
@@ -278,11 +239,6 @@ def import_dashboards(path: str, username: Optional[str]) -> None:
     anyio.run(_import)
 
 
-# ------------------------------------------------------------------
-# import-datasources
-# ------------------------------------------------------------------
-
-
 @click.command("import-datasources")
 @click.option(
     "--path",
@@ -298,10 +254,6 @@ def import_dashboards(path: str, username: Optional[str]) -> None:
 )
 def import_datasources(path: str, username: Optional[str] = "admin") -> None:
     """Import datasources from ZIP file"""
-    # 1:1 port of superset_old/cli/importexport.py import_datasources.
-    # Original: override_user + get_contents_from_bundle
-    # -> ImportDatasetsCommand(contents).run()
-    # Port: read zip as BytesIO -> ImportDatasetsCommand(buf).execute()
     import anyio
 
     async def _import() -> None:
@@ -358,11 +310,6 @@ def import_datasources(path: str, username: Optional[str] = "admin") -> None:
     anyio.run(_import)
 
 
-# ------------------------------------------------------------------
-# import-directory
-# ------------------------------------------------------------------
-
-
 @click.command("import-directory")
 @click.argument("directory")
 @click.option(
@@ -379,8 +326,6 @@ def import_datasources(path: str, username: Optional[str] = "admin") -> None:
 )
 def import_directory(directory: str, overwrite: bool, force: bool) -> None:
     """Imports configs from a given directory"""
-    # 1:1 port of superset_old/cli/importexport.py import_directory which
-    # delegates to superset.examples.utils.load_configs_from_directory.
     from superset.examples.utils import (
         load_configs_from_directory,  # pylint: disable=import-outside-toplevel
     )

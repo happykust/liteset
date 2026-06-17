@@ -14,14 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/commands/database/uploaders/csv_reader.py``.
+"""CSV file reader for database uploads.
 
-Mirrors the original reader 1:1.  The only adaptation is the file
-input — the original accepts an upstream file-storage object and
-calls ``.stream``.  Liteset receives uploads via Litestar's
-``UploadFile``/raw bytes; this module accepts any file-like with
-``.stream`` *or* a raw ``IO[bytes]`` / ``bytes`` payload and normalises
-internally.
+Accepts any file-like with ``.stream`` *or* a raw ``IO[bytes]`` / ``bytes``
+payload and normalises internally.
 """
 
 from __future__ import annotations
@@ -42,8 +38,7 @@ from superset.i18n import gettext as _
 
 logger = logging.getLogger(__name__)
 
-# Fixed error limit to avoid huge payloads and poor UX given that a file
-# might contain thousands of errors.
+# Capped to avoid huge payloads when a file contains thousands of errors.
 MAX_DISPLAYED_ERRORS = 5
 
 READ_CSV_CHUNK_SIZE = 1000
@@ -225,18 +220,12 @@ class CSVReader(BaseDataReader):
                 else:
                     kwargs.pop("dtype", None)
 
-                # Custom types for our manual casting
                 types = custom_types if custom_types else None
 
             stream = _to_stream(file)
 
             if "chunksize" in kwargs:
-                df = pd.concat(
-                    pd.read_csv(
-                        filepath_or_buffer=stream,
-                        **kwargs,
-                    )
-                )
+                df = pd.concat(pd.read_csv(filepath_or_buffer=stream, **kwargs))
             else:
                 df = pd.read_csv(
                     filepath_or_buffer=stream,

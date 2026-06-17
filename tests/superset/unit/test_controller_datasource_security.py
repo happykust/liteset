@@ -14,19 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unit tests for DatasourceController._call_raise_for_access dispatch.
-
-Regression: for datasource_type='query' the original calls
-  security_manager.raise_for_access(query=self)  (Path 1 — DB+table check)
-whereas liteset previously called
-  security_manager.raise_for_access(datasource=self)  (Path 3 — datasource check).
-Path 3 evaluates Query.perm as a datasource_access string (never registered in FAB),
-denying users who only have table-level permissions.
-
-These tests verify that _call_raise_for_access routes correctly, and that
-get_column_values / get_datasource delegate to it (not hardcode datasource=).
-"""
-
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -35,10 +22,6 @@ import pytest
 
 from superset.controllers.datasource import DatasourceController
 from superset.utils.core import DatasourceType
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_security_manager() -> MagicMock:
@@ -61,13 +44,16 @@ def _make_datasource(ds_type: str = "table") -> MagicMock:
     return ds
 
 
-# ---------------------------------------------------------------------------
-# _call_raise_for_access dispatch
-# ---------------------------------------------------------------------------
-
-
 class TestCallRaiseForAccessDispatch:
-    """_call_raise_for_access routes the kwargs correctly per datasource type."""
+    """_call_raise_for_access routes the kwargs correctly per datasource type.
+
+    Regression: for datasource_type='query' the original calls
+    ``security_manager.raise_for_access(query=self)`` (Path 1 — DB+table check),
+    whereas liteset previously called
+    ``security_manager.raise_for_access(datasource=self)`` (Path 3 — datasource
+    check), evaluating Query.perm as a datasource_access string (never registered
+    in FAB) and denying users who only have table-level permissions.
+    """
 
     @pytest.mark.anyio
     async def test_query_type_passes_query_kwarg(self) -> None:
@@ -81,7 +67,6 @@ class TestCallRaiseForAccessDispatch:
         )
 
         sm.raise_for_access.assert_awaited_once_with(query=datasource, user=user)
-        # Must NOT have been called with datasource= kwarg (which would take Path 3)
         for c in sm.raise_for_access.call_args_list:
             assert "datasource" not in c.kwargs, (
                 "Query type must NOT pass datasource= to raise_for_access"
@@ -106,13 +91,8 @@ class TestCallRaiseForAccessDispatch:
 
     @pytest.mark.anyio
     async def test_saved_query_type_raises_attribute_error(self) -> None:
-        """datasource_type='saved_query' raises AttributeError — 1:1 original.
-
-        Upstream ``datasource.raise_for_access()`` is called on the model
-        object (superset_old/datasource/api.py:107), and ``SavedQuery``
-        (superset_old/models/sql_lab.py:389) defines NO ``raise_for_access``
-        method — the original therefore raises AttributeError (→ 500).
-        """
+        """datasource_type='saved_query' raises AttributeError: ``SavedQuery``
+        defines no ``raise_for_access`` method, so dispatch always fails."""
         sm = _make_security_manager()
         user = _make_user()
         datasource = _make_datasource("saved_query")
@@ -126,7 +106,9 @@ class TestCallRaiseForAccessDispatch:
 
     @pytest.mark.anyio
     async def test_query_type_string_literal_also_routes_correctly(self) -> None:
-        """String literal 'query' (not enum member) still routes to query= path."""
+        """String literal 'query' routes correctly because
+        DatasourceType.QUERY == "query".
+        """
         sm = _make_security_manager()
         user = _make_user()
         datasource = _make_datasource("query")
@@ -138,7 +120,6 @@ class TestCallRaiseForAccessDispatch:
 
     @pytest.mark.anyio
     async def test_security_exception_propagates(self) -> None:
-        """A SupersetSecurityException raised by the manager propagates up."""
         from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
         from superset.exceptions import SupersetSecurityException
 
@@ -159,7 +140,6 @@ class TestCallRaiseForAccessDispatch:
 
     @pytest.mark.anyio
     async def test_query_security_exception_propagates(self) -> None:
-        """SupersetSecurityException for query type also propagates up."""
         from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
         from superset.exceptions import SupersetSecurityException
 
@@ -179,25 +159,13 @@ class TestCallRaiseForAccessDispatch:
             )
 
 
-# ---------------------------------------------------------------------------
-# Code-structure check: get_column_values / get_datasource use the helper
-#
-# We inspect the source to confirm both handlers delegate to
-# _call_raise_for_access rather than hardcoding raise_for_access(datasource=…).
-# This is intentionally a lightweight structural check; the dispatch logic
-# itself is fully covered by TestCallRaiseForAccessDispatch above.
-# ---------------------------------------------------------------------------
-
-
 class TestGetColumnValuesDelegates:
-    """Structural checks: handlers use _call_raise_for_access, not hardcoded paths."""
+    """Source-inspection guard: if a future edit hardcodes
+    ``raise_for_access(datasource=…)`` directly instead of delegating to
+    ``_call_raise_for_access``, these tests catch it without needing a full
+    async integration run."""
 
     def test_get_column_values_calls_helper_not_raw_raise_for_access(self) -> None:
-        """get_column_values source must call _call_raise_for_access, not raw manager.
-
-        If a future edit reverts to hardcoding ``raise_for_access(datasource=…)``
-        the test catches it immediately without needing a full async integration run.
-        """
         import inspect
 
         src = inspect.getsource(DatasourceController.get_column_values.fn)
@@ -206,7 +174,6 @@ class TestGetColumnValuesDelegates:
         )
 
     def test_get_datasource_calls_helper_not_raw_raise_for_access(self) -> None:
-        """get_datasource source must call _call_raise_for_access, not raw manager."""
         import inspect
 
         src = inspect.getsource(DatasourceController.get_datasource.fn)
@@ -215,7 +182,6 @@ class TestGetColumnValuesDelegates:
         )
 
     def test_call_raise_for_access_is_a_static_method(self) -> None:
-        """_call_raise_for_access must be a staticmethod (callable w/o instance)."""
         assert isinstance(
             DatasourceController.__dict__["_call_raise_for_access"], staticmethod
         )

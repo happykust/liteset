@@ -51,13 +51,10 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
         When a database is edited the user sees a masked version of
         ``encrypted_extra``. The masked values should be unmasked before the
         database is updated so that the original sensitive data is preserved.
-
-        Ports the original ``DatabaseDAO.update`` logic.
         """
         if item is not None and attributes and "encrypted_extra" in attributes:
-            # Delegate to the engine spec, 1:1 with upstream
-            # ``item.db_engine_spec.unmask_encrypted_extra(old, new)`` — each
-            # spec knows its own sensitive fields (e.g. BigQuery ``private_key``,
+            # Delegate to ``item.db_engine_spec.unmask_encrypted_extra(old, new)``
+            # — each spec knows its own sensitive fields (e.g. BigQuery ``private_key``,
             # GSheets credentials) instead of a blanket ``{"$.*"}`` reveal.
             attributes["encrypted_extra"] = item.db_engine_spec.unmask_encrypted_extra(
                 cast("str | None", item.encrypted_extra),
@@ -67,7 +64,6 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
         return await super().update(item, attributes)
 
     async def validate_uniqueness(self, database_name: str) -> bool:
-        """Check that no database exists with the given name."""
         existing = await self.find_one_or_none(database_name=database_name)
         return existing is None
 
@@ -76,7 +72,6 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
         database_id: int,
         database_name: str,
     ) -> bool:
-        """Check name uniqueness excluding the database being updated."""
         stmt = select(Database).where(
             Database.database_name == database_name,
             Database.id != database_id,
@@ -88,7 +83,6 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
         self,
         database_name: str,
     ) -> Database | None:
-        """Retrieve a database by name."""
         return await self.find_one_or_none(database_name=database_name)
 
     @staticmethod
@@ -110,12 +104,7 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
         )
 
     async def has_dependent_datasets(self, database_id: int) -> bool:
-        """Return ``True`` when at least one dataset is attached to the database.
-
-        1:1 with the original ``DeleteDatabaseCommand`` check
-        (``self._model.tables`` truthiness): a single matching ``SqlaTable``
-        row is enough to block deletion.
-        """
+        """Return True when at least one dataset is attached to the database."""
         stmt = select(SqlaTable.id).where(SqlaTable.database_id == database_id).limit(1)
         result = await self.session.execute(stmt)
         return result.scalars().first() is not None
@@ -129,18 +118,15 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
     ) -> dict[str, dict[str, Any]]:
         """Return a mapping of table_name to parsed extra JSON for the given tables.
 
-        Used to enrich table/view listings with certification info. 1:1 with
-        the original ``TablesDatabaseCommand``'s ``extra_dict_by_name`` query,
-        which filters by ``database_id`` + ``catalog`` + ``schema`` and parses
-        ``SqlaTable.extra`` via ``extra_dict`` (empty dict on parse failure).
+        Used to enrich table/view listings with certification info. Filters by
+        ``database_id`` + ``catalog`` + ``schema`` and parses ``SqlaTable.extra``
+        via ``extra_dict`` (empty dict on parse failure).
         """
         if not table_names:
             return {}
         import json
 
-        # Filter catalog/schema UNCONDITIONALLY (None → ``IS NULL``), 1:1 with
-        # upstream which filters ``SqlaTable.catalog == self._catalog_name`` /
-        # ``... .schema == self._schema_name`` regardless of None. Skipping the
+        # Filter catalog/schema UNCONDITIONALLY (None → IS NULL). Skipping the
         # filter when None (the common single-catalog case) would match rows
         # from other catalogs/schemas that share a table name.
         stmt = select(SqlaTable.table_name, SqlaTable.extra).where(
@@ -163,7 +149,6 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
         self,
         database_id: int,
     ) -> dict[str, list[Any]]:
-        """Get charts, dashboards, and sqllab tab states related to a database."""
         dataset_stmt = select(SqlaTable.id).where(SqlaTable.database_id == database_id)
         dataset_result = await self.session.execute(dataset_stmt)
         dataset_ids = list(dataset_result.scalars().all())
@@ -193,7 +178,6 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
                 dash_result = await self.session.execute(dash_stmt)
                 dashboards = list(dash_result.scalars().all())
 
-        # SQL Lab tab states linked to this database
         tab_stmt = select(TabState).where(TabState.database_id == database_id)
         tab_result = await self.session.execute(tab_stmt)
         sqllab_tab_states = list(tab_result.scalars().all())
@@ -205,7 +189,6 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
         }
 
     async def get_ssh_tunnel(self, database_id: int) -> Any | None:
-        """Get SSH tunnel config for a database."""
         tunnel_dao = AsyncSSHTunnelDAO(self.session)
         return await tunnel_dao.get_by_database_id(database_id)
 
@@ -218,8 +201,7 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
         """Get datasets for a database, optionally filtered.
 
         ``catalog``/``schema`` filtering is UNCONDITIONAL once the argument
-        is supplied — ``None`` compiles to ``IS NULL``, 1:1 with upstream
-        ``DatabaseDAO.get_datasets`` (R13-08: the previous conditional
+        is supplied — ``None`` compiles to ``IS NULL`` (the previous conditional
         semantics made ``SyncPermissionsCommand`` rewrite perms on datasets
         of ALL catalogs when ``catalog=None``). Callers that want every
         dataset regardless of catalog/schema (the export flow) simply omit
@@ -257,15 +239,12 @@ class AsyncSSHTunnelDAO:
     Does not inherit BaseAsyncDAO because the SSHTunnel model may not be
     available (optional superset dependency). Uses direct session queries
     with graceful ImportError fallback.
-
-    Mirrors ``superset_old/daos/database.py::SSHTunnelDAO``.
     """
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
     async def get_by_database_id(self, database_id: int) -> Any | None:
-        """Get SSH tunnel config for a database."""
         from superset.models.ssh_tunnel import SSHTunnel
 
         stmt = select(SSHTunnel).where(SSHTunnel.database_id == database_id)
@@ -273,10 +252,6 @@ class AsyncSSHTunnelDAO:
         return result.scalars().one_or_none()
 
     async def create(self, attributes: dict[str, Any]) -> Any:
-        """Create a new SSHTunnel row.
-
-        Port of ``BaseDAO.create`` specialised for SSHTunnel.
-        """
         from superset.models.ssh_tunnel import SSHTunnel
 
         tunnel = SSHTunnel(**attributes)
@@ -296,12 +271,9 @@ class AsyncSSHTunnelDAO:
         ``PASSWORD_MASK`` sentinel).  Before writing we replace any mask
         sentinels with the values already stored on the model so the real
         secrets are not overwritten.
-
-        Port of ``superset_old/daos/database.py::SSHTunnelDAO.update``.
         """
         from superset.utils.ssh_tunnel import unmask_password_info
 
-        # ID cannot be updated — matches the original.
         attributes.pop("id", None)
         attributes = unmask_password_info(attributes, item)
 
@@ -311,10 +283,6 @@ class AsyncSSHTunnelDAO:
         return item
 
     async def delete(self, item: Any) -> None:
-        """Delete an SSHTunnel row.
-
-        Port of ``BaseDAO.delete`` specialised for SSHTunnel.
-        """
         await self.session.delete(item)
         await self.session.flush()
 
@@ -330,7 +298,6 @@ class AsyncDatabaseUserOAuth2TokensDAO:
         self.session = session
 
     async def get_database(self, database_id: int) -> Database | None:
-        """Get database without access filters (for OAuth2 token retrieval)."""
         return await self.session.get(Database, database_id)
 
     async def find_one_or_none(
@@ -350,12 +317,10 @@ class AsyncDatabaseUserOAuth2TokensDAO:
         return result.scalars().one_or_none()
 
     async def delete(self, token: Any) -> None:
-        """Delete an OAuth2 token row."""
         await self.session.delete(token)
         await self.session.flush()
 
     async def create(self, attributes: dict[str, Any]) -> Any:
-        """Create a new OAuth2 token row."""
         from superset.models.core import DatabaseUserOAuth2Tokens
 
         token = DatabaseUserOAuth2Tokens(**attributes)

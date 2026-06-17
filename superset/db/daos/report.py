@@ -37,21 +37,18 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
     model_cls = ReportSchedule
 
     async def find_by_chart_id(self, chart_id: int) -> list[ReportSchedule]:
-        """Find report schedules linked to a chart."""
         return await self.find_all([ReportSchedule.chart_id == chart_id])
 
     async def find_by_dashboard_id(
         self,
         dashboard_id: int,
     ) -> list[ReportSchedule]:
-        """Find report schedules linked to a dashboard."""
         return await self.find_all([ReportSchedule.dashboard_id == dashboard_id])
 
     async def find_by_database_id(
         self,
         database_id: int,
     ) -> list[ReportSchedule]:
-        """Find report schedules linked to a database."""
         return await self.find_all([ReportSchedule.database_id == database_id])
 
     async def validate_update_uniqueness(
@@ -60,7 +57,6 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
         report_type: str,
         report_id: int | None = None,
     ) -> bool:
-        """Check that name + type combination is unique."""
         stmt = select(ReportSchedule.id).where(
             ReportSchedule.name == name,
             ReportSchedule.type == report_type,
@@ -73,10 +69,10 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
     async def create(self, attributes: dict[str, Any]) -> ReportSchedule:
         """Create a report schedule with nested recipients.
 
-        1:1 with ``superset_old/daos/report.py``: recipients are attached to the
-        still-transient report via the ``report_schedule`` backref BEFORE the
-        flush, so the ``cascade="all, delete-orphan"`` relationship persists
-        them. (Appending to the collection AFTER a flush — on the now-persistent
+        Recipients are attached to the still-transient report via the
+        ``report_schedule`` backref BEFORE the flush, so the
+        ``cascade="all, delete-orphan"`` relationship persists them.
+        (Appending to the collection AFTER a flush — on the now-persistent
         report — would fire a sync SELECT and raise MissingGreenlet; see
         [[sa-lazy-load-on-transient-asyncpg]].)
         """
@@ -104,7 +100,6 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
         item: ReportSchedule,
         attributes: dict[str, Any],
     ) -> ReportSchedule:
-        """Update report schedule with recipients handling."""
         attributes = {**attributes}
         recipients_data = attributes.pop("recipients", None)
 
@@ -130,14 +125,12 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
         return item
 
     async def find_active(self) -> list[ReportSchedule]:
-        """Find all active report schedules."""
         return await self.find_all([ReportSchedule.active.is_(True)])
 
     async def find_last_success_log(
         self,
         report_schedule: ReportSchedule,
     ) -> ReportExecutionLog | None:
-        """Get the most recent successful execution log."""
         stmt = (
             select(ReportExecutionLog)
             .where(
@@ -154,7 +147,6 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
         self,
         report_schedule: ReportSchedule,
     ) -> ReportExecutionLog | None:
-        """Find last WORKING log entry without error message."""
         stmt = (
             select(ReportExecutionLog)
             .where(
@@ -172,7 +164,6 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
         self,
         report_schedule: ReportSchedule,
     ) -> ReportExecutionLog | None:
-        """Find last error notification log, but only if no non-error logs since."""
         last_error_stmt = (
             select(ReportExecutionLog)
             .where(
@@ -207,7 +198,6 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
         return last_error_log if not non_error_log else None
 
     async def find_by_chart_ids(self, chart_ids: list[int]) -> list[ReportSchedule]:
-        """Find report schedules linked to any of the given charts."""
         if not chart_ids:
             return []
         return await self.find_all([ReportSchedule.chart_id.in_(chart_ids)])
@@ -215,7 +205,6 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
     async def find_by_dashboard_ids(
         self, dashboard_ids: list[int]
     ) -> list[ReportSchedule]:
-        """Find report schedules linked to any of the given dashboards."""
         if not dashboard_ids:
             return []
         return await self.find_all([ReportSchedule.dashboard_id.in_(dashboard_ids)])
@@ -223,7 +212,6 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
     async def find_by_database_ids(
         self, database_ids: list[int]
     ) -> list[ReportSchedule]:
-        """Find report schedules linked to any of the given databases."""
         if not database_ids:
             return []
         return await self.find_all([ReportSchedule.database_id.in_(database_ids)])
@@ -246,8 +234,7 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
     ) -> bool:
         """Validate the current user has no chart/dashboard report attached.
 
-        1:1 with ``superset_old/daos/report.py:validate_unique_creation_method``
-        which scopes the uniqueness check to ``created_by_fk == get_user_id()``
+        Scopes the uniqueness check to ``created_by_fk == get_user_id()``
         (the self-subscribe reports), then filters by the supplied dashboard
         and/or chart id.
         """
@@ -269,7 +256,6 @@ class AsyncReportScheduleDAO(BaseAsyncDAO[ReportSchedule]):
         report_schedule: ReportSchedule,
         from_date: datetime,
     ) -> int:
-        """Delete execution logs older than the given date."""
         stmt = delete(ReportExecutionLog).where(
             ReportExecutionLog.report_schedule_id == report_schedule.id,
             ReportExecutionLog.end_dttm < from_date,

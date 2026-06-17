@@ -51,8 +51,7 @@ class AsyncRoleDAO:
     ) -> tuple[list[Any], int]:
         """Search roles with optional filters and pagination.
 
-        Mirrors original RoleRestAPI.get_list filter_dict logic
-        (security/api.py:305-319):
+        Filter parameters:
         - ``name``: case-insensitive substring match on Role.name
         - ``user_ids``: Role.user.any(id=value) — roles assigned to a user
         - ``permission_ids``: Role.permissions.any(id=value)
@@ -66,52 +65,43 @@ class AsyncRoleDAO:
 
         from superset.models.security import Role
 
-        # Base query
         stmt = select(Role)
         count_stmt = select(func.count()).select_from(Role)
 
-        # Apply name filter (case-insensitive substring match)
-        # NOTE: raw interpolation matches superset_old/security/api.py:319 — no escaping
+        # NOTE: raw interpolation — no escaping
         if name_filter:
             stmt = stmt.where(Role.name.ilike(f"%{name_filter}%"))
             count_stmt = count_stmt.where(Role.name.ilike(f"%{name_filter}%"))
 
-        # user_ids filter — mirrors Role.user.any(id=filter_dict["user_ids"])
         if user_ids_filter is not None:
             cond = Role.user.any(id=user_ids_filter)  # type: ignore[attr-defined]
             stmt = stmt.where(cond)
             count_stmt = count_stmt.where(cond)
 
-        # permission_ids filter
         if permission_ids_filter is not None:
             cond = Role.permissions.any(id=permission_ids_filter)
             stmt = stmt.where(cond)
             count_stmt = count_stmt.where(cond)
 
-        # group_ids filter
         if group_ids_filter is not None:
             cond = Role.groups.any(id=group_ids_filter)  # type: ignore[attr-defined]
             stmt = stmt.where(cond)
             count_stmt = count_stmt.where(cond)
 
-        # Count
         total = await self.session.scalar(count_stmt) or 0
 
-        # Ordering — only allow known columns
         order_col = getattr(Role, order_column, Role.id)
         if order_direction == "desc":
             stmt = stmt.order_by(order_col.desc())
         else:
             stmt = stmt.order_by(order_col.asc())
 
-        # Eager load relationships to avoid implicit IO
         stmt = stmt.options(
             selectinload(Role.permissions),
             selectinload(Role.user),  # type: ignore[attr-defined]
             selectinload(Role.groups),  # type: ignore[attr-defined]
         )
 
-        # Pagination
         if page_size > 0:
             stmt = stmt.offset(page * page_size).limit(page_size)
 
@@ -121,7 +111,6 @@ class AsyncRoleDAO:
         return roles, total
 
     async def find_by_id(self, role_id: int) -> Any | None:
-        """Get a single role by ID with eager-loaded relationships."""
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
 
@@ -140,7 +129,6 @@ class AsyncRoleDAO:
         return result.scalars().unique().one_or_none()
 
     async def create(self, attributes: dict[str, Any]) -> Any:
-        """Create a new role."""
         from superset.models.security import Role
 
         role = Role(**attributes)
@@ -152,7 +140,6 @@ class AsyncRoleDAO:
         return role
 
     async def update(self, role: Any, attributes: dict[str, Any]) -> Any:
-        """Update role attributes in-place."""
         for key, value in attributes.items():
             setattr(role, key, value)
         await self.session.flush()
@@ -162,12 +149,10 @@ class AsyncRoleDAO:
         return role
 
     async def delete(self, role: Any) -> None:
-        """Delete a single role."""
         await self.session.delete(role)
         await self.session.flush()
 
     async def get_permissions(self, role_id: int) -> list[Any]:
-        """Get all permissions for a role, with permission and view_menu loaded."""
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
 
@@ -587,7 +572,6 @@ class AsyncPermissionViewDAO:
         return list(result.scalars().all()), total
 
     async def find_by_id(self, pv_id: int) -> Any | None:
-        """Get a single permission-view by ID."""
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
 
@@ -608,22 +592,16 @@ class AsyncPermissionViewDAO:
         """Create a new permission-view mapping.
 
         Expects ``permission_id`` and ``view_menu_id`` in *attributes*.
-        Mirrors the upstream ``ModelRestApi.post`` for PermissionViewMenu.
         """
         from superset.models.security import PermissionView
 
         pv = PermissionView(**attributes)
         self.session.add(pv)
         await self.session.flush()
-        # Reload with relationships so the caller can access .permission / .view_menu
         reloaded = await self.find_by_id(int(pv.id))
         return reloaded
 
     async def update(self, pv: Any, attributes: dict[str, Any]) -> Any:
-        """Update a permission-view mapping in-place.
-
-        Mirrors the upstream ``ModelRestApi.put`` for PermissionViewMenu.
-        """
         for key, value in attributes.items():
             setattr(pv, key, value)
         await self.session.flush()
@@ -631,10 +609,6 @@ class AsyncPermissionViewDAO:
         return reloaded
 
     async def delete(self, pv: Any) -> None:
-        """Delete a single permission-view mapping.
-
-        Mirrors the upstream ``ModelRestApi.delete`` for PermissionViewMenu.
-        """
         await self.session.delete(pv)
         await self.session.flush()
 
@@ -685,7 +659,6 @@ class AsyncPermissionDAO:
         return list(result.scalars().all()), total
 
     async def find_by_id(self, permission_id: int) -> Any | None:
-        """Get a single permission by ID."""
         from sqlalchemy import select
 
         from superset.models.security import Permission
@@ -696,10 +669,9 @@ class AsyncPermissionDAO:
 
 
 class AsyncViewMenuDAO:
-    """Async DAO for the upstream ViewMenu model (ab_view_menu table).
+    """Async DAO for the ViewMenu model (ab_view_menu table).
 
-    Full CRUD — mirrors the original ViewMenuApi which exposes
-    all ModelRestApi methods (get_list, get, info, post, put, delete).
+    Full CRUD exposing get_list, get, info, post, put, delete methods.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -741,7 +713,6 @@ class AsyncViewMenuDAO:
         return list(result.scalars().all()), total
 
     async def find_by_id(self, vm_id: int) -> Any | None:
-        """Get a single view menu by ID."""
         from sqlalchemy import select
 
         from superset.models.security import ViewMenu
@@ -751,10 +722,6 @@ class AsyncViewMenuDAO:
         return result.scalars().one_or_none()
 
     async def create(self, attributes: dict[str, Any]) -> Any:
-        """Create a new view menu (resource).
-
-        Mirrors the upstream ``ModelRestApi.post`` for ViewMenu.
-        """
         from superset.models.security import ViewMenu
 
         vm = ViewMenu(**attributes)
@@ -763,29 +730,19 @@ class AsyncViewMenuDAO:
         return vm
 
     async def update(self, vm: Any, attributes: dict[str, Any]) -> Any:
-        """Update a view menu in-place.
-
-        Mirrors the upstream ``ModelRestApi.put`` for ViewMenu.
-        """
         for key, value in attributes.items():
             setattr(vm, key, value)
         await self.session.flush()
         return vm
 
     async def delete(self, vm: Any) -> None:
-        """Delete a single view menu.
-
-        Mirrors the upstream ``ModelRestApi.delete`` for ViewMenu.
-        """
         await self.session.delete(vm)
         await self.session.flush()
 
 
 class AsyncRegisterUserDAO:
-    """Async DAO for the upstream RegisterUser model (ab_register_user table).
+    """Async DAO for the RegisterUser model (ab_register_user table).
 
-    Mirrors the original ``UserRegistrationsRestAPI`` which uses
-    ``SQLAInterface(RegisterUser)`` through the upstream ``ModelRestApi``.
     Provides full CRUD + search + distinct for pending registrations.
     """
 
@@ -828,7 +785,6 @@ class AsyncRegisterUserDAO:
         return list(result.scalars().all()), total
 
     async def find_by_id(self, reg_id: int) -> Any | None:
-        """Get a single registration by ID."""
         from sqlalchemy import select
 
         from superset.models.security import RegisterUser
@@ -838,7 +794,6 @@ class AsyncRegisterUserDAO:
         return result.scalars().one_or_none()
 
     async def find_by_username(self, username: str) -> Any | None:
-        """Find a registration by username (unique constraint check)."""
         from sqlalchemy import select
 
         from superset.models.security import RegisterUser
@@ -848,7 +803,6 @@ class AsyncRegisterUserDAO:
         return result.scalars().one_or_none()
 
     async def find_by_email(self, email: str) -> Any | None:
-        """Find a registration by email."""
         from sqlalchemy import select
 
         from superset.models.security import RegisterUser
@@ -860,11 +814,10 @@ class AsyncRegisterUserDAO:
     async def create(self, attributes: dict[str, Any]) -> Any:
         """Create a new registration request.
 
-        Mirrors the upstream ``ModelRestApi.post_headless``: simply persists the
-        data as-is via ``session.add() + session.flush()``. Password hashing
-        and ``registration_hash`` generation only happen in the register
-        FORM flow (``SecurityManager.add_register_user``), NOT in the
-        REST API path.
+        Simply persists the data as-is via ``session.add() + session.flush()``.
+        Password hashing and ``registration_hash`` generation only happen in
+        the register FORM flow (``SecurityManager.add_register_user``), NOT
+        in the REST API path.
         """
         from superset.models.security import RegisterUser
 
@@ -874,20 +827,12 @@ class AsyncRegisterUserDAO:
         return reg
 
     async def update(self, reg: Any, attributes: dict[str, Any]) -> Any:
-        """Update a registration record in-place.
-
-        Mirrors the upstream ``ModelRestApi.put`` for RegisterUser.
-        """
         for key, value in attributes.items():
             setattr(reg, key, value)
         await self.session.flush()
         return reg
 
     async def delete(self, reg: Any) -> None:
-        """Delete a single registration record.
-
-        Mirrors the upstream ``SecurityManager.del_register_user``.
-        """
         await self.session.delete(reg)
         await self.session.flush()
 
@@ -898,10 +843,6 @@ class AsyncRegisterUserDAO:
         page_size: int = 25,
         filter_value: str = "",
     ) -> tuple[list[Any], int]:
-        """Get distinct values for a column (for filter dropdowns).
-
-        Mirrors the upstream ``ModelRestApi.distinct`` endpoint.
-        """
         from sqlalchemy import func, select
 
         from superset.models.security import RegisterUser

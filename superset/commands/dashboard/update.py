@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 # mypy: ignore-errors
-"""Async port of ``superset_old/commands/dashboard/update.py``."""
+"""Dashboard update commands."""
 
 from __future__ import annotations
 
@@ -55,10 +55,8 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         self._dashboard: Any | None = None
 
     async def validate(self) -> None:
-        # Eager-load the M2M relationships that are (re)assigned in
-        # ``run()``. Without this, the `.owners = [...]` assignment
-        # triggers a lazy reload of the existing values, which crashes
-        # under asyncpg with ``MissingGreenlet``.
+        # Eager-load M2M collections before run() reassigns them; without this
+        # the .owners = [...] assignment triggers a sync lazy-load (MissingGreenlet).
         from sqlalchemy.orm import selectinload
 
         from superset.models.dashboard import Dashboard
@@ -83,9 +81,6 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
                 self._dashboard_id, slug
             )
             if not is_unique:
-                # Field-keyed 422 — 1:1 with upstream
-                # ``DashboardInvalidError(exceptions=[DashboardSlugExists
-                # ValidationError()])`` → ``{"slug": ["Must be unique"]}``.
                 from superset.commands.dashboard.exceptions import (
                     DashboardInvalidError,
                     DashboardSlugExistsValidationError,
@@ -95,14 +90,8 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
                     exceptions=[DashboardSlugExistsValidationError()]
                 )
 
-        # Validate tags — 1:1 with
-        # ``superset_old/commands/dashboard/update.py::UpdateDashboardCommand.validate``
-        # (lines 106-110). Checks the caller has permission to manage tags
-        # and that every new tag id exists.  Raises ``TagForbiddenError``
-        # (403) / ``TagNotFoundValidationError`` (422).
-        # NOT gated on TAGGING_SYSTEM — upstream validates explicit tags in
-        # the payload unconditionally; the flag only gates the implicit
-        # owner/type tag event-listeners (see chart/update.py for the same).
+        # validate_tags is NOT gated on TAGGING_SYSTEM — the flag only gates the
+        # implicit owner/type tag listeners (sync_owner_tags_after_update below).
         if self._security_manager is not None:
             user = (
                 await self._security_manager.find_user_by_id(self._user_id)
@@ -120,8 +109,7 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
     async def run(self) -> "Dashboard":  # noqa: C901
         assert self._dashboard is not None
 
-        # Capture the old position_json before mutation so that
-        # _process_tab_diff can compute the tab diff correctly.
+        # Capture position_json before mutation; _process_tab_diff compares old vs new.
         old_position_json = getattr(self._dashboard, "position_json", None)
 
         for key, value in self._data.items():
@@ -132,12 +120,6 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         if self._user_id is not None:
             self._dashboard.changed_by_fk = self._user_id
 
-        # Update tags — 1:1 with
-        # ``superset_old/commands/dashboard/update.py::UpdateDashboardCommand.run``
-        # (lines 64-65): apply the add/remove of custom tags on the dashboard.
-        # NOT gated on TAGGING_SYSTEM — upstream applies explicit payload tags
-        # unconditionally; only the implicit owner/type tag listeners are
-        # flag-gated (sync_owner_tags_after_update below).
         tag_ids = self._data.get("tags")
         if tag_ids is not None:
             await update_tags(
@@ -151,13 +133,9 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         if "position_json" in self._data:
             await self._process_tab_diff(old_position_json)
 
-        # Synchronise filter scopes, color maps and shared-label colors
-        # when json_metadata is updated.
         if "json_metadata" in self._data:
             await self._dao.set_dash_metadata(self._dashboard, self._data)
 
-        # Resolve owners — preserve existing when ``owners`` not in payload,
-        # auto-add caller when non-admin, raise on unknown ids.
         if "owners" in self._data and self._security_manager is not None:
             await self._dao.session.refresh(self._dashboard, ["owners"])
             self._dashboard.owners = await compute_owner_list(
@@ -167,11 +145,8 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
                 self._data.get("owners"),
             )
 
-        # Resolve roles — use the shared ``populate_roles`` helper so a
-        # missing role id raises ``RolesNotFoundValidationError`` (422)
-        # instead of being silently dropped. Upstream's
-        # superset_old/commands/dashboard/update.py:116 uses the same
-        # helper for exactly this reason.
+        # populate_roles raises RolesNotFoundValidationError (422) on unknown ids
+        # instead of silently dropping them.
         if "roles" in self._data:
             from superset.commands.utils import populate_roles
 
@@ -181,9 +156,6 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
 
         await self._dao.session.flush()
 
-        # Sync implicit owner: tags (async port of DashboardUpdater.after_update)
-        # Only when TAGGING_SYSTEM is enabled — 1:1 with upstream where the
-        # after_update event listener only fires when the flag is on.
         if feature_flag_manager.is_feature_enabled("TAGGING_SYSTEM"):
             await self._dao.session.refresh(self._dashboard, ["owners"])
             owner_ids = (
@@ -212,9 +184,7 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
     async def _notify_deactivated_reports(self, reports_to_notify: list[Any]) -> None:
         """Eager-load report owners and email each owner about deactivation.
 
-        1:1 with
-        ``superset_old/commands/dashboard/update.py::send_deactivated_email_warning``
-        (lines 142-187).  Runs SMTP in a thread to avoid blocking the loop.
+        Runs SMTP in a thread to avoid blocking the event loop.
         """
         from sqlalchemy import select as sa_select
         from sqlalchemy.orm import selectinload
@@ -234,8 +204,6 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
 
         config = _build_notification_config()
 
-        # Implicit string concatenation keeps the exact text produced by the
-        # previous ``textwrap.dedent`` block while staying within the line limit.
         description = (
             "\n"
             "The dashboard tab used in this report has been deleted "
@@ -295,10 +263,7 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         old_position = old_position_json or ""
         new_position = self._data.get("position_json", "")
 
-        # Mirror the original guard: `if position_json and current_tabs` in
-        # superset_old/commands/dashboard/update.py:127.  When new_position is
-        # an empty string the caller supplied no real layout, so treat it as
-        # "no change" and do not deactivate any reports.
+        # Empty new_position means no real layout supplied — skip deactivation.
         if not new_position:
             return
 
@@ -309,24 +274,15 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
         if not deleted_tabs:
             return
 
-        # 1:1 with ``superset_old/commands/dashboard/update.py::process_tab_diff``:
-        # for each deleted tab, find reports whose ``extra_json`` *contains*
-        # the tab id (``ReportScheduleDAO.find_by_extra_metadata`` →
-        # ``extra_json LIKE '%tab%'``) and deactivate them. The previous port
-        # loaded only this dashboard's reports and checked ``extra["anchor"]``
-        # — but the anchor actually lives at ``extra["dashboard"]["anchor"]``
-        # as a JSON-encoded LIST (see ``_validate_report_extra``), so the
-        # top-level string check never matched → reports were never
-        # deactivated. The substring search matches the tab id wherever it
-        # sits in the metadata (anchor list, activeTabs, …), exactly upstream.
+        # Use substring search (extra_json LIKE '%tab%') rather than checking
+        # extra["anchor"] — the anchor lives at extra["dashboard"]["anchor"] as
+        # a JSON-encoded list, so only the substring search reliably matches the
+        # tab id wherever it appears (anchor list, activeTabs, …).
         from superset.db.daos.report import AsyncReportScheduleDAO
 
         report_dao = AsyncReportScheduleDAO(session=self._dao.session)
         reports_to_notify: list[Any] = []
-        # NO per-report dedup across tabs — the original loops every deleted
-        # tab independently and notifies owners once per MATCHED TAB
-        # (superset_old/commands/dashboard/update.py:142-187); re-setting
-        # ``active = False`` is idempotent.
+        # Re-setting active=False is idempotent; no dedup needed across tabs.
         for tab in deleted_tabs:
             for report in await report_dao.find_by_extra_metadata(tab):
                 report.active = False  # type: ignore[assignment]
@@ -341,12 +297,6 @@ class UpdateDashboardCommand(AsyncBaseCommand["Dashboard"]):
                 reports_to_notify.append(report)
 
         if reports_to_notify:
-            # 1:1 with
-            # ``superset_old/commands/dashboard/update.py``
-            # ``::send_deactivated_email_warning`` (lines 142-187):
-            # email each report owner when the report is deactivated
-            # due to a deleted tab.  Run in a thread so SMTP (sync
-            # smtplib) does not block the event-loop.
             await self._notify_deactivated_reports(reports_to_notify)
 
 
@@ -417,11 +367,7 @@ class UpdateDashboardFiltersCommand(AsyncBaseCommand[list[dict[str, Any]]]):
         reordered_filter_ids: list[str],
         metadata: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        """Reorder filters and strip legacy ``show_native_filters`` key.
-
-        1:1 with ``DashboardJSONMetadataSchema.@pre_load
-        remove_show_native_filters`` cleanup (apache/superset#23228).
-        """
+        """Reorder filters and strip the legacy ``show_native_filters`` key."""
         if reordered_filter_ids:
             filter_map = {
                 filter_config["id"]: filter_config
@@ -433,7 +379,6 @@ class UpdateDashboardFiltersCommand(AsyncBaseCommand[list[dict[str, Any]]]):
                 if filter_id in filter_map
             ]
 
-        # Strip the legacy flag from top-level metadata and each entry.
         metadata.pop("show_native_filters", None)
         for filter_conf in updated_configuration:
             if isinstance(filter_conf, dict):
@@ -449,8 +394,7 @@ class UpdateDashboardFiltersCommand(AsyncBaseCommand[list[dict[str, Any]]]):
         if self._dashboard.json_metadata:
             try:
                 parsed = json.loads(self._dashboard.json_metadata)
-                # Coerce a non-object value (imported/legacy ``[1,2]`` / ``"s"``)
-                # to {} so ``metadata.get(...)`` below doesn't raise → 500.
+                # Non-dict values (``[1,2]``, ``"s"``) fall through to the {} default.
                 if isinstance(parsed, dict):
                     metadata = parsed
             except (json.JSONDecodeError, TypeError):
@@ -511,16 +455,11 @@ class UpdateDashboardColorsCommand(AsyncBaseCommand["Dashboard"]):
     async def run(self) -> "Dashboard":
         assert self._dashboard is not None
 
-        # 1:1 with
-        # ``superset_old/commands/dashboard/update.py``
-        # ``UpdateDashboardColorsConfigCommand.run`` (lines 223-230):
-        # when ``mark_updated=False``, capture ``changed_on``
-        # *before* the color update is flushed.  The flush triggers SA's
-        # ``onupdate=datetime.now`` on the ``changed_on`` column; then we
-        # restore the captured value and flush again so the outer transaction
-        # commits the original timestamp.  Without the intermediate flush the
-        # SA ``onupdate`` fires during the final commit and overwrites the
-        # restored value.
+        # When mark_updated=False, capture changed_on before the flush. SA's
+        # onupdate=datetime.now fires on flush and overwrites it; restore the
+        # captured value and flush again so the final commit keeps the original
+        # timestamp. Without the intermediate flush the onupdate fires on the
+        # final commit and the restore is lost.
         original_changed_on = (
             self._dashboard.changed_on if not self._mark_updated else None
         )
@@ -528,15 +467,10 @@ class UpdateDashboardColorsCommand(AsyncBaseCommand["Dashboard"]):
         await self._dao.update_colors_config(
             self._dashboard, self._data, mark_updated=self._mark_updated
         )
-        # First flush: persists json_metadata; SA onupdate stamps changed_on=now()
         await self._dao.session.flush()
 
         if not self._mark_updated and original_changed_on is not None:
-            # Restore the original timestamp (mirrors the intermediate
-            # db.session.commit() + reassignment in the original synchronous
-            # implementation).
             self._dashboard.changed_on = original_changed_on  # type: ignore[assignment]
-            # Second flush: writes the restored changed_on value.
             await self._dao.session.flush()
 
         return self._dashboard

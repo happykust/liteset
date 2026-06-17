@@ -16,8 +16,7 @@
 # under the License.
 """Unit tests for RLS controller, commands and schemas.
 
-Mirrors the validation contract of
-``superset_old.commands.security.{create,update,delete}`` exactly:
+Validation contract:
 
 * msgspec performs field-level validation (``name``/``clause`` non-empty,
   ``filter_type`` in {Regular, Base}) — *not* the command.
@@ -59,17 +58,9 @@ def mock_dao() -> AsyncMock:
 
 
 def _execute_returning(values: list[Any]) -> AsyncMock:
-    """Build a mock for ``session.execute`` returning ``values`` from
-    ``.scalars().all()``.
-    """
     res = MagicMock()
     res.scalars.return_value.all.return_value = values
     return AsyncMock(return_value=res)
-
-
-# ---------------------------------------------------------------------------
-# Controller metadata
-# ---------------------------------------------------------------------------
 
 
 def test_rls_controller_path() -> None:
@@ -80,18 +71,11 @@ def test_rls_controller_tags() -> None:
     assert RLSController.tags == ["Row Level Security"]
 
 
-# ---------------------------------------------------------------------------
-# CreateRLSRuleCommand
-# ---------------------------------------------------------------------------
-
-
 async def test_create_rls_resolves_tables_and_roles(mock_dao: AsyncMock) -> None:
     table_a = MagicMock(id=10)
     table_b = MagicMock(id=11)
     role_x = MagicMock(id=1)
 
-    # First execute() call resolves Roles (populate_roles), second resolves
-    # tables. Use side_effect to deliver them in order.
     mock_dao.session.execute = AsyncMock(
         side_effect=[
             _execute_returning([role_x]).return_value,
@@ -120,7 +104,6 @@ async def test_create_rls_resolves_tables_and_roles(mock_dao: AsyncMock) -> None
 
 
 async def test_create_rls_raises_when_table_missing(mock_dao: AsyncMock) -> None:
-    # Roles resolve fine, tables are missing one row.
     mock_dao.session.execute = AsyncMock(
         side_effect=[
             _execute_returning([]).return_value,
@@ -159,11 +142,6 @@ async def test_create_rls_raises_when_role_missing(mock_dao: AsyncMock) -> None:
         await cmd.validate()
 
 
-# ---------------------------------------------------------------------------
-# UpdateRLSRuleCommand
-# ---------------------------------------------------------------------------
-
-
 async def test_update_rls_not_found(mock_dao: AsyncMock) -> None:
     mock_dao.find_by_id = AsyncMock(return_value=None)
     cmd = UpdateRLSRuleCommand(dao=mock_dao, model_id=999, data={"name": "X"})
@@ -174,16 +152,12 @@ async def test_update_rls_not_found(mock_dao: AsyncMock) -> None:
 async def test_update_rls_replaces_both_collections(
     mock_dao: AsyncMock,
 ) -> None:
-    """1:1 with upstream: both ``tables`` and ``roles`` are always replaced.
+    """Both ``tables`` and ``roles`` are always replaced (full-replace semantics,
+    not partial-patch).
 
-    When the PUT omits ``tables``, the original defaults it to ``[]`` and
-    replaces the collection with an empty list (full-replace semantics, not
-    partial-patch).  The port previously kept stale tables when the key was
-    absent — this test verifies the fix.
-
-    See ``superset_old/commands/security/update.py`` lines 38-39:
-        ``self._tables = self._properties.get("tables", [])``
-        ``self._roles = self._properties.get("roles", [])``
+    When the PUT omits ``tables``, the command defaults it to ``[]`` and
+    replaces the collection with an empty list.  The port previously kept stale
+    tables when the key was absent — this test verifies the fix.
     """
     existing = MagicMock(id=1)
     mock_dao.find_by_id = AsyncMock(return_value=existing)
@@ -204,13 +178,7 @@ async def test_update_rls_replaces_both_collections(
     assert update_args[0] is existing
     payload = update_args[1]
     assert payload["roles"] == [role]
-    # ``tables`` was not supplied — original defaults to [] and always writes it.
     assert payload["tables"] == []
-
-
-# ---------------------------------------------------------------------------
-# DeleteRLSRuleCommand
-# ---------------------------------------------------------------------------
 
 
 async def test_delete_rls_not_found(mock_dao: AsyncMock) -> None:
@@ -236,11 +204,6 @@ async def test_delete_rls_success(mock_dao: AsyncMock) -> None:
     await cmd.validate()
     await cmd.run()
     mock_dao.delete.assert_awaited_once_with(items)
-
-
-# ---------------------------------------------------------------------------
-# Schema tests — msgspec performs field-level validation now
-# ---------------------------------------------------------------------------
 
 
 _BASE_POST = {

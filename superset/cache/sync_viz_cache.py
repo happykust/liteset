@@ -21,7 +21,7 @@ The legacy ``BaseViz.get_df_payload`` calls ``data_cache.get(key)`` /
 upstream ``RedisCache`` backend). Liteset's :class:`AsyncCacheManager`
 slots are coroutine-based, so they cannot be handed to the viz directly. This
 module provides a thin **sync** adapter over a blocking ``redis.Redis`` client
-that mirrors the upstream cache contract the viz expects:
+that implements the cache contract the viz expects:
 
 * values are pickle-serialized (``RedisCache`` stored pickle bytes), and
 * keys are namespaced with the ``superset_cache:`` prefix -- the same literal
@@ -91,8 +91,8 @@ class SyncVizCache:
         if timeout is not None and timeout < 0:
             return
         try:
-            # Stamp dict payloads with ``dttm`` (1:1 with the original
-            # ``set_and_log_cache``) so ``cached_dttm`` reflects the write time.
+            # Stamp dict payloads with ``dttm`` so ``cached_dttm`` reflects
+            # the write time.
             # ``strftime`` (not isoformat) yields the original's naive
             # ``YYYY-MM-DDTHH:MM:SS`` shape — no ``+00:00`` tz suffix.
             if isinstance(value, dict) and "dttm" not in value:

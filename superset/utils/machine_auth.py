@@ -16,33 +16,26 @@
 # under the License.
 """Machine (server-to-server) authentication for headless browsers.
 
-Ported from ``superset_old/utils/machine_auth.py`` to the Litestar/ASGI
-runtime.  The original implementation minted a session cookie via
-the upstream ``login_user`` helper + ``app.session_interface.save_session``.
-In Liteset, sessions are stateless JWTs minted by
+Sessions are stateless JWTs minted by
 ``superset.controllers.auth._create_session_cookie`` and decoded by
 ``SupersetAuthMiddleware._authenticate_cookie``.  This module mints the
 same JWT shape so that any cookie returned here is accepted by the
 running Liteset backend (and by an embedded headless browser hitting it).
 
-Architectural adaptations vs. the original:
+Architecture notes:
 
-* ``MachineAuthProviderFactory.init_app`` now accepts either a Litestar
+* ``MachineAuthProviderFactory.init_app`` accepts either a Litestar
   ``Litestar`` instance (reading ``app.state.settings``) or a
-  ``SupersetSettings`` directly via ``init_settings``.  The original
-  read ``app.config["MACHINE_AUTH_PROVIDER_CLASS"]`` from the app.
+  ``SupersetSettings`` directly via ``init_settings``.
 * ``get_auth_cookies`` mints a JWT using the configured ``secret_key``
-  and ``session_max_age`` rather than spinning up a test request
-  context.  The cookie name is ``settings.session_cookie_name``
-  (default ``"session"``), matching the auth controller and middleware.
-* ``get_cookies`` retains the original three-branch logic (user → mint,
-  request cookies → forward, otherwise empty).  In a Celery / worker
-  context there is no request, so the empty-dict branch is hit, which
-  matches what the original did when invoked outside a request
-  context.
-* ``authenticate_webdriver`` and ``authenticate_browser_context`` are
-  ported 1:1 — the Selenium / Playwright APIs they call are
-  framework-agnostic.
+  and ``session_max_age``.  The cookie name is
+  ``settings.session_cookie_name`` (default ``"session"``), matching
+  the auth controller and middleware.
+* ``get_cookies`` uses three-branch logic (user → mint,
+  request cookies → forward, otherwise empty).  In a Celery worker
+  context there is no request, so the empty-dict branch is hit.
+* ``authenticate_webdriver`` and ``authenticate_browser_context``:
+  the Selenium / Playwright APIs they call are framework-agnostic.
 """
 
 from __future__ import annotations
@@ -98,21 +91,10 @@ class MachineAuthProvider:
         ]
         | None = None,
     ) -> None:
-        # Allows the ``authenticate_webdriver`` /
-        # ``authenticate_browser_context`` body to be overridden via
-        # config (``WEBDRIVER_AUTH_FUNC``) without subclassing the
-        # whole provider.  Mirrors the original argument name.
+        # Overrides the authenticate_webdriver/authenticate_browser_context body
+        # via config (``WEBDRIVER_AUTH_FUNC``) without subclassing the whole provider.
         self._auth_webdriver_func_override = auth_webdriver_func_override
-
-        # Bound by ``MachineAuthProviderFactory.init_settings`` so that
-        # the provider can read ``WEBDRIVER_BASEURL``, ``SECRET_KEY``,
-        # ``SESSION_COOKIE_NAME`` and ``PERMANENT_SESSION_LIFETIME``
-        # without depending on a ``current_app`` proxy.
         self._settings: SupersetSettings | None = None
-
-    # ------------------------------------------------------------------
-    # Settings wiring
-    # ------------------------------------------------------------------
 
     def bind_settings(self, settings: SupersetSettings) -> None:
         """Attach a ``SupersetSettings`` instance to this provider.
@@ -123,10 +105,6 @@ class MachineAuthProvider:
         custom subclasses overriding ``__init__`` keep working.
         """
         self._settings = settings
-
-    # ------------------------------------------------------------------
-    # WebDriver / BrowserContext authentication (ported 1:1)
-    # ------------------------------------------------------------------
 
     def authenticate_webdriver(
         self,
@@ -144,7 +122,7 @@ class MachineAuthProvider:
         if self._auth_webdriver_func_override:
             return cast("WebDriver", self._auth_webdriver_func_override(driver, user))
 
-        # Setting cookies requires doing a request first (Selenium quirk)
+        # Selenium requires a page load before add_cookie will work.
         driver.get(self._headless_url("/login/"))
 
         cookies = self.get_cookies(user)
@@ -169,7 +147,7 @@ class MachineAuthProvider:
         baseurl = self._webdriver_baseurl()
         url = urlparse(baseurl)
 
-        # Setting cookies requires doing a request first
+        # Playwright also requires a page load before adding cookies.
         page = browser_context.new_page()
         page.goto(self._headless_url("/login/"))
 
@@ -191,22 +169,16 @@ class MachineAuthProvider:
         )
         return browser_context
 
-    # ------------------------------------------------------------------
-    # Cookie minting
-    # ------------------------------------------------------------------
-
     def get_cookies(self, user: Any | None) -> dict[str, str]:
         """Resolve cookies for the given user.
 
-        Mirrors the original three-branch behaviour:
+        Three-branch resolution:
 
         1. ``user`` provided  -> mint a session cookie via
            ``get_auth_cookies``.
         2. No user, but a ``request.cookies`` is available  ->
-           forward those cookies.  In Liteset we have no global request
-           proxy in a Celery worker context, so this branch is empty
-           by design (the same effective behaviour the original
-           had when invoked from a worker without a request context).
+           forward those cookies.  In a Celery worker context there is
+           no request, so this branch is empty by design.
         3. Otherwise, return an empty dict.
         """
         if user:
@@ -273,10 +245,6 @@ class MachineAuthProvider:
         token = jwt.encode(payload, secret_key, algorithm="HS256")
         return {cookie_name: token}
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _extract_user_id(user: Any) -> int | None:
         """Pull a numeric user id off whatever ``user`` shape we get.
@@ -332,16 +300,10 @@ class MachineAuthProviderFactory:
     def __init__(self) -> None:
         self._auth_provider: MachineAuthProvider | None = None
 
-    # ------------------------------------------------------------------
-    # Initialisation
-    # ------------------------------------------------------------------
-
     def init_app(self, app: Any) -> None:
         """Initialise from a Litestar ``Litestar`` instance.
 
-        Reads ``SupersetSettings`` from ``app.state.settings`` and
-        delegates to :meth:`init_settings`.  The method is named
-        ``init_app`` (not ``init_litestar``) to preserve the historic
+        Named ``init_app`` rather than ``init_litestar`` to preserve the historic
         contract used by any caller that hasn't been migrated yet.
         """
         settings = getattr(getattr(app, "state", None), "settings", None)
@@ -363,15 +325,9 @@ class MachineAuthProviderFactory:
         provider_class = load_class_from_name(provider_class_path)
         webdriver_auth_func = getattr(settings, "webdriver_auth_func", None)
         provider = provider_class(webdriver_auth_func)
-        # Bind settings so the provider can read SECRET_KEY,
-        # SESSION_COOKIE_NAME, WEBDRIVER_BASEURL, etc.
         if hasattr(provider, "bind_settings"):
             provider.bind_settings(settings)
         self._auth_provider = provider
-
-    # ------------------------------------------------------------------
-    # Access
-    # ------------------------------------------------------------------
 
     @property
     def instance(self) -> MachineAuthProvider:

@@ -16,26 +16,15 @@
 # under the License.
 """Async-query token exception.
 
-Historically this module also held a ``CreateAsyncChartDataJobCommand``
-(an async port of
-``superset_old/commands/chart/data/create_async_job_command.py``).  That
-command was never instantiated: the chart controller inlines
-``build_job_metadata`` + ``maybe_forward_guest_token`` directly, and the
-command's ``run()`` omitted ``maybe_forward_guest_token`` — which would have
-broken embedded-guest RLS had it ever been wired up.  It has therefore been
-removed to avoid the dead, divergent code path.
+The chart controller inlines ``build_job_metadata`` + ``maybe_forward_guest_token``
+directly, so no separate command class is needed here.
 
-``AsyncQueryTokenException`` is retained: it is the live, public API the
-app-build-time JWT-secret guard (``superset.app._validate_global_async_queries_config``)
-raises, 1:1 with the original ``AsyncQueryManager.init_app`` guard.
+``AsyncQueryTokenException`` is the public API raised by the app-startup JWT-secret
+guard (``superset.app._validate_global_async_queries_config``).
 """
 
 from __future__ import annotations
 
 
-class AsyncQueryTokenException(Exception):  # noqa: N818  # 1:1 with original public API
-    """Raised when the JWT channel-token cookie is missing or invalid.
-
-    1:1 with
-    ``superset_old.async_events.async_query_manager.AsyncQueryTokenException``.
-    """
+class AsyncQueryTokenException(Exception):  # noqa: N818
+    """Raised when the JWT channel-token cookie is missing or invalid."""

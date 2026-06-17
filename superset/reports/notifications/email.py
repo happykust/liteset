@@ -81,7 +81,7 @@ ALLOWED_ATTRIBUTES = {
 
 
 # ---------------------------------------------------------------------------
-# Helper: recipients_string_to_list  (ported from superset.utils.core)
+# Helper: recipients_string_to_list
 # ---------------------------------------------------------------------------
 def _recipients_string_to_list(address_string: str | None) -> list[str]:
     """
@@ -97,7 +97,7 @@ def _recipients_string_to_list(address_string: str | None) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Helper: send_mime_email  (ported 1:1 from superset.utils.core)
+# Helper: send_mime_email
 # ---------------------------------------------------------------------------
 def _send_mime_email(
     e_from: str,
@@ -137,7 +137,7 @@ def _send_mime_email(
 
 
 # ---------------------------------------------------------------------------
-# Helper: send_email_smtp  (ported 1:1 from superset.utils.core)
+# Helper: send_email_smtp
 # ---------------------------------------------------------------------------
 def _send_email_smtp(
     to: str,

@@ -24,14 +24,8 @@ show the same data they would see on Explore.
 In order to do that, we reproduce the post-processing in Python for these chart
 types.
 
-This module is a 1:1 port of ``superset_old/charts/client_processing.py``.
-The only divergence from the original is the import location of helper
-utilities (``extract_dataframe_dtypes``, ``get_column_names``,
-``get_metric_names``) which live in :mod:`superset.utils.column` in Liteset
-rather than :mod:`superset.utils.core`, and the elimination of the
-upstream i18n ``gettext`` shim — Liteset uses the standard ``gettext`` from
-the ``gettext`` module (or a no-op fallback) since Litestar has no
-upstream i18n dependency.
+Helper utilities (``extract_dataframe_dtypes``, ``get_column_names``,
+``get_metric_names``) live in :mod:`superset.utils.column`.
 """
 
 from __future__ import annotations
@@ -57,8 +51,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# The upstream ``gettext`` is unavailable in Liteset.  Mirror its no-op
-# behaviour: substitute keyword arguments into the message and return it.
 def _gettext(message: str, **kwargs: Any) -> str:
     if kwargs:
         try:
@@ -68,14 +60,9 @@ def _gettext(message: str, **kwargs: Any) -> str:
     return message
 
 
-# Match the original module-local alias ``__`` used by the old code.
 __ = _gettext
 
 
-# Result format constants (mirroring the original
-# ``superset.common.chart_data.ChartDataResultFormat`` enum).  In Liteset
-# the result format is a ``Literal["csv", "json", "xlsx"]`` rather than a
-# ``StrEnum`` so we keep plain string constants.
 _RESULT_FORMAT_JSON = "json"
 _RESULT_FORMAT_CSV = "csv"
 _RESULT_FORMAT_XLSX = "xlsx"
@@ -114,19 +101,14 @@ def pivot_df(  # pylint: disable=too-many-locals, too-many-arguments, too-many-s
     if transpose_pivot:
         rows, columns = columns, rows
 
-    # to apply the metrics on the rows we pivot the dataframe, apply the
-    # metrics to the columns, and pivot the dataframe back before
-    # returning it
     if apply_metrics_on_rows:
         rows, columns = columns, rows
         axis = {"columns": 0, "rows": 1}
     else:
         axis = {"columns": 1, "rows": 0}
 
-    # pivoting with null values will create an empty df
     df = df.fillna("SUPERSET_PANDAS_NAN")
 
-    # pivot data; we'll compute totals and subtotals later
     if rows or columns:
         df = df.pivot_table(
             index=rows,
@@ -140,8 +122,6 @@ def pivot_df(  # pylint: disable=too-many-locals, too-many-arguments, too-many-s
         # the index with the metric name so it shows up in the table
         df.index = pd.Index([*df.index[:-1], metric_name], name="metric")
 
-    # if no rows were passed the metrics will be in the rows, so we
-    # need to move them back to columns
     if columns and not rows:
         df = df.stack()
         if not isinstance(df, pd.DataFrame):
@@ -150,16 +130,10 @@ def pivot_df(  # pylint: disable=too-many-locals, too-many-arguments, too-many-s
         df = df[metrics]
         df.index = pd.Index([*df.index[:-1], metric_name], name="metric")
 
-    # combining metrics changes the column hierarchy, moving the metric
-    # from the top to the bottom, eg:
-    #
-    # ('SUM(col)', 'age', 'name') => ('age', 'name', 'SUM(col)')
     if combine_metrics and isinstance(df.columns, pd.MultiIndex):
-        # move metrics to the lowest level
         new_order = [*range(1, df.columns.nlevels), 0]
         df = df.reorder_levels(new_order, axis=1)
 
-        # sort columns, combining metrics for each group
         decorated_columns = [(col, i) for i, col in enumerate(df.columns)]
         grouped_columns = sorted(
             decorated_columns, key=lambda t: get_column_key(t[0], metrics)
@@ -167,11 +141,8 @@ def pivot_df(  # pylint: disable=too-many-locals, too-many-arguments, too-many-s
         indexes = [i for col, i in grouped_columns]
         df = df[df.columns[indexes]]
     elif rows:
-        # if metrics were not combined we sort the dataframe by the list
-        # of metrics defined by the user
         df = df[metrics]
 
-    # compute fractions, if needed
     if aggfunc.endswith(" as Fraction of Total"):
         total = df.sum().sum()
         df = df.astype(total.dtypes) / total
@@ -182,29 +153,20 @@ def pivot_df(  # pylint: disable=too-many-locals, too-many-arguments, too-many-s
         total = df.sum(axis=axis["columns"])
         df = df.astype(total.dtypes).div(total, axis=axis["rows"])
 
-    # convert to a MultiIndex to simplify logic
     if not isinstance(df.index, pd.MultiIndex):
         df.index = pd.MultiIndex.from_tuples([(str(i),) for i in df.index])
     if not isinstance(df.columns, pd.MultiIndex):
         df.columns = pd.MultiIndex.from_tuples([(str(i),) for i in df.columns])
 
     if show_rows_total:
-        # add subtotal for each group and overall total; we start from the
-        # overall group, and iterate deeper into subgroups
         groups = df.columns
         if not apply_metrics_on_rows:
             for col in df.columns:
-                # we need to replace the temporary placeholder with either a string
-                # or np.nan, depending on the column type so that they can sum
-                # correctly
                 if pd.api.types.is_numeric_dtype(df[col]):
                     df[col].replace("SUPERSET_PANDAS_NAN", np.nan, inplace=True)
                 else:
                     df[col].replace("SUPERSET_PANDAS_NAN", "nan", inplace=True)
         else:
-            # when we applied metrics on rows, we switched the columns and rows
-            # so checking column type doesn't apply. Replace everything with
-            # np.nan
             df.replace("SUPERSET_PANDAS_NAN", np.nan, inplace=True)
         for level in range(df.columns.nlevels):
             subgroups = {group[:level] for group in groups}
@@ -218,8 +180,6 @@ def pivot_df(  # pylint: disable=too-many-locals, too-many-arguments, too-many-s
                 df.insert(int(slice_.stop), subtotal_name, subtotal)
 
     if rows and show_columns_total:
-        # add subtotal for each group and overall total; we start from the
-        # overall group, and iterate deeper into subgroups
         groups = df.index
         for level in range(df.index.nlevels):
             subgroups = {group[:level] for group in groups}
@@ -245,13 +205,9 @@ def pivot_df(  # pylint: disable=too-many-locals, too-many-arguments, too-many-s
                     [df[: slice_.stop], subtotal.to_frame().T, df[slice_.stop :]]
                 )
 
-    # if we want to apply the metrics on the rows we need to pivot the
-    # dataframe back
     if apply_metrics_on_rows:
         df = df.T
 
-    # replace the remaining temporary placeholder string for np.nan after
-    # pivoting
     df.replace("SUPERSET_PANDAS_NAN", np.nan, inplace=True)
     df.rename(
         index={"SUPERSET_PANDAS_NAN": np.nan},
@@ -263,9 +219,6 @@ def pivot_df(  # pylint: disable=too-many-locals, too-many-arguments, too-many-s
 
 
 def list_unique_values(series: pd.Series) -> str:
-    """
-    List unique values in a series.
-    """
     return ", ".join({str(v) for v in pd.Series.unique(series)})
 
 
@@ -277,8 +230,8 @@ pivot_v2_aggfunc_map: dict[str, Callable[..., Any]] = {
     "Average": pd.Series.mean,
     "Median": pd.Series.median,
     "Sample Variance": lambda series: pd.series.var(series) if len(series) > 1 else 0,
-    # 1:1 with upstream client_processing.py:241 — the trailing comma makes
-    # this a 1-tuple (a known upstream wart); kept verbatim for parity.
+    # The trailing comma makes this a 1-tuple (a known upstream wart);
+    # kept verbatim for parity.
     "Sample Standard Deviation": (  # type: ignore[dict-item]
         lambda series: pd.series.std(series) if len(series) > 1 else 0,
     ),
@@ -300,9 +253,6 @@ def pivot_table_v2(
     form_data: dict[str, Any],
     datasource: Optional[Union["SqlaTable", "Query"]] = None,
 ) -> pd.DataFrame:
-    """
-    Pivot table v2.
-    """
     verbose_map = datasource.data["verbose_map"] if datasource else None
 
     return pivot_df(
@@ -326,10 +276,6 @@ def table(
         Union["SqlaTable", "Query"]
     ] = None,
 ) -> pd.DataFrame:
-    """
-    Table.
-    """
-    # apply `d3NumberFormat` to columns, if present
     column_config = form_data.get("column_config", {})
     for column, config in column_config.items():
         if "d3NumberFormat" in config:
@@ -354,9 +300,6 @@ def apply_client_processing(  # noqa: C901
     form_data: Optional[dict[str, Any]] = None,
     datasource: Optional[Union["SqlaTable", "Query"]] = None,
 ) -> dict[Any, Any]:
-    # Audit log — 1:1 with upstream's ``@event_logger.log_this`` on
-    # ``apply_client_processing`` (best-effort: logging must never break
-    # report rendering).
     try:
         from superset.events import event_logger
 
@@ -383,7 +326,6 @@ def apply_client_processing(  # noqa: C901
             data = data.strip()
 
         if not data:
-            # do not try to process empty data
             continue
 
         if query["result_format"] == _RESULT_FORMAT_JSON:
@@ -391,7 +333,6 @@ def apply_client_processing(  # noqa: C901
         elif query["result_format"] == _RESULT_FORMAT_CSV:
             df = pd.read_csv(StringIO(data))
 
-        # convert all columns to verbose (label) name
         if datasource:
             df.rename(columns=datasource.data["verbose_map"], inplace=True)
 
@@ -402,13 +343,8 @@ def apply_client_processing(  # noqa: C901
         query["coltypes"] = extract_dataframe_dtypes(processed_df, datasource)
         query["rowcount"] = len(processed_df.index)
 
-        # Check if the DataFrame has a default RangeIndex, which should not be
-        # shown
         show_default_index = not isinstance(processed_df.index, pd.RangeIndex)
 
-        # Flatten hierarchical columns/index since they are represented as
-        # `Tuple[str]`. Otherwise encoding to JSON later will fail because
-        # maps cannot have tuples as their keys in JSON.
         processed_df.columns = [
             (
                 " ".join(str(name) for name in column).strip()

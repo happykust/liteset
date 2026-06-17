@@ -14,10 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Utilities for the KV-backed distributed lock.
-
-Ported 1:1 from ``superset_old/distributed_lock/utils.py``.
-"""
+"""Utilities for the KV-backed distributed lock."""
 
 from __future__ import annotations
 
@@ -30,11 +27,11 @@ from superset.utils import json
 def serialize(params: dict[str, Any]) -> str:
     """Serialize parameters into a string.
 
-    NOTE: 1:1 with ``superset_old/distributed_lock/utils.py`` — the inner
-    ``sort`` helper is defined but deliberately left unused (a long-standing
-    upstream quirk), so the output is ``json.dumps(params)`` and therefore
-    insertion-order dependent. Kept verbatim to preserve cross-version key
-    compatibility; do NOT apply ``sort`` here without changing upstream too.
+    NOTE: the inner ``sort`` helper is defined but deliberately left unused
+    (a long-standing upstream quirk), so the output is ``json.dumps(params)``
+    and therefore insertion-order dependent. Kept verbatim to preserve
+    cross-version key compatibility; do NOT apply ``sort`` here without
+    changing upstream too.
     """
 
     T = TypeVar(

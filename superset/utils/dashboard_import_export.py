@@ -14,18 +14,16 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Async port of ``superset_old/utils/dashboard_import_export.py``.
+"""Dashboard export helpers for the legacy V0 export format.
 
-The original module exposed a single helper, :func:`export_dashboards`,
-used by the legacy CLI command ``superset legacy-export-dashboards`` to
-emit a JSON dump of every dashboard in the metadata DB.
+Exposes a single helper, :func:`export_dashboards`, used by the legacy
+CLI command ``superset legacy-export-dashboards`` to emit a JSON dump of
+every dashboard in the metadata DB.
 
-This async port preserves the public API exactly and runs against the
-sync SQLAlchemy session created by :mod:`superset.db.session` (the same
-session pattern used by the example loaders).  The legacy V0 export
-format is deprecated in upstream Apache Superset but kept here for
-parity so external automation that still consumes the format keeps
-working through the migration.
+Runs against the sync SQLAlchemy session created by
+:mod:`superset.db.session` (the same session pattern used by the example
+loaders).  The legacy V0 export format is deprecated but kept here for
+external automation that still consumes it.
 """
 
 from __future__ import annotations
@@ -39,9 +37,9 @@ logger = logging.getLogger(__name__)
 def export_dashboards() -> str:
     """Return all dashboards metadata as a JSON dump.
 
-    Verbatim port — uses the sync session helper from
-    :mod:`superset.db.session` because the legacy export classmethod
-    walks SQLA relationships eagerly and is fundamentally synchronous.
+    Uses the sync session helper from :mod:`superset.db.session` because
+    the legacy export classmethod walks SQLA relationships eagerly and is
+    fundamentally synchronous.
     """
     from superset.db.session import get_sync_session
     from superset.models.dashboard import Dashboard
@@ -56,13 +54,12 @@ def export_dashboards() -> str:
 
 
 def _export_dashboards(session: Any, dashboard_ids: set[int]) -> str:
-    """1:1 sync port of ``Dashboard.export_dashboards`` (V0 format).
+    """Export dashboards in the V0 format.
 
-    Mirrors ``superset_old/models/dashboard.py::Dashboard.export_dashboards``;
-    kept as a module function (rather than a model classmethod) so the
+    Kept as a module function (rather than a model classmethod) so the
     async Dashboard model isn't burdened with a sync, deprecated export
     path.  ``SqlaTable.get_eager_sqlatable_datasource`` is inlined as a
-    direct query since the async port doesn't ship that classmethod.
+    direct query since that classmethod isn't available here.
     """
     from sqlalchemy.orm import subqueryload
 

@@ -105,9 +105,9 @@ def test_event_logger_binding_is_dynamic(monkeypatch):
 def test_configure_event_logger_is_seen_by_sql_lab(monkeypatch):
     """After configure_event_logger() the sql_lab module uses the new logger.
 
-    Mirrors the original behaviour: ``init_app()`` replaced the event logger
-    and Celery tasks running inside ``app.test_request_context()`` resolved to
-    the new ``DBEventLogger`` via the ``LocalProxy``.
+    ``init_app()`` replaced the event logger and Celery tasks running inside
+    ``app.test_request_context()`` resolved to the new ``DBEventLogger``
+    via the ``LocalProxy``.
     """
     import superset.events as events_mod
     import superset.tasks.sql_lab as sql_lab_mod

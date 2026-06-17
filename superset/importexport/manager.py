@@ -16,10 +16,7 @@
 # under the License.
 """Async import/export manager — coordinates bulk operations.
 
-This module ports
-``superset_old.commands.export.assets.ExportAssetsCommand`` and
-``superset_old.commands.importers.v1.assets.ImportAssetsCommand`` into
-two facades:
+This module implements two facades:
 
 * :class:`AsyncFullAssetManager` — concrete implementation used by the
   public ``/api/v1/assets/`` endpoint.  ``export_assets()`` walks every
@@ -62,16 +59,9 @@ logger = logging.getLogger(__name__)
 MAX_ZIP_ENTRIES = 1000
 
 
-# --------------------------------------------------------------------------- #
-# Registry definitions
-# --------------------------------------------------------------------------- #
-
-
 # Asset types iterated for both export and import.  Order matters for export
-# only as a presentational matter (the ZIP file's directory listing); imports
-# are routed through :class:`ImportAssetsCommand` which enforces the
-# database -> dataset -> chart -> dashboard dependency chain regardless of
-# discovery order.
+# only as a presentational matter; imports are routed through ImportAssetsCommand
+# which enforces the dependency chain regardless of discovery order.
 _ASSET_TYPES: tuple[str, ...] = (
     "databases",
     "datasets",
@@ -80,10 +70,6 @@ _ASSET_TYPES: tuple[str, ...] = (
     "queries",
 )
 
-# Internal: maps asset-type prefix (e.g. ``"databases"``) -> tuple of
-# ``(export_command_cls, import_command_cls, dao_factory)``.  The
-# ``dao_factory`` is a callable taking an :class:`AsyncSession` and
-# returning the DAO instance.  Populated by :func:`register_default_importers`.
 _AssetEntry = dict[str, Any]
 _REGISTRY: dict[str, _AssetEntry] = {}
 
@@ -97,7 +83,7 @@ def register_default_importers() -> None:
     and :mod:`.import_base`).
     """
     if _REGISTRY:
-        return  # already initialised — idempotent
+        return
 
     from superset.commands.chart.export import ExportChartsCommand
     from superset.commands.chart.importers.v1 import ImportChartsCommand
@@ -146,11 +132,6 @@ def register_default_importers() -> None:
     )
 
 
-# --------------------------------------------------------------------------- #
-# Result holder
-# --------------------------------------------------------------------------- #
-
-
 class ImportResult:
     """Result of an import operation."""
 
@@ -161,11 +142,6 @@ class ImportResult:
     @property
     def success(self) -> bool:
         return len(self.errors) == 0
-
-
-# --------------------------------------------------------------------------- #
-# Full-asset manager
-# --------------------------------------------------------------------------- #
 
 
 class AsyncFullAssetManager:
@@ -179,13 +155,7 @@ class AsyncFullAssetManager:
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
-        # Ensure the per-resource registry is populated before any
-        # _export_type / _import_type call.
         register_default_importers()
-
-    # ------------------------------------------------------------------ #
-    # Export
-    # ------------------------------------------------------------------ #
 
     async def export_assets(
         self,
@@ -197,15 +167,13 @@ class AsyncFullAssetManager:
         Returns the bytes of the archive — the controller streams them
         back to the client with ``Content-Type: application/zip``.
         """
-        # Nest every entry under ``assets_export_<timestamp>/`` — 1:1 with the
-        # original ``superset_old/importexport/api.py::export`` which writes
-        # ``zf.writestr(f"{root}/{file_name}", ...)``.  The importer applies
-        # ``remove_root`` (``parts[1:]``) unconditionally, so a *flat* bundle is
-        # NOT round-trip-importable (the asset-type prefix would be stripped
-        # instead of the root).  The timestamp uses ``datetime.now()`` local
-        # time + the original ``"%Y%m%dT%H%M%S"`` format.  The controller
-        # passes ``root`` so the download filename and the internal folder
-        # share ONE timestamp (upstream computes it once).
+        # Nest every entry under ``assets_export_<timestamp>/``.  The importer
+        # applies ``remove_root`` (``parts[1:]``) unconditionally, so a *flat*
+        # bundle is NOT round-trip-importable (the asset-type prefix would be
+        # stripped instead of the root).  The timestamp uses ``datetime.now()``
+        # local time + the ``"%Y%m%dT%H%M%S"`` format.  The controller passes
+        # ``root`` so the download filename and the internal folder share ONE
+        # timestamp (computed once).
         if root is None:
             root = f"assets_export_{datetime.now().strftime('%Y%m%dT%H%M%S')}"
 
@@ -222,8 +190,6 @@ class AsyncFullAssetManager:
             )
 
             types_to_export = asset_types or list(_ASSET_TYPES)
-            # De-dupe on the *unprefixed* path so e.g. a database referenced by
-            # both a dashboard and a saved query isn't written twice.
             seen: set[str] = {"metadata.yaml"}
 
             for asset_type in types_to_export:
@@ -234,8 +200,6 @@ class AsyncFullAssetManager:
                     continue
 
                 for filename, content in items:
-                    # Files come back already prefixed (e.g. ``databases/foo.yaml``)
-                    # — the per-resource export commands handle that.
                     if filename in seen:
                         continue
                     zf.writestr(f"{root}/{filename}", content)
@@ -269,9 +233,6 @@ class AsyncFullAssetManager:
 
         cmd = export_cls(model_ids=ids, dao=dao, export_related=False)
 
-        # ``AsyncExportModelsCommand._export_single`` is the per-id
-        # generator we want — calling ``run()`` would re-build a
-        # full ZIP with metadata, which is *not* what we want here.
         results: list[tuple[str, str]] = []
         for model_id in ids:
             try:
@@ -281,10 +242,6 @@ class AsyncFullAssetManager:
                     "Failed to export %s id=%s", asset_type, model_id, exc_info=True
                 )
         return results
-
-    # ------------------------------------------------------------------ #
-    # Import
-    # ------------------------------------------------------------------ #
 
     async def import_assets(
         self,
@@ -301,12 +258,10 @@ class AsyncFullAssetManager:
     ) -> ImportResult:
         """Import assets from a parsed bundle.
 
-        Mirrors the original path
-        (``superset_old/importexport/api.py:import_``): the controller parses
-        the upload via ``get_contents_from_bundle`` (which applies
-        ``remove_root`` so a nested ``assets_export_<ts>/`` bundle is
-        flattened) and passes the resulting ``{file_name: text}`` mapping
-        straight to :class:`ImportAssetsCommand`.
+        The controller parses the upload via ``get_contents_from_bundle``
+        (which applies ``remove_root`` so a nested ``assets_export_<ts>/``
+        bundle is flattened) and passes the resulting ``{file_name: text}``
+        mapping straight to :class:`ImportAssetsCommand`.
 
         Args:
             contents: Canonical ``{file_name: text-content}`` mapping
@@ -323,7 +278,7 @@ class AsyncFullAssetManager:
                 passphrases keyed by file name.
             sparse: If ``True`` only update fields present in the import
                 file, preserving other existing fields on the target
-                model.  Mirrors the original ``ImportAssetsCommand(sparse=True)``.
+                model.
             security_manager: Optional :class:`AsyncSecurityManager` for
                 permission checks.  Tests / CLI imports may omit it.
             current_user: Optional :class:`User` model for owner attribution.
@@ -344,9 +299,6 @@ class AsyncFullAssetManager:
         if contents is None:
             if file_content is None:
                 raise NoValidFilesFoundError()
-            # Backwards-compat: parse the raw bytes ourselves.  ``BadZipFile``
-            # surfaces as ``IncorrectFormatError`` (422) rather than being
-            # swallowed into a 200 ``result.errors``.
             try:
                 metadata, by_type, contents = await asyncio.to_thread(
                     self._parse_import_zip, file_content
@@ -364,12 +316,6 @@ class AsyncFullAssetManager:
         if not by_type:
             by_type = _count_by_type(contents)
 
-        # ------------------------------------------------------------------
-        # Delegate to ImportAssetsCommand for dependency-aware orchestration.
-        # This matches the original path which routed every full-bundle
-        # import through ``ImportAssetsCommand`` rather than running each
-        # per-type command in isolation (which would lose ordering).
-        # ------------------------------------------------------------------
         from superset.commands.importers.v1 import ImportAssetsCommand
 
         cmd = ImportAssetsCommand(
@@ -384,13 +330,8 @@ class AsyncFullAssetManager:
             current_user=current_user,
         )
 
-        # Let CommandException (and subclasses) propagate so the controller
-        # surfaces a 4xx — do NOT trap it into ``result.errors`` (HTTP 200).
         await cmd.execute()
 
-        # Populate per-type counts for the response payload — the
-        # controller surfaces these so the frontend can show "Imported
-        # 3 dashboards, 7 charts, ...".
         for asset_type, filenames in by_type.items():
             result.imported[asset_type] = len(filenames)
 
@@ -415,13 +356,12 @@ class AsyncFullAssetManager:
         * ``contents`` is the canonical ``{file_name: text-content}``
           mapping consumed by :class:`ImportAssetsCommand`.
 
-        Mirrors ``get_contents_from_bundle`` from the original
-        ``superset_old/commands/importers/v1/utils.py``: every entry is
-        filtered through :func:`is_valid_config` (drop dotfiles /
-        underscore-prefixed / non-YAML files) and stripped of its leading
-        export folder via :func:`remove_root`.  Upstream exports always nest
-        everything under ``assets_export_<ts>/``; without ``remove_root`` the
-        ``metadata.yaml`` lookup misses and zero objects import.
+        Every entry is filtered through :func:`is_valid_config` (drop
+        dotfiles / underscore-prefixed / non-YAML files) and stripped of
+        its leading export folder via :func:`remove_root`.  Exports always
+        nest everything under ``assets_export_<ts>/``; without
+        ``remove_root`` the ``metadata.yaml`` lookup misses and zero
+        objects import.
 
         Raises :class:`ValueError` on entry count or path traversal
         violations; :class:`zipfile.BadZipFile` propagates upwards from
@@ -450,9 +390,6 @@ class AsyncFullAssetManager:
                         f"ZIP entry contains path traversal: {entry}"
                     )
 
-            # Apply remove_root + is_valid_config exactly like the original
-            # ``get_contents_from_bundle`` so a nested bundle flattens to the
-            # canonical ``metadata.yaml`` / ``databases/...`` layout.
             contents: dict[str, str] = {}
             for entry in entries:
                 if not is_valid_config(entry):
@@ -467,11 +404,7 @@ class AsyncFullAssetManager:
             for file_name in contents:
                 if file_name == "metadata.yaml":
                     continue
-                # Only the first path component is the type prefix.
                 head = file_name.split("/", 1)[0]
-                # Skip anything that isn't a known asset directory; this
-                # keeps stray top-level files out of the counters but keeps
-                # them in ``contents`` so the caller can still see them.
                 if head in _ASSET_TYPES:
                     by_type.setdefault(head, []).append(file_name)
 
@@ -509,10 +442,6 @@ class AsyncFullAssetManager:
         dao_factory = entry["dao_factory"]
         dao = dao_factory(self._session)
 
-        # Build a minimal ZIP archive containing only this asset type's
-        # files (plus its dependencies that already live in ``contents``)
-        # plus a metadata.yaml stamped with the right type — that's what
-        # the per-resource import command expects.
         buf = io.BytesIO()
         type_singular = _type_singular(asset_type)
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -530,9 +459,6 @@ class AsyncFullAssetManager:
             for name in filenames:
                 if name in contents:
                     zf.writestr(name, contents[name])
-            # Also include dependent files (databases needed by datasets,
-            # datasets needed by charts/dashboards) to mirror the
-            # original importer's behaviour.
             for dep_prefix in _dependencies_for(asset_type):
                 for fname, payload in contents.items():
                     if fname.startswith(dep_prefix + "/") and fname not in filenames:
@@ -549,17 +475,8 @@ class AsyncFullAssetManager:
         return len(filenames)
 
 
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
-
-
 def _count_by_type(contents: dict[str, str]) -> dict[str, list[str]]:
-    """Group bundle file names by their asset-type prefix.
-
-    Stray top-level / unknown-prefix files are ignored (kept out of the
-    per-type counters) but remain in ``contents`` for the importer.
-    """
+    """Group bundle file names by their asset-type prefix."""
     by_type: dict[str, list[str]] = {}
     for file_name in contents:
         if file_name == "metadata.yaml":
@@ -571,11 +488,10 @@ def _count_by_type(contents: dict[str, str]) -> dict[str, list[str]]:
 
 
 def _type_singular(asset_type: str) -> str:
-    """Convert ``"databases"`` -> ``"Database"``.
+    """Map plural asset-type prefix to the metadata ``type`` field value.
 
-    Mirrors the metadata ``type`` field the per-resource importers
-    validate (``Database``, ``Slice``, ``Dashboard``, ``SqlaTable``,
-    ``SavedQuery``) — see ``AsyncImportModelsCommand._expected_type``.
+    The per-resource importers validate against this value via
+    ``AsyncImportModelsCommand._expected_type``.
     """
     return {
         "databases": "Database",
@@ -587,7 +503,6 @@ def _type_singular(asset_type: str) -> str:
 
 
 def _dependencies_for(asset_type: str) -> tuple[str, ...]:
-    """Return the asset-type prefixes that ``asset_type`` depends on."""
     return {
         "databases": (),
         "queries": ("databases",),
@@ -595,12 +510,6 @@ def _dependencies_for(asset_type: str) -> tuple[str, ...]:
         "charts": ("databases", "datasets"),
         "dashboards": ("databases", "datasets", "charts"),
     }.get(asset_type, ())
-
-
-# --------------------------------------------------------------------------- #
-# Registry-style facade (kept for backwards-compat with controllers that
-# expect register_export / register_import / export / import_models).
-# --------------------------------------------------------------------------- #
 
 
 class AsyncImportExportManager:
@@ -624,7 +533,6 @@ class AsyncImportExportManager:
 
     @classmethod
     def _ensure_registered(cls) -> None:
-        """Lazy-populate from the module-level ``_REGISTRY``."""
         if cls._EXPORT_COMMANDS and cls._IMPORT_COMMANDS:
             return
         register_default_importers()
@@ -656,13 +564,6 @@ class AsyncImportExportManager:
         await cmd.execute()
 
 
-# --------------------------------------------------------------------------- #
-# Compatibility alias
-# --------------------------------------------------------------------------- #
-
-
-# Some callers refer to the manager as ``BundleManager`` (the canonical
-# name used in the design doc); expose both for parity.
 BundleManager = AsyncFullAssetManager
 
 

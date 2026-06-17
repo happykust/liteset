@@ -367,8 +367,7 @@ async def test_cache_hit_returns_cached_data(mock_settings, mock_security_manage
 async def test_get_viz_annotation_data_handles_missing_method(processor):
     """If chart model has no get_query_context(), raise QueryObjectValidationError.
 
-    1:1 with superset_old/common/query_context_processor.py:1204-1212:
-    when ``chart.get_query_context()`` is absent/falsy a
+    When ``chart.get_query_context()`` is absent/falsy a
     ``QueryObjectValidationError`` is raised (not ValueError).
     """
     from superset.exceptions import QueryObjectValidationError
@@ -415,11 +414,11 @@ async def test_ensure_totals_injects_contribution_totals(processor):
     """_ensure_totals_available injects the computed totals DICT into
     contribution post-processing.
 
-    1:1 port of upstream ``ensure_totals_available``: it locates a *separate*
-    totals query (no columns, has metrics, no post-processing), executes it,
-    and injects the column-sum dict (never ``True``) into each contribution
-    op's options. A query that itself carries post-processing can never be the
-    totals query, so a dedicated totals query object is required.
+    ``ensure_totals_available`` locates a *separate* totals query (no columns,
+    has metrics, no post-processing), executes it, and injects the column-sum
+    dict (never ``True``) into each contribution op's options.  A query that
+    itself carries post-processing can never be the totals query, so a
+    dedicated totals query object is required.
     """
     qo = AsyncQueryObject(
         datasource={"type": "table", "id": 1},
@@ -510,8 +509,7 @@ def test_query_object_to_dict_uses_filter_key():
 def test_validate_sanitizes_where_clause():
     """validate() sanitizes extras.where via sanitize_clause(clause, engine).
 
-    1:1 with ``superset_old/common/query_object.py::_sanitize_filters``:
-    sanitization runs only when both the clause and the datasource are present,
+    Sanitization runs only when both the clause and the datasource are present,
     ``sanitize_clause`` receives the engine dialect, and a
     ``QueryClauseValidationException`` becomes a ``QueryObjectValidationError``.
     """
@@ -636,9 +634,9 @@ async def test_get_df_payload_propagates_failed_query(
 async def test_ensure_totals_propagates_failed_query(
     mock_settings, mock_security_manager, mock_datasource
 ):
-    """A failed contribution-totals query propagates (1:1 with the original
-    ``ensure_totals_available``, which has no try/except) rather than being
-    swallowed into empty totals (→ wrong contribution %).
+    """A failed contribution-totals query propagates (``ensure_totals_available``
+    has no try/except) rather than being swallowed into empty totals
+    (→ wrong contribution %).
     """
     from superset.exceptions import QueryObjectValidationError
 
@@ -722,12 +720,12 @@ async def test_offset_cache_roundtrip(
 
 
 # ---------------------------------------------------------------------------
-# 1:1 parity: get_data CSV/XLSX (verbose_map rename + coltypes + config)
+# get_data CSV/XLSX (verbose_map rename + coltypes + config)
 # ---------------------------------------------------------------------------
 
 
 async def test_get_data_csv_applies_verbose_map():
-    """CSV export renames columns via the verbose_map (1:1 with upstream)."""
+    """CSV export renames columns via the verbose_map."""
     df = pd.DataFrame({"col_a": [1], "col_b": ["x"]})
     out = AsyncQueryContextProcessor.get_data(
         df, result_format="csv", verbose_map={"col_a": "Column A"}
@@ -751,7 +749,7 @@ async def test_get_data_xlsx_applies_column_types_and_verbose_map():
 
 
 # ---------------------------------------------------------------------------
-# 1:1 parity: result_type=query carries `language` + graceful error-in-payload
+# result_type=query carries `language` + graceful error-in-payload
 # ---------------------------------------------------------------------------
 
 
@@ -769,8 +767,8 @@ async def test_get_query_only_includes_language(mock_settings, mock_security_man
     result = await proc._get_query_only(qo)
     assert result["language"] == "sql"
     assert result["query"] == "SELECT 1"
-    # 1:1 with upstream ``_get_query``: a successful result_type=query payload
-    # carries only ``language`` + ``query`` (no ``error`` key on success).
+    # A successful result_type=query payload carries only ``language`` + ``query``
+    # (no ``error`` key on success).
     assert "error" not in result
 
 
