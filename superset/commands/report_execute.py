@@ -75,6 +75,7 @@ from superset.exceptions import (
     SupersetException,
     UpdateFailedError,
 )
+from superset.extensions import machine_auth_provider_factory
 from superset.models.reports import (
     ReportDataFormat,
     ReportExecutionLog,
@@ -452,26 +453,10 @@ class BaseReportState:
     def _get_auth_cookies(user: User | None) -> dict[str, str] | None:
         """Get authentication cookies for the given user.
 
-        Uses the ``machine_auth_provider_factory`` which must be
-        initialised before the Celery worker starts.
+        The factory is booted at app startup (web) and in ``worker_process_init``
+        (Celery), so ``instance`` is always available here.
         """
-        try:
-            from superset.extensions import machine_auth_provider_factory
-
-            return machine_auth_provider_factory.instance.get_auth_cookies(user)
-        except (ImportError, AttributeError, RuntimeError):
-            try:
-                from superset_old.extensions import (  # type: ignore[import-not-found]
-                    machine_auth_provider_factory as _legacy_factory,
-                )
-
-                return _legacy_factory.instance.get_auth_cookies(user)
-            except (ImportError, AttributeError):
-                logger.warning(
-                    "machine_auth_provider_factory not available; "
-                    "CSV/DataFrame data fetching may fail."
-                )
-                return None
+        return machine_auth_provider_factory.instance.get_auth_cookies(user)
 
     def _get_screenshots(self) -> list[bytes]:
         settings = _get_settings()

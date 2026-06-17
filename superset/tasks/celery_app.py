@@ -114,6 +114,16 @@ def init_worker_db_engine(**kwargs: Any) -> None:
     except Exception:  # noqa: BLE001
         logger.exception("Failed to configure worker feature-flag / stats managers")
 
+    # Boot the machine-auth provider: report tasks mint browser auth cookies via
+    # ``machine_auth_provider_factory.instance`` (workers never run the Litestar
+    # on_startup hook that calls ``init_app`` for the web process).
+    try:
+        from superset.extensions import machine_auth_provider_factory  # noqa: WPS433
+
+        machine_auth_provider_factory.init_settings(settings)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to configure worker machine-auth provider")
+
     worker_engine = None
     try:
         worker_engine = create_worker_engine(settings.sqlalchemy_database_uri)

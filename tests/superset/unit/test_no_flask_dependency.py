@@ -51,6 +51,26 @@ def test_no_flask_ecosystem_imports_in_superset():
     assert not violations, f"Flask-ecosystem imports found in superset/: {violations}"
 
 
+def test_no_superset_old_imports_in_superset():
+    """``superset_old`` is the vendored old Flask backend, kept for reference only.
+
+    No runtime module may import from it — including lazy imports nested inside
+    function bodies, which ``ast.walk`` traverses too.
+    """
+    violations: list[str] = []
+    for py_file in Path("superset").rglob("*.py"):
+        tree = ast.parse(py_file.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".", 1)[0] == "superset_old":
+                        violations.append(f"{py_file}: import {alias.name}")
+            if isinstance(node, ast.ImportFrom) and node.module:
+                if node.module.split(".", 1)[0] == "superset_old":
+                    violations.append(f"{py_file}: from {node.module}")
+    assert not violations, f"superset_old imports found in superset/: {violations}"
+
+
 def test_no_flask_ecosystem_in_requirements():
     violations: list[str] = []
     for req_file in Path("requirements").glob("*.txt"):
