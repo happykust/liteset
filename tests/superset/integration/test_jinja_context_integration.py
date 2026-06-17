@@ -43,6 +43,18 @@ from superset.jinja_context import (
 
 
 @pytest.fixture(autouse=True)
+def _backend(integration_backend: str) -> None:
+    """Ensure the schema + example data are present before these DB-backed tests.
+
+    Several tests resolve the ``examples`` database via the sync helper
+    ``get_example_database`` (which queries ``dbs``); without depending on
+    ``integration_backend`` they could run before the session-scoped migrate,
+    hitting ``relation "dbs" does not exist`` and poisoning the shared sync
+    session for later modules.
+    """
+
+
+@pytest.fixture(autouse=True)
 def _enable_template_processing(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force ``ENABLE_TEMPLATE_PROCESSING`` on for every test.
 
