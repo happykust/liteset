@@ -1,0 +1,14 @@
+{
+  "action": "published",
+  "release": {
+    "tag_name": "1.0.0",
+    "name": "Liteset 1.0.0",
+    "draft": false,
+    "prerelease": false
+  },
+  "repository": {
+    "name": "liteset",
+    "full_name": "happykust/liteset",
+    "owner": { "login": "happykust" }
+  }
+}
