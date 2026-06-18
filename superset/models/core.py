@@ -123,9 +123,7 @@ class Theme(AuditMixinNullable, ImportExportMixin, Base):
     is_system_default: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
-    is_system_dark: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    is_system_dark: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     export_fields = ["theme_name", "json_data"]
 

@@ -41,9 +41,7 @@ class CacheKey(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     cache_key: Mapped[str] = mapped_column(String(256), nullable=False)
     cache_timeout: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    datasource_uid: Mapped[str] = mapped_column(
-        String(64), nullable=False, index=True
-    )
+    datasource_uid: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     created_on: Mapped[datetime | None] = mapped_column(
         DateTime, default=datetime.now, nullable=True
     )

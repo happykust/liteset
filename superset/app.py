@@ -832,14 +832,11 @@ def _apply_ssl_kwargs(target: dict[str, Any], cache_config: dict[str, Any]) -> N
     original ``get_cache_backend`` helper.
     """
     target["ssl"] = True
-    ssl_certfile = cache_config.get("CACHE_REDIS_SSL_CERTFILE") or None
-    ssl_keyfile = cache_config.get("CACHE_REDIS_SSL_KEYFILE") or None
-    ssl_cert_reqs = cache_config.get("CACHE_REDIS_SSL_CERT_REQS", "required")
-    if ssl_certfile:
+    if ssl_certfile := cache_config.get("CACHE_REDIS_SSL_CERTFILE") or None:
         target["ssl_certfile"] = ssl_certfile
-    if ssl_keyfile:
+    if ssl_keyfile := cache_config.get("CACHE_REDIS_SSL_KEYFILE") or None:
         target["ssl_keyfile"] = ssl_keyfile
-    if ssl_cert_reqs:
+    if ssl_cert_reqs := cache_config.get("CACHE_REDIS_SSL_CERT_REQS", "required"):
         target["ssl_cert_reqs"] = ssl_cert_reqs
     if ssl_ca_certs := cache_config.get("CACHE_REDIS_SSL_CA_CERTS") or None:
         target["ssl_ca_certs"] = ssl_ca_certs

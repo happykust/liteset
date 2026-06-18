@@ -58,9 +58,7 @@ class SSHTunnel(AuditMixinNullable, ExtraJSONMixin, ImportExportMixin, Base):
     # EncryptedType wraps Text; Python type is str.  nullable (default) because
     # no nullable=False is set — SSH tunnels may be created before credentials
     # are filled in.
-    username: Mapped[str | None] = mapped_column(
-        encrypted_field_factory.create(Text)
-    )
+    username: Mapped[str | None] = mapped_column(encrypted_field_factory.create(Text))
 
     # basic authentication
     password: Mapped[str | None] = mapped_column(
