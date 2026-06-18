@@ -52,7 +52,7 @@ with open(VERSION_INFO_FILE, "w") as version_file:
 version_string = version_string.replace("-dev", ".dev0")
 
 setup(
-    name="apache_superset",
+    name="liteset",
     version=version_string,
     packages=find_packages(),
     include_package_data=True,
@@ -75,5 +75,5 @@ setup(
             "postgres = sqlalchemy.dialects.postgresql:dialect",
         ],
     },
-    download_url="https://www.apache.org/dist/superset/" + version_string,
+    download_url="https://pypi.org/project/liteset/" + version_string + "/",
 )
