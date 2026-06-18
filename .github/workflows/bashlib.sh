@@ -68,15 +68,17 @@ build-instrumented-assets() {
   # On the slower CI runners that overhead pushed timing-sensitive specs
   # (re-sort re-render, antd dropdown animation) past Cypress' default timeouts
   # and they failed deterministically — reproduced locally: the same specs pass
-  # on a plain build but flake on an instrumented one.  Cache key bumped to
-  # ``e2e-assets`` so stale instrumented bundles aren't restored.
+  # on a plain build but flake on an instrumented one.  Use the predefined
+  # ``assets`` cache (the plain-``npm run build`` slot in caches.js), NOT
+  # ``instrumented-assets`` — they map to the same path but are keyed
+  # separately, so this won't restore a stale instrumented bundle.
   say "::group::Build static assets"
-  cache-restore e2e-assets
+  cache-restore assets
   if [[ -f "$ASSETS_MANIFEST" ]]; then
     echo 'Skip frontend build because static assets already exist.'
   else
     npm run build
-    cache-save e2e-assets
+    cache-save assets
   fi
   say "::endgroup::"
 }
