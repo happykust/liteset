@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import secrets
 from collections.abc import Mapping
+from contextvars import ContextVar
 from typing import Any, cast
 
 from litestar.middleware.base import ASGIMiddleware
@@ -53,7 +54,24 @@ _DEFAULT_PERMISSIONS_POLICY: dict[str, str] = {"browsing-topics": "()"}
 # the Jinja2 template callable (registered in app.py) can retrieve it.
 CSP_NONCE_SCOPE_KEY = "csp_nonce"
 
+# Per-request CSP nonce, exposed as a ContextVar to mirror Flask-Talisman's
+# thread-local ``csp_nonce``.  The Jinja ``csp_nonce()`` callable reads this
+# instead of the template's render context: the templates pull the nonce
+# through ``macros.get_nonce()`` from ``partials/asset_bundle.html``, which
+# imports ``macros.html`` *without* context, so a ``pass_context`` callable
+# would receive an empty macro-local context (no ``request``) and silently
+# return "".  An empty nonce on every ``<script>`` tag makes the CSP
+# ``strict-dynamic`` policy block the entire SPA bundle — the page renders no
+# JavaScript at all.  A ContextVar is request-context-independent and works
+# from any template depth, exactly like the upstream Flask global.
+_csp_nonce_ctx: ContextVar[str] = ContextVar("superset_csp_nonce", default="")
+
 logger = logging.getLogger(__name__)
+
+
+def get_csp_nonce() -> str:
+    """Return the current request's CSP nonce (empty string if none)."""
+    return _csp_nonce_ctx.get()
 
 
 def _build_csp_string(
@@ -209,6 +227,9 @@ class SecurityHeadersMiddleware(ASGIMiddleware):
             nonce = secrets.token_urlsafe(_NONCE_LENGTH)
             scope_state: dict[str, Any] = scope.setdefault("state", {})
             scope_state[CSP_NONCE_SCOPE_KEY] = nonce
+            # Mirror upstream's thread-local ``csp_nonce`` so templates can read
+            # it from any macro depth (see ``_csp_nonce_ctx`` docstring).
+            _csp_nonce_ctx.set(nonce)
         return nonce_in, nonce
 
     @staticmethod
@@ -321,4 +342,9 @@ class SecurityHeadersMiddleware(ASGIMiddleware):
                 message = {**message, "headers": existing}
             await send(message)
 
-        await next_app(scope, receive, send_with_headers)
+        try:
+            await next_app(scope, receive, send_with_headers)
+        finally:
+            # Clear the per-request nonce so it can't leak into a later
+            # request reusing this task's context.
+            _csp_nonce_ctx.set("")

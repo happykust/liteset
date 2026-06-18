@@ -1173,20 +1173,19 @@ def create_app(  # noqa: C901
         )
         # Mirrors talisman's ``app.jinja_env.globals['csp_nonce']``
         # (talisman.py:193).  The SecurityHeadersMiddleware generates a per-request
-        # nonce and stores it under CSP_NONCE_SCOPE_KEY in scope["state"].  The
-        # template callable reads it back so spa.html / asset_bundle.html can emit
-        # `nonce="<value>"` on inline/async <script> tags.
+        # nonce and exposes it via a ContextVar (``get_csp_nonce``).  We read it
+        # from there rather than the Jinja render context: ``macros.get_nonce()``
+        # is reached through ``partials/asset_bundle.html``, which imports
+        # ``macros.html`` *without* context, so a ``pass_context`` callable would
+        # see an empty macro-local context (no ``request``) and return "" — an
+        # empty nonce makes the CSP ``strict-dynamic`` policy block every
+        # ``<script>`` and the SPA never boots.
         from collections.abc import Mapping
 
-        from superset.middleware.security_headers import CSP_NONCE_SCOPE_KEY
+        from superset.middleware.security_headers import get_csp_nonce
 
         def _csp_nonce(ctx: Mapping[str, Any]) -> str:
-            try:
-                request = ctx["request"]
-                scope_state = request.scope.get("state", {})
-                return scope_state.get(CSP_NONCE_SCOPE_KEY, "") or ""
-            except Exception:  # noqa: BLE001
-                return ""
+            return get_csp_nonce()
 
         engine.register_template_callable(key="csp_nonce", template_callable=_csp_nonce)
 
