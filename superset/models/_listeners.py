@@ -635,7 +635,9 @@ def _object_after_update(
             )
             .all()
         )
-        existing_owner_tag_ids = {int(to.tag_id) for to in existing}
+        existing_owner_tag_ids = {
+            int(to.tag_id) for to in existing if to.tag_id is not None
+        }
 
         new_owner_tag_ids: set[int] = set()
         for owner_id in owner_ids:
@@ -747,7 +749,7 @@ def _favstar_after_insert(
         "SqlaTable": _OBJECT_TYPE_DATASET,
     }
     obj_type = object_type_map.get(str(target.class_name))
-    if obj_type is None:
+    if obj_type is None or target.obj_id is None:
         return
     with Session(bind=connection) as session:
         tag = _get_or_create_tag(

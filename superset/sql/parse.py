@@ -593,7 +593,7 @@ class SQLStatement(BaseSQLStatement[exp.Expression]):
                     target = node
 
             target.comments = target.comments or []
-            target.comments.extend(last_statement.comments)  # type: ignore[union-attr]
+            target.comments.extend(last_statement.comments or [])  # type: ignore[union-attr]
 
         return statements  # type: ignore[return-value]
 

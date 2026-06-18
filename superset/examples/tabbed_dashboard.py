@@ -554,7 +554,7 @@ def load_tabbed_dashboard(_: bool = False) -> None:
     )
     pos = json.loads(js)
     slices = update_slice_ids(pos)
-    dash.position_json = json.dumps(pos, indent=4)  # type: ignore[assignment]
+    dash.position_json = json.dumps(pos, indent=4)
     dash.slices = slices
-    dash.dashboard_title = "Tabbed Dashboard"  # type: ignore[assignment]
-    dash.slug = slug  # type: ignore[assignment]
+    dash.dashboard_title = "Tabbed Dashboard"
+    dash.slug = slug

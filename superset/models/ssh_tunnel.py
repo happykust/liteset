@@ -18,10 +18,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import sqlalchemy as sa
-from sqlalchemy.orm import backref, relationship
+from sqlalchemy.orm import backref, Mapped, mapped_column, relationship
 from sqlalchemy.types import Text
 
 from superset.extensions import encrypted_field_factory
@@ -32,6 +32,9 @@ from superset.models.helpers import (
     ImportExportMixin,
 )
 
+if TYPE_CHECKING:
+    from superset.models.core import Database
+
 PASSWORD_MASK = "X" * 10
 
 
@@ -40,30 +43,35 @@ class SSHTunnel(AuditMixinNullable, ExtraJSONMixin, ImportExportMixin, Base):
 
     __tablename__ = "ssh_tunnels"
 
-    id = sa.Column(sa.Integer, primary_key=True)
-    database_id = sa.Column(
+    id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+    database_id: Mapped[int] = mapped_column(
         sa.Integer, sa.ForeignKey("dbs.id"), nullable=False, unique=True
     )
-    database = relationship(
+    database: Mapped["Database"] = relationship(
         "Database",
         backref=backref("ssh_tunnels", uselist=False, cascade="all, delete-orphan"),
         foreign_keys=[database_id],
     )
 
-    server_address = sa.Column(sa.Text)
-    server_port = sa.Column(sa.Integer)
-    username: sa.Column[Any] = sa.Column(encrypted_field_factory.create(Text))
+    server_address: Mapped[str | None] = mapped_column(sa.Text)
+    server_port: Mapped[int | None] = mapped_column(sa.Integer)
+    # EncryptedType wraps Text; Python type is str.  nullable (default) because
+    # no nullable=False is set — SSH tunnels may be created before credentials
+    # are filled in.
+    username: Mapped[str | None] = mapped_column(
+        encrypted_field_factory.create(Text)
+    )
 
     # basic authentication
-    password: sa.Column[Any] = sa.Column(
+    password: Mapped[str | None] = mapped_column(
         encrypted_field_factory.create(Text), nullable=True
     )
 
     # password protected pkey authentication
-    private_key: sa.Column[Any] = sa.Column(
+    private_key: Mapped[str | None] = mapped_column(
         encrypted_field_factory.create(Text), nullable=True
     )
-    private_key_password: sa.Column[Any] = sa.Column(
+    private_key_password: Mapped[str | None] = mapped_column(
         encrypted_field_factory.create(Text), nullable=True
     )
 

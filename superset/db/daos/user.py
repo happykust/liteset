@@ -49,6 +49,7 @@ class AsyncUserDAO:
             from superset.models.security import User
 
             self._user_model = User
+            return User
         return self._user_model
 
     async def get_by_id(self, user_id: int) -> Any | None:

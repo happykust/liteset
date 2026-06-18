@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 from sqlalchemy import (
@@ -36,7 +37,7 @@ from sqlalchemy import (
     Table,
     Text,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from superset.models.helpers import (
     AuditMixinNullable,
@@ -48,6 +49,8 @@ from superset.models.helpers import (
 
 if TYPE_CHECKING:
     from superset.models.connectors import SqlaTable
+    from superset.models.security import User
+    from superset.models.tags import Tag
 
 logger = logging.getLogger(__name__)
 
@@ -78,48 +81,52 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
 
     __tablename__ = "slices"
 
-    id = Column(Integer, primary_key=True)
-    slice_name = Column(String(250))
-    datasource_id = Column(Integer)
-    datasource_type = Column(String(200))
-    datasource_name = Column(String(2000))
-    viz_type = Column(String(250))
-    params = Column(MediumText())
-    query_context = Column(MediumText())
-    description = Column(Text)
-    cache_timeout = Column(Integer)
-    perm = Column(String(1000))
-    schema_perm = Column(String(1000))
-    catalog_perm = Column(String(1000))
-    last_saved_at = Column(DateTime, nullable=True)
-    last_saved_by_fk = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
-    certified_by = Column(Text)
-    certification_details = Column(Text)
-    is_managed_externally = Column(Boolean, nullable=False, default=False)
-    external_url = Column(Text, nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    slice_name: Mapped[str | None] = mapped_column(String(250))
+    datasource_id: Mapped[int | None] = mapped_column(Integer)
+    datasource_type: Mapped[str | None] = mapped_column(String(200))
+    datasource_name: Mapped[str | None] = mapped_column(String(2000))
+    viz_type: Mapped[str | None] = mapped_column(String(250))
+    params: Mapped[str | None] = mapped_column(MediumText())
+    query_context: Mapped[str | None] = mapped_column(MediumText())
+    description: Mapped[str | None] = mapped_column(Text)
+    cache_timeout: Mapped[int | None] = mapped_column(Integer)
+    perm: Mapped[str | None] = mapped_column(String(1000))
+    schema_perm: Mapped[str | None] = mapped_column(String(1000))
+    catalog_perm: Mapped[str | None] = mapped_column(String(1000))
+    last_saved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_saved_by_fk: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("ab_user.id"), nullable=True
+    )
+    certified_by: Mapped[str | None] = mapped_column(Text)
+    certification_details: Mapped[str | None] = mapped_column(Text)
+    is_managed_externally: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    external_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     def __repr__(self) -> str:
         return self.slice_name or str(self.id)
 
     # -- relationships --------------------------------------------------------
 
-    last_saved_by = relationship(
+    last_saved_by: Mapped["User | None"] = relationship(
         "User",
         foreign_keys=[last_saved_by_fk],
     )
-    owners = relationship(
+    owners: Mapped[list["User"]] = relationship(
         "User",
         secondary=slice_user,
         passive_deletes=True,
     )
-    table = relationship(
+    table: Mapped["SqlaTable | None"] = relationship(
         "SqlaTable",
         foreign_keys=[datasource_id],
         primaryjoin="and_(Slice.datasource_id == SqlaTable.id, "
         "Slice.datasource_type == 'table')",
         viewonly=True,
     )
-    tags = relationship(
+    tags: Mapped[list["Tag"]] = relationship(
         "Tag",
         secondary="tagged_object",
         primaryjoin="and_(Slice.id == foreign(TaggedObject.object_id), "

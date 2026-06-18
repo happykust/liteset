@@ -26,10 +26,16 @@ to avoid duplicate mapper registrations.
 
 from __future__ import annotations
 
-from sqlalchemy import Column, ForeignKey, Integer, String
-from sqlalchemy.orm import backref, relationship
+from typing import TYPE_CHECKING
+
+from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy.orm import backref, Mapped, mapped_column, relationship
 
 from superset.models.helpers import AuditMixinNullable, Base
+
+if TYPE_CHECKING:
+    from superset.models.dashboard import Dashboard
+    from superset.models.security import User
 
 
 class UserAttribute(Base, AuditMixinNullable):
@@ -37,21 +43,25 @@ class UserAttribute(Base, AuditMixinNullable):
 
     __tablename__ = "user_attribute"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
-    welcome_dashboard_id = Column(Integer, ForeignKey("dashboards.id"), nullable=True)
-    avatar_url = Column(String(100))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("ab_user.id"), nullable=True
+    )
+    welcome_dashboard_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("dashboards.id"), nullable=True
+    )
+    avatar_url: Mapped[str | None] = mapped_column(String(100))
 
     # -- relationships --------------------------------------------------------
 
     # ``backref="extra_attributes"`` exposes ``User.extra_attributes``
     # (required by the avatar endpoint).
-    user = relationship(
+    user: Mapped["User | None"] = relationship(
         "User",
         foreign_keys=[user_id],
         backref=backref("extra_attributes"),
     )
-    welcome_dashboard = relationship(
+    welcome_dashboard: Mapped["Dashboard | None"] = relationship(
         "Dashboard",
         foreign_keys=[welcome_dashboard_id],
     )

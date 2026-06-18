@@ -877,7 +877,7 @@ class MetastoreAsyncCacheManager:
             existing = await dao.get_entry_by_key(self._RESOURCE, key_uuid)
             if existing is not None:
                 existing.value = encoded
-                existing.expires_on = self._expiry(ttl)  # type: ignore[assignment]
+                existing.expires_on = self._expiry(ttl)
             else:
                 await dao.create_entry(
                     resource=self._RESOURCE,

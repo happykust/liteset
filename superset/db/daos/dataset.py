@@ -381,7 +381,7 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
                     type=col["type"],
                     table=model,
                 )
-                new_column.is_dttm = new_column.is_temporal  # type: ignore[assignment]
+                new_column.is_dttm = new_column.is_temporal
                 if col.get("comment"):
                     new_column.description = col["comment"]
                 db_engine_spec.alter_new_orm_column(new_column)
@@ -393,8 +393,8 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
                 new_column.expression = ""
                 if col.get("comment"):
                     new_column.description = col["comment"]
-            new_column.groupby = True  # type: ignore[assignment]
-            new_column.filterable = True  # type: ignore[assignment]
+            new_column.groupby = True
+            new_column.filterable = True
             columns.append(new_column)
             if not any_date_col and new_column.is_temporal:
                 any_date_col = col["column_name"]
@@ -404,7 +404,7 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
         model.columns = columns
 
         if not model.main_dttm_col:
-            model.main_dttm_col = any_date_col  # type: ignore[assignment]
+            model.main_dttm_col = any_date_col
         model.add_missing_metrics(metrics)
 
         _apply_sqla_table_mutator(model)

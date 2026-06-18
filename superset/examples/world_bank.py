@@ -132,13 +132,13 @@ def load_world_bank_health_n_pop(  # pylint: disable=too-many-locals
     if not dash:
         dash = Dashboard()
         _ctx.session.add(dash)
-    dash.published = True  # type: ignore[assignment]
+    dash.published = True
     pos = dashboard_positions
     slices = update_slice_ids(pos)
 
-    dash.dashboard_title = dash_name  # type: ignore[assignment]
-    dash.position_json = json.dumps(pos, indent=4)  # type: ignore[assignment]
-    dash.slug = slug  # type: ignore[assignment]
+    dash.dashboard_title = dash_name
+    dash.position_json = json.dumps(pos, indent=4)
+    dash.slug = slug
     dash.slices = slices
 
 

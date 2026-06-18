@@ -24,10 +24,12 @@ with old-style ``declarative_base()`` inside migration files.
 from __future__ import annotations
 
 import sqlalchemy as sa
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import DeclarativeBase
+
 
 # Standalone declarative base — isolated from the main app's Base
-_Base = declarative_base()
+class _Base(DeclarativeBase):
+    pass
 
 
 class SqlaTable(_Base):

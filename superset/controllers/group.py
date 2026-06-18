@@ -88,7 +88,7 @@ async def _validate_group_member_ids(
 
     from superset.models.security import Role, User
 
-    model_cls: type[Any]
+    model_cls: Any
     model_name: str
     if field_name == "roles":
         model_cls, model_name = Role, "Role"

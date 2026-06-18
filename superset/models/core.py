@@ -26,11 +26,13 @@ import textwrap
 from copy import deepcopy
 from datetime import datetime
 from functools import lru_cache
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from flask_appbuilder.security.sqla.models import User
 
 from sqlalchemy import (
     Boolean,
-    Column,
     DateTime,
     ForeignKey,
     Index,
@@ -42,7 +44,7 @@ from sqlalchemy import (
 from sqlalchemy.engine.url import URL
 from sqlalchemy.exc import NoSuchModuleError
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import expression
 
 from superset.constants import LRU_CACHE_MAX_SIZE, PASSWORD_MASK
@@ -91,8 +93,8 @@ class KeyValue(Base):
 
     __tablename__ = "keyvalue"
 
-    id = Column(Integer, primary_key=True)
-    value = Column(MediumText(), nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    value: Mapped[str] = mapped_column(MediumText(), nullable=False)
 
 
 class CssTemplate(AuditMixinNullable, UUIDMixin, Base):
@@ -100,9 +102,9 @@ class CssTemplate(AuditMixinNullable, UUIDMixin, Base):
 
     __tablename__ = "css_templates"
 
-    id = Column(Integer, primary_key=True)
-    template_name = Column(String(250))
-    css = Column(MediumText(), default="")
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    template_name: Mapped[str | None] = mapped_column(String(250))
+    css: Mapped[str | None] = mapped_column(MediumText(), default="")
 
 
 class Theme(AuditMixinNullable, ImportExportMixin, Base):
@@ -114,12 +116,16 @@ class Theme(AuditMixinNullable, ImportExportMixin, Base):
         Index("idx_theme_is_system_dark", "is_system_dark"),
     )
 
-    id = Column(Integer, primary_key=True)
-    theme_name = Column(String(250))
-    json_data = Column(MediumText(), default="")
-    is_system = Column(Boolean, default=False, nullable=False)
-    is_system_default = Column(Boolean, default=False, nullable=False)
-    is_system_dark = Column(Boolean, default=False, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    theme_name: Mapped[str | None] = mapped_column(String(250))
+    json_data: Mapped[str | None] = mapped_column(MediumText(), default="")
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_system_default: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    is_system_dark: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
 
     export_fields = ["theme_name", "json_data"]
 
@@ -130,28 +136,32 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     __tablename__ = "dbs"
     __table_args__ = (UniqueConstraint("database_name"),)
 
-    id = Column(Integer, primary_key=True)
-    verbose_name = Column(String(250), unique=True)
-    database_name = Column(String(250), unique=True, nullable=False)
-    sqlalchemy_uri = Column(String(1024), nullable=False)
-    password = Column(encrypted_field_factory.create(String(1024)))
-    cache_timeout = Column(Integer)
-    select_as_create_table_as = Column(Boolean, default=False)
-    expose_in_sqllab = Column(Boolean, default=True)
-    configuration_method = Column(
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    verbose_name: Mapped[str | None] = mapped_column(String(250), unique=True)
+    database_name: Mapped[str] = mapped_column(String(250), unique=True, nullable=False)
+    sqlalchemy_uri: Mapped[str] = mapped_column(String(1024), nullable=False)
+    password: Mapped[str | None] = mapped_column(
+        encrypted_field_factory.create(String(1024))
+    )
+    cache_timeout: Mapped[int | None] = mapped_column(Integer)
+    select_as_create_table_as: Mapped[bool | None] = mapped_column(
+        Boolean, default=False
+    )
+    expose_in_sqllab: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    configuration_method: Mapped[str | None] = mapped_column(
         String(255),
         server_default=ConfigurationMethod.SQLALCHEMY_FORM.value,
     )
-    allow_run_async = Column(Boolean, default=False)
-    allow_file_upload = Column(Boolean, default=False)
-    allow_ctas = Column(Boolean, default=False)
-    allow_cvas = Column(Boolean, default=False)
-    allow_dml = Column(Boolean, default=False)
-    force_ctas_schema = Column(String(250))
+    allow_run_async: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    allow_file_upload: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    allow_ctas: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    allow_cvas: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    allow_dml: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    force_ctas_schema: Mapped[str | None] = mapped_column(String(250))
     # ``extra`` defaults to the full JSON template (not "{}"), so new databases expose
     # the expected metadata_params/engine_params/metadata_cache_timeout/schemas_allowed
     # keys.
-    extra = Column(
+    extra: Mapped[str | None] = mapped_column(
         Text,
         default=textwrap.dedent(
             """\
@@ -164,11 +174,17 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
     """
         ),
     )
-    encrypted_extra = Column(encrypted_field_factory.create(Text), nullable=True)
-    impersonate_user = Column(Boolean, default=False)
-    server_cert = Column(encrypted_field_factory.create(Text), nullable=True)
-    is_managed_externally = Column(Boolean, nullable=False, default=False)
-    external_url = Column(Text, nullable=True)
+    encrypted_extra: Mapped[str | None] = mapped_column(
+        encrypted_field_factory.create(Text), nullable=True
+    )
+    impersonate_user: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    server_cert: Mapped[str | None] = mapped_column(
+        encrypted_field_factory.create(Text), nullable=True
+    )
+    is_managed_externally: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    external_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     export_fields = [
         "database_name",
@@ -1329,26 +1345,32 @@ class DatabaseUserOAuth2Tokens(AuditMixinNullable, Base):
     __tablename__ = "database_user_oauth2_tokens"
     __table_args__ = (Index("idx_user_id_database_id", "user_id", "database_id"),)
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("ab_user.id", ondelete="CASCADE"),
         nullable=False,
     )
-    database_id = Column(
+    database_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("dbs.id", ondelete="CASCADE"),
         nullable=False,
     )
-    access_token = Column(encrypted_field_factory.create(Text), nullable=True)
-    access_token_expiration = Column(DateTime, nullable=True)
-    refresh_token = Column(encrypted_field_factory.create(Text), nullable=True)
+    access_token: Mapped[str | None] = mapped_column(
+        encrypted_field_factory.create(Text), nullable=True
+    )
+    access_token_expiration: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+    refresh_token: Mapped[str | None] = mapped_column(
+        encrypted_field_factory.create(Text), nullable=True
+    )
 
-    user = relationship(
+    user: Mapped["User"] = relationship(
         "User",
         foreign_keys=[user_id],
     )
-    database = relationship(
+    database: Mapped["Database"] = relationship(
         "Database",
         foreign_keys=[database_id],
     )
@@ -1359,17 +1381,17 @@ class Log(Base):
 
     __tablename__ = "logs"
 
-    id = Column(Integer, primary_key=True)
-    action = Column(String(512))
-    user_id = Column(Integer, ForeignKey("ab_user.id"))
-    dashboard_id = Column(Integer)
-    slice_id = Column(Integer)
-    json = Column(MediumText())
-    dttm = Column(DateTime, default=datetime.utcnow)
-    duration_ms = Column(Integer)
-    referrer = Column(String(1024))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    action: Mapped[str | None] = mapped_column(String(512))
+    user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("ab_user.id"))
+    dashboard_id: Mapped[int | None] = mapped_column(Integer)
+    slice_id: Mapped[int | None] = mapped_column(Integer)
+    json: Mapped[str | None] = mapped_column(MediumText())
+    dttm: Mapped[datetime | None] = mapped_column(DateTime, default=datetime.utcnow)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    referrer: Mapped[str | None] = mapped_column(String(1024))
 
-    user = relationship(
+    user: Mapped["User | None"] = relationship(
         "User",
         foreign_keys=[user_id],
     )
@@ -1380,8 +1402,8 @@ class FavStar(UUIDMixin, Base):
 
     __tablename__ = "favstar"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("ab_user.id"))
-    class_name = Column(String(50))
-    obj_id = Column(Integer)
-    dttm = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("ab_user.id"))
+    class_name: Mapped[str | None] = mapped_column(String(50))
+    obj_id: Mapped[int | None] = mapped_column(Integer)
+    dttm: Mapped[datetime | None] = mapped_column(DateTime, default=datetime.utcnow)

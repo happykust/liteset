@@ -43,7 +43,13 @@ from sqlalchemy import and_, or_, Text, types as sa_types
 from sqlalchemy.dialects.mysql import LONGTEXT, MEDIUMTEXT
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.ext.declarative import declared_attr
-from sqlalchemy.orm import DeclarativeBase, relationship, validates
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    mapped_column,
+    relationship,
+    validates,
+)
 from sqlalchemy.sql.elements import ColumnElement, literal_column, TextClause
 from sqlalchemy.sql.expression import Label, Select, TextAsFrom
 from sqlalchemy.sql.selectable import Alias, TableClause
@@ -73,6 +79,7 @@ if TYPE_CHECKING:
     from superset.db_engine_specs.base import BaseEngineSpec, TimestampExpression
     from superset.models.connectors import SqlMetric, TableColumn
     from superset.models.core import Database
+    from superset.models.security import User
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +200,7 @@ class BinaryUUID(sa_types.TypeDecorator[uuid.UUID]):
 class UUIDMixin:
     """Adds a ``uuid`` column (unique, non-PK by default)."""
 
-    uuid = sa.Column(
+    uuid: Mapped[uuid.UUID | None] = mapped_column(
         BinaryUUID(),
         primary_key=False,
         unique=True,
@@ -211,8 +218,10 @@ class AuditMixinNullable:
     ``serialize_list_response`` can read them via ``getattr``.
     """
 
-    created_on = sa.Column(sa.DateTime, default=datetime.now, nullable=True)
-    changed_on = sa.Column(
+    created_on: Mapped[datetime | None] = mapped_column(
+        sa.DateTime, default=datetime.now, nullable=True
+    )
+    changed_on: Mapped[datetime | None] = mapped_column(
         sa.DateTime,
         default=datetime.now,
         onupdate=datetime.now,
@@ -220,23 +229,23 @@ class AuditMixinNullable:
     )
 
     @declared_attr
-    def created_by_fk(cls):  # noqa: N805
-        return sa.Column(
+    def created_by_fk(cls) -> Mapped[int | None]:  # noqa: N805
+        return mapped_column(
             sa.Integer,
             sa.ForeignKey("ab_user.id"),
             nullable=True,
         )
 
     @declared_attr
-    def changed_by_fk(cls):  # noqa: N805
-        return sa.Column(
+    def changed_by_fk(cls) -> Mapped[int | None]:  # noqa: N805
+        return mapped_column(
             sa.Integer,
             sa.ForeignKey("ab_user.id"),
             nullable=True,
         )
 
     @declared_attr
-    def created_by(cls):  # noqa: N805
+    def created_by(cls) -> Mapped["User | None"]:  # noqa: N805
         class_name: str = getattr(cls, "__name__", type(cls).__name__)
         return relationship(
             "User",
@@ -246,7 +255,7 @@ class AuditMixinNullable:
         )
 
     @declared_attr
-    def changed_by(cls):  # noqa: N805
+    def changed_by(cls) -> Mapped["User | None"]:  # noqa: N805
         class_name: str = getattr(cls, "__name__", type(cls).__name__)
         return relationship(
             "User",
@@ -467,7 +476,9 @@ class ExtraJSONMixin:
     ``extra_json`` stores a JSON string; ``extra`` parses/serialises it as a dict.
     """
 
-    extra_json = sa.Column("extra_json", MediumText(), default="{}")
+    extra_json: Mapped[str | None] = mapped_column(
+        "extra_json", MediumText(), default="{}"
+    )
 
     @property
     def extra(self) -> dict[str, Any]:
@@ -507,7 +518,7 @@ class ExtraJSONMixin:
 class CertificationMixin:
     """Mixin to add extra certification fields"""
 
-    extra = sa.Column(sa.Text, default="{}")
+    extra: Mapped[str | None] = mapped_column(sa.Text, default="{}")
 
     def get_extra_dict(self) -> dict[str, Any]:
         try:

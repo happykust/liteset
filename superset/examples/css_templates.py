@@ -54,7 +54,7 @@ def load_css_templates() -> None:
     */
     """
     )
-    obj.css = css  # type: ignore[assignment]
+    obj.css = css
 
     obj = (
         _ctx.session.query(CssTemplate).filter_by(template_name="Courier Black").first()
@@ -100,4 +100,4 @@ def load_css_templates() -> None:
     */
     """
     )
-    obj.css = css  # type: ignore[assignment]
+    obj.css = css

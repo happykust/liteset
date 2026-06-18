@@ -23,7 +23,10 @@ repos:
     rev: v1.15.0
     hooks:
       - id: mypy
-        args: [--check-untyped-defs]
+        # Check the package as a whole (not per-file): passing individual
+        # __init__.py paths makes mypy report "source file found twice".
+        args: [--check-untyped-defs, superset]
+        pass_filenames: false
         additional_dependencies: [
             # for the sqlalchemy.ext.mypy.plugin declared in pyproject.toml
             sqlalchemy,

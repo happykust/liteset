@@ -81,7 +81,7 @@ class CreateDashboardPermalinkCommand(AsyncBaseCommand[str]):
             )
             await session.flush()
         else:
-            existing.value = encoded  # type: ignore[assignment]
+            existing.value = encoded
             entry = existing
 
         if entry.id is None:

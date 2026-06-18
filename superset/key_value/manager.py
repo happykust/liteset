@@ -78,7 +78,7 @@ class AsyncKeyValueManager:
             return None
         if codec is None:
             codec = JsonCodec()
-        raw: bytes = entry.value  # type: ignore[assignment]
+        raw: bytes = entry.value
         if isinstance(raw, str):
             raw = raw.encode("utf-8")
         return codec.decode(raw)
@@ -101,7 +101,7 @@ class AsyncKeyValueManager:
             entry = await self._dao.create_entry(
                 resource, encoded, expires_on=expires_on
             )
-        return entry.id  # type: ignore[return-value]
+        return entry.id
 
     async def delete(self, resource: str, key: int) -> bool:
         """Delete entry by resource + key. Returns True if deleted."""

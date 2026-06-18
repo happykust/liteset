@@ -365,7 +365,7 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
         else:
             database = Database(**attrs)
             if uuid_str:
-                database.uuid = _UUID(uuid_str)  # type: ignore[assignment]
+                database.uuid = _UUID(uuid_str)
             self.session.add(database)
 
         await self.session.flush()

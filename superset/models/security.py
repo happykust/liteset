@@ -23,8 +23,10 @@ the upstream auth library.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from superset.models.helpers import Base, metadata
 
@@ -70,36 +72,40 @@ class User(Base):
 
     __tablename__ = "ab_user"
 
-    id = Column(Integer, primary_key=True)
-    first_name = Column(String(256), nullable=False)
-    last_name = Column(String(256), nullable=False)
-    username = Column(String(512), unique=True, nullable=False)
-    password = Column(String(256))
-    active = Column(Boolean, default=True)
-    email = Column(String(512), unique=True, nullable=False)
-    last_login = Column(DateTime, nullable=True)
-    login_count = Column(Integer, default=0)
-    fail_login_count = Column(Integer, default=0)
-    created_on = Column(DateTime, nullable=True)
-    changed_on = Column(DateTime, nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    first_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    last_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    username: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
+    password: Mapped[str | None] = mapped_column(String(256))
+    active: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    email: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
+    last_login: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    login_count: Mapped[int | None] = mapped_column(Integer, default=0)
+    fail_login_count: Mapped[int | None] = mapped_column(Integer, default=0)
+    created_on: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    changed_on: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Upstream audit FK columns (upstream security/sqla/models.py:183-193);
     # the requesting user's id is set explicitly by the controllers (upstream
     # fills them via a column default reading the request-scoped current user,
     # which has no async analogue).
-    created_by_fk = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
-    changed_by_fk = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
+    created_by_fk: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("ab_user.id"), nullable=True
+    )
+    changed_by_fk: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("ab_user.id"), nullable=True
+    )
 
     # 1:1 upstream self-referential audit relationships
     # (upstream security/sqla/models.py:196-209) — UserApi's
     # list/show columns include ``created_by.id`` / ``changed_by.id``.
-    created_by = relationship(
+    created_by: Mapped[User | None] = relationship(
         "User",
         remote_side=[id],
         primaryjoin="User.created_by_fk == User.id",
         foreign_keys=[created_by_fk],
         uselist=False,
     )
-    changed_by = relationship(
+    changed_by: Mapped[User | None] = relationship(
         "User",
         remote_side=[id],
         primaryjoin="User.changed_by_fk == User.id",
@@ -107,8 +113,12 @@ class User(Base):
         uselist=False,
     )
 
-    roles = relationship("Role", secondary=ab_user_role, backref="user")
-    groups = relationship("Group", secondary=ab_user_group, backref="users")
+    roles: Mapped[list[Role]] = relationship(
+        "Role", secondary=ab_user_role, backref="user"
+    )
+    groups: Mapped[list[Group]] = relationship(
+        "Group", secondary=ab_user_group, backref="users"
+    )
 
     # Upstream User auth-protocol properties
     # (upstream security/sqla/models.py:218-231) — ported code reads
@@ -145,10 +155,10 @@ class Role(Base):
 
     __tablename__ = "ab_role"
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String(256), unique=True, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(256), unique=True, nullable=False)
 
-    permissions = relationship(
+    permissions: Mapped[list[PermissionView]] = relationship(
         "PermissionView",
         secondary=ab_permission_view_role,
         backref="role",
@@ -165,14 +175,16 @@ class Group(Base):
 
     __tablename__ = "ab_group"
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String(100), unique=True, nullable=False)
-    label = Column(String(150), nullable=True)
-    description = Column(String(512), nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    label: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    description: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     # 1:1 upstream Group.roles (upstream security/sqla/models.py:287-289);
     # the backref provides Role.groups.
-    roles = relationship("Role", secondary=ab_group_role, backref="groups")
+    roles: Mapped[list[Role]] = relationship(
+        "Role", secondary=ab_group_role, backref="groups"
+    )
 
 
 class Permission(Base):
@@ -180,8 +192,8 @@ class Permission(Base):
 
     __tablename__ = "ab_permission"
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String(512), unique=True, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
 
     def __repr__(self) -> str:
         # 1:1 upstream Permission.__repr__ (upstream security/sqla/models.py:47)
@@ -193,8 +205,8 @@ class ViewMenu(Base):
 
     __tablename__ = "ab_view_menu"
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String(512), unique=True, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
 
     def __repr__(self) -> str:
         # 1:1 upstream ViewMenu.__repr__ (upstream security/sqla/models.py:67)
@@ -206,12 +218,19 @@ class PermissionView(Base):
 
     __tablename__ = "ab_permission_view"
 
-    id = Column(Integer, primary_key=True)
-    permission_id = Column(Integer, ForeignKey("ab_permission.id"))
-    view_menu_id = Column(Integer, ForeignKey("ab_view_menu.id"))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    permission_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("ab_permission.id")
+    )
+    view_menu_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("ab_view_menu.id")
+    )
 
-    permission = relationship("Permission")
-    view_menu = relationship("ViewMenu")
+    # A PermissionView always references a concrete permission and view_menu
+    # (it is the junction row); model them as non-optional so consumers can read
+    # ``.permission.name`` / ``.view_menu.name`` without a None check.
+    permission: Mapped[Permission] = relationship("Permission")
+    view_menu: Mapped[ViewMenu] = relationship("ViewMenu")
 
     def __repr__(self) -> str:
         # 1:1 upstream PermissionView.__repr__
@@ -229,14 +248,14 @@ class RegisterUser(Base):
 
     __tablename__ = "ab_register_user"
 
-    id = Column(Integer, primary_key=True)
-    first_name = Column(String(64), nullable=False)
-    last_name = Column(String(64), nullable=False)
-    username = Column(String(128), unique=True, nullable=False)
-    password = Column(String(256), nullable=True)
-    email = Column(String(320), unique=True, nullable=False)
-    registration_date = Column(DateTime, nullable=True)
-    registration_hash = Column(String(256), nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    first_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    last_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    username: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    password: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
+    registration_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    registration_hash: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
     def __str__(self) -> str:
         return f"{self.username}"

@@ -68,7 +68,7 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         clean_tag_names: set[str] = {tag.strip() for tag in tag_names}
         for name in clean_tag_names:
             tag = await self.get_by_name(name, "custom")
-            tag_id: int = tag.id  # type: ignore[assignment]
+            tag_id: int = tag.id
             existing = await self._find_tagged_object(obj_type.name, object_id, tag_id)
             if not existing:
                 tagged = TaggedObject(
@@ -156,7 +156,7 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
         tags = (
             await self.find_by_names(tag_names) if tag_names else await self.find_all()
         )
-        tag_ids: list[int] = [t.id for t in tags]  # type: ignore[misc]
+        tag_ids: list[int] = [t.id for t in tags]
         return await self.get_tagged_objects_by_tag_ids(
             tag_ids, obj_types, security_manager=security_manager, user=user
         )
@@ -182,7 +182,7 @@ class AsyncTagDAO(BaseAsyncDAO[Tag]):
 
         from superset.models.tags import ObjectType
 
-        tag_id: int = tag.id  # type: ignore[assignment]
+        tag_id: int = tag.id
 
         def _norm(t: Any) -> str:
             return t.name if isinstance(t, ObjectType) else str(t)

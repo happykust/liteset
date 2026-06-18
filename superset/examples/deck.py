@@ -536,11 +536,11 @@ def load_deck_dash() -> None:  # pylint: disable=too-many-statements
     if not dash:
         dash = Dashboard()
         _ctx.session.add(dash)
-    dash.published = True  # type: ignore[assignment]
+    dash.published = True
     js = POSITION_JSON
     pos = json.loads(js)
     slices = update_slice_ids(pos)
-    dash.position_json = json.dumps(pos, indent=4)  # type: ignore[assignment]
-    dash.dashboard_title = title  # type: ignore[assignment]
-    dash.slug = slug  # type: ignore[assignment]
+    dash.position_json = json.dumps(pos, indent=4)
+    dash.dashboard_title = title
+    dash.slug = slug
     dash.slices = slices

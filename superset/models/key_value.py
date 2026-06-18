@@ -21,9 +21,11 @@ Pure SQLAlchemy -- no legacy WSGI dependencies.
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, LargeBinary, String
+from sqlalchemy import DateTime, Integer, LargeBinary, String
+from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
 from superset.models.helpers import AuditMixinNullable, Base, ImportExportMixin
@@ -95,16 +97,16 @@ class KeyValueEntry(AuditMixinNullable, ImportExportMixin, Base):
 
     __tablename__ = "key_value"
 
-    id = Column(Integer, primary_key=True)
-    resource = Column(String(32), nullable=False)
-    value = Column(LargeBinary(length=2**24 - 1), nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    resource: Mapped[str] = mapped_column(String(32), nullable=False)
+    value: Mapped[bytes] = mapped_column(LargeBinary(length=2**24 - 1), nullable=False)
     # UUID column created by migration 6766938c6065; declared explicitly
     # so the async DAO can query it.
-    uuid = Column(BytesUUID(), default=uuid4)
+    uuid: Mapped[UUID | None] = mapped_column(BytesUUID(), default=uuid4)
 
-    # Explicit audit columns (override AuditMixinNullable defaults)
-    created_on = Column(DateTime, nullable=True)
-    created_by_fk = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
-    changed_on = Column(DateTime, nullable=True)
-    changed_by_fk = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
-    expires_on = Column(DateTime, nullable=True)
+    # Override AuditMixinNullable's created_on/changed_on to drop the auto
+    # ``default=datetime.now`` (the key-value store sets these explicitly).
+    # created_by_fk / changed_by_fk are identical to the mixin and inherited.
+    created_on: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    changed_on: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expires_on: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

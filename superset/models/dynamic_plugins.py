@@ -21,7 +21,8 @@ Pure SQLAlchemy -- no legacy WSGI dependencies.
 
 from __future__ import annotations
 
-from sqlalchemy import Column, Integer, Text
+from sqlalchemy import Integer, Text
+from sqlalchemy.orm import Mapped, mapped_column
 
 from superset.models.helpers import AuditMixinNullable, Base
 
@@ -31,10 +32,10 @@ class DynamicPlugin(Base, AuditMixinNullable):
 
     __tablename__ = "dynamic_plugin"
 
-    id = Column(Integer, primary_key=True)
-    name = Column(Text, unique=True, nullable=False)
-    key = Column(Text, unique=True, nullable=False)
-    bundle_url = Column(Text, unique=True, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    key: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    bundle_url: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
 
     def __repr__(self) -> str:
         return str(self.name)

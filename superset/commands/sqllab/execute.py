@@ -204,9 +204,9 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
                 )
             except Exception as ex:
                 logger.info("SQL Lab access denied for query %s: %s", query_id, ex)
-                query.status = QueryStatus.FAILED  # type: ignore[assignment]
-                query.error_message = str(ex)  # type: ignore[assignment]
-                query.end_time = now_as_float()  # type: ignore[assignment]
+                query.status = QueryStatus.FAILED
+                query.error_message = str(ex)
+                query.end_time = now_as_float()
                 await session.flush()
                 raise
 
@@ -215,12 +215,12 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         try:
             rendered_sql = await self._render_jinja(db_row, query)
         except Exception:
-            query.status = QueryStatus.FAILED  # type: ignore[assignment]
-            query.end_time = now_as_float()  # type: ignore[assignment]
+            query.status = QueryStatus.FAILED
+            query.end_time = now_as_float()
             await session.flush()
             raise
 
-        query.executed_sql = rendered_sql  # type: ignore[assignment]
+        query.executed_sql = rendered_sql
 
         # Without this reduction, a SQL ``LIMIT 3`` would return the full
         # result set (capped only by the dropdown max). Skipped for CTAS
@@ -240,15 +240,15 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
                 sql_limit = db_row.db_engine_spec.get_limit_from_sql(rendered_sql)
                 limits = [sql_limit, effective_limit]
                 if limits[0] is None or limits[0] > limits[1]:  # type: ignore[operator]
-                    query.limiting_factor = LimitingFactor.DROPDOWN  # type: ignore[assignment]
+                    query.limiting_factor = LimitingFactor.DROPDOWN
                 elif limits[1] > limits[0]:  # type: ignore[operator]
-                    query.limiting_factor = LimitingFactor.QUERY  # type: ignore[assignment]
+                    query.limiting_factor = LimitingFactor.QUERY
                 else:  # limits[0] == limits[1]
-                    query.limiting_factor = LimitingFactor.QUERY_AND_DROPDOWN  # type: ignore[assignment]
-                query.limit = min(lim for lim in limits if lim is not None)  # type: ignore[misc]
+                    query.limiting_factor = LimitingFactor.QUERY_AND_DROPDOWN
+                query.limit = min(lim for lim in limits if lim is not None)
         except Exception:
-            query.status = QueryStatus.FAILED  # type: ignore[assignment]
-            query.end_time = now_as_float()  # type: ignore[assignment]
+            query.status = QueryStatus.FAILED
+            query.end_time = now_as_float()
             await session.flush()
             raise
 
@@ -299,12 +299,12 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
 
                 error_payload = dataclasses.asdict(error)
                 query.set_extra_json_key("errors", [error_payload])
-                query.status = QueryStatus.FAILED  # type: ignore[assignment]
-                query.error_message = message  # type: ignore[assignment]
+                query.status = QueryStatus.FAILED
+                query.error_message = message
                 await session.flush()
                 raise SupersetErrorException(error) from ex
 
-            query.status = QueryStatus.PENDING  # type: ignore[assignment]
+            query.status = QueryStatus.PENDING
             await session.flush()
 
             query_dict = query.to_dict() if hasattr(query, "to_dict") else {}
@@ -328,7 +328,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
             payload = await asyncio.wait_for(
                 asyncio.to_thread(
                     execute_sql_statements,
-                    query_id,  # type: ignore[arg-type]
+                    query_id,
                     rendered_sql,
                     True,  # return_results
                     store_results,
@@ -346,11 +346,11 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
             await session.rollback()
             timed_out = await session.get(_Query, query_id)
             if timed_out is not None:
-                timed_out.status = QueryStatus.TIMED_OUT  # type: ignore[assignment]
+                timed_out.status = QueryStatus.TIMED_OUT
                 timed_out.error_message = (
-                    f"The query exceeded the {sqllab_timeout} seconds timeout."  # type: ignore[assignment]
+                    f"The query exceeded the {sqllab_timeout} seconds timeout."
                 )
-                timed_out.end_time = now_as_float()  # type: ignore[assignment]
+                timed_out.end_time = now_as_float()
                 await session.commit()
             raise SupersetTimeoutException(
                 error_type="SQLLAB_TIMEOUT_ERROR",
@@ -368,9 +368,9 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
                 if failed_q is not None and failed_q.status not in (
                     QueryStatus.FAILED,
                 ):
-                    failed_q.status = QueryStatus.FAILED  # type: ignore[assignment]
-                    failed_q.error_message = str(ex)  # type: ignore[assignment]
-                    failed_q.end_time = now_as_float()  # type: ignore[assignment]
+                    failed_q.status = QueryStatus.FAILED
+                    failed_q.error_message = str(ex)
+                    failed_q.end_time = now_as_float()
                     await session.commit()
             except Exception:  # noqa: BLE001
                 logger.debug(

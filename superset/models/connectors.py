@@ -25,7 +25,11 @@ import logging
 from collections.abc import Hashable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from superset.models.core import Database
+    from superset.models.security import Role, User
 
 import numpy as np
 import pandas as pd
@@ -42,7 +46,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from superset.models.helpers import (
     AuditMixinNullable,
@@ -360,26 +364,26 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
     def __repr__(self) -> str:
         return str(self.column_name)
 
-    id = Column(Integer, primary_key=True)
-    column_name = Column(String(255), nullable=False)
-    verbose_name = Column(String(1024))
-    is_active = Column(Boolean, default=True)
-    type = Column(Text)
-    advanced_data_type = Column(String(255))
-    groupby = Column(Boolean, default=True)
-    filterable = Column(Boolean, default=True)
-    description = Column(MediumText())
-    table_id = Column(
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    column_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    verbose_name: Mapped[str | None] = mapped_column(String(1024))
+    is_active: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    type: Mapped[str | None] = mapped_column(Text)
+    advanced_data_type: Mapped[str | None] = mapped_column(String(255))
+    groupby: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    filterable: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    description: Mapped[str | None] = mapped_column(MediumText())
+    table_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("tables.id", ondelete="CASCADE"),
         nullable=False,
     )
-    is_dttm = Column(Boolean, default=False)
-    expression = Column(MediumText())
-    python_date_format = Column(String(255))
-    extra = Column(Text)
+    is_dttm: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    expression: Mapped[str | None] = mapped_column(MediumText())
+    python_date_format: Mapped[str | None] = mapped_column(String(255))
+    extra: Mapped[str | None] = mapped_column(Text)
 
-    table = relationship(
+    table: Mapped["SqlaTable"] = relationship(
         "SqlaTable",
         foreign_keys=[table_id],
         back_populates="columns",
@@ -652,23 +656,23 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
     def __repr__(self) -> str:
         return str(self.metric_name)
 
-    id = Column(Integer, primary_key=True)
-    metric_name = Column(String(255), nullable=False)
-    verbose_name = Column(String(1024))
-    metric_type = Column(String(32))
-    description = Column(MediumText())
-    d3format = Column(String(128))
-    currency = Column(JSON, nullable=True)
-    warning_text = Column(Text)
-    table_id = Column(
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    metric_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    verbose_name: Mapped[str | None] = mapped_column(String(1024))
+    metric_type: Mapped[str | None] = mapped_column(String(32))
+    description: Mapped[str | None] = mapped_column(MediumText())
+    d3format: Mapped[str | None] = mapped_column(String(128))
+    currency: Mapped[Any] = mapped_column(JSON, nullable=True)
+    warning_text: Mapped[str | None] = mapped_column(Text)
+    table_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("tables.id", ondelete="CASCADE"),
         nullable=False,
     )
-    expression = Column(MediumText(), nullable=False)
-    extra = Column(Text)
+    expression: Mapped[str] = mapped_column(MediumText(), nullable=False)
+    extra: Mapped[str | None] = mapped_column(Text)
 
-    table = relationship(
+    table: Mapped["SqlaTable"] = relationship(
         "SqlaTable",
         foreign_keys=[table_id],
         back_populates="metrics",
@@ -1127,39 +1131,43 @@ class SqlaTable(
         UniqueConstraint("database_id", "catalog", "schema", "table_name"),
     )
 
-    id = Column(Integer, primary_key=True)
-    table_name = Column(String(250), nullable=False)
-    main_dttm_col = Column(String(250))
-    database_id = Column(Integer, ForeignKey("dbs.id"), nullable=False)
-    fetch_values_predicate = Column(Text)
-    schema = Column(String(255))
-    catalog = Column(String(256), nullable=True, default=None)
-    sql = Column(MediumText())
-    is_sqllab_view = Column(Boolean, default=False)
-    template_params = Column(Text)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    table_name: Mapped[str] = mapped_column(String(250), nullable=False)
+    main_dttm_col: Mapped[str | None] = mapped_column(String(250))
+    database_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("dbs.id"), nullable=False
+    )
+    fetch_values_predicate: Mapped[str | None] = mapped_column(Text)
+    schema: Mapped[str | None] = mapped_column(String(255))
+    catalog: Mapped[str | None] = mapped_column(
+        String(256), nullable=True, default=None
+    )
+    sql: Mapped[str | None] = mapped_column(MediumText())
+    is_sqllab_view: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    template_params: Mapped[str | None] = mapped_column(Text)
     # SqlaTable.extra has no Python default (stays NULL), unlike Database.extra
     # which has a template.
-    extra = Column(Text)
-    normalize_columns = Column(Boolean, default=False)
-    always_filter_main_dttm = Column(Boolean, default=False)
-    folders = Column(JSON, nullable=True)
+    extra: Mapped[str | None] = mapped_column(Text)
+    normalize_columns: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    always_filter_main_dttm: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    folders: Mapped[Any] = mapped_column(JSON, nullable=True)
 
-    columns = relationship(
+    columns: Mapped[list["TableColumn"]] = relationship(
         "TableColumn",
         back_populates="table",
         cascade="all, delete-orphan",
     )
-    metrics = relationship(
+    metrics: Mapped[list["SqlMetric"]] = relationship(
         "SqlMetric",
         back_populates="table",
         cascade="all, delete-orphan",
     )
-    owners = relationship(
+    owners: Mapped[list["User"]] = relationship(
         "User",
         secondary=sqlatable_user,
         passive_deletes=True,
     )
-    database = relationship(
+    database: Mapped["Database"] = relationship(
         "Database",
         foreign_keys=[database_id],
     )
@@ -2858,35 +2866,35 @@ class RowLevelSecurityFilter(Base, AuditMixinNullable):
 
     __tablename__ = "row_level_security_filters"
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String(255), unique=True, nullable=False)
-    description = Column(Text)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
     # ``native_enum=False`` keeps the column as VARCHAR in PostgreSQL,
     # matching the production state of Apache Superset 6.0.  Without this,
     # asyncpg generates ``$1::filter_type_enum`` casts that fail when the
     # ENUM type doesn't exist in the metadata DB; psycopg2 (used by upstream
     # Apache Superset) sent values as plain text and PG implicit-converted
     # them.  See similar reasoning on ``Tag.type`` / ``TaggedObject.object_type``.
-    filter_type = Column(
+    filter_type: Mapped[str | None] = mapped_column(
         SAEnum(
             *[ft.value for ft in _RowLevelSecurityFilterType],
             name="filter_type_enum",
             native_enum=False,
         ),
     )
-    group_key = Column(String(255), nullable=True)
-    clause = Column(MediumText(), nullable=False)
+    group_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    clause: Mapped[str] = mapped_column(MediumText(), nullable=False)
 
     # ``backref`` gives ``Role.row_level_security_filters`` and
     # ``SqlaTable.row_level_security_filters``. ``overlaps="table"`` on
     # ``tables`` silences the SQLAlchemy warning caused by the same column
     # being referenced from ``SqlaTable.table_name`` aliases.
-    roles = relationship(
+    roles: Mapped[list["Role"]] = relationship(
         "Role",
         secondary=RLSFilterRoles,
         backref="row_level_security_filters",
     )
-    tables = relationship(
+    tables: Mapped[list["SqlaTable"]] = relationship(
         "SqlaTable",
         secondary=RLSFilterTables,
         backref="row_level_security_filters",

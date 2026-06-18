@@ -168,7 +168,7 @@ def sync_key_value_distributed_lock(  # noqa: N802
             created_on=datetime.now(),
             expires_on=datetime.now() + LOCK_EXPIRATION,
         )
-        entry.uuid = key  # type: ignore[assignment]
+        entry.uuid = key
         session.add(entry)
         session.flush()
         session.commit()

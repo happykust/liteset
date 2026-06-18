@@ -347,8 +347,8 @@ class AsyncUserCrudDAO:
             from superset.models.security import Group
 
             group_stmt = select(Group).where(Group.id.in_(group_ids))
-            result = await self.session.execute(group_stmt)
-            user.groups = list(result.scalars().all())
+            group_result = await self.session.execute(group_stmt)
+            user.groups = list(group_result.scalars().all())
 
         self.session.add(user)
         await self.session.flush()
@@ -378,8 +378,8 @@ class AsyncUserCrudDAO:
             from superset.models.security import Group
 
             group_stmt = select(Group).where(Group.id.in_(group_ids))
-            result = await self.session.execute(group_stmt)
-            user.groups = list(result.scalars().all())
+            group_result = await self.session.execute(group_stmt)
+            user.groups = list(group_result.scalars().all())
 
         await self.session.flush()
         await self.session.refresh(user, attribute_names=["roles", "groups"])

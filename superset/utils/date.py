@@ -414,7 +414,7 @@ class EvalHolidayFunc:
 
 
 @lru_cache(maxsize=LRU_CACHE_MAX_SIZE)
-def datetime_parser() -> ParseResults:
+def datetime_parser() -> ParserElement:
     (
         DATETIME,  # noqa: N806
         DATEADD,  # noqa: N806

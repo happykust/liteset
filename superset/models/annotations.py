@@ -18,10 +18,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
-    Column,
     DateTime,
     ForeignKey,
     Index,
@@ -29,7 +29,7 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from superset.models.helpers import (
     AuditMixinNullable,
@@ -43,9 +43,9 @@ class AnnotationLayer(Base, AuditMixinNullable):
 
     __tablename__ = "annotation_layer"
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String(250))
-    descr = Column(Text)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(250))
+    descr: Mapped[str | None] = mapped_column(Text)
 
     def __repr__(self) -> str:
         return str(self.name)
@@ -57,13 +57,15 @@ class Annotation(Base, AuditMixinNullable):
     __tablename__ = "annotation"
     __table_args__ = (Index("ti_dag_state", "layer_id", "start_dttm", "end_dttm"),)
 
-    id = Column(Integer, primary_key=True)
-    start_dttm = Column(DateTime)
-    end_dttm = Column(DateTime)
-    layer_id = Column(Integer, ForeignKey("annotation_layer.id"), nullable=False)
-    short_descr = Column(String(500))
-    long_descr = Column(Text)
-    json_metadata = Column(MediumText())
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    start_dttm: Mapped[datetime | None] = mapped_column(DateTime)
+    end_dttm: Mapped[datetime | None] = mapped_column(DateTime)
+    layer_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("annotation_layer.id"), nullable=False
+    )
+    short_descr: Mapped[str | None] = mapped_column(String(500))
+    long_descr: Mapped[str | None] = mapped_column(Text)
+    json_metadata: Mapped[str | None] = mapped_column(MediumText())
 
     def __repr__(self) -> str:
         return str(self.short_descr)
@@ -79,7 +81,7 @@ class Annotation(Base, AuditMixinNullable):
             "layer": self.layer.name if self.layer else None,
         }
 
-    layer = relationship(
+    layer: Mapped["AnnotationLayer"] = relationship(
         "AnnotationLayer",
         foreign_keys=[layer_id],
         backref="annotation",

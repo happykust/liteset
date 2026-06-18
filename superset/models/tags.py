@@ -22,7 +22,7 @@ Pure SQLAlchemy -- no legacy WSGI dependencies.
 from __future__ import annotations
 
 import enum
-from typing import Any
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Column,
@@ -34,9 +34,12 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from superset.models.helpers import AuditMixinNullable, Base, metadata
+
+if TYPE_CHECKING:
+    from superset.models.security import User
 
 
 class TagType(enum.Enum):
@@ -70,8 +73,8 @@ class Tag(Base, AuditMixinNullable):
 
     __tablename__ = "tag"
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String(250), unique=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(250), unique=True)
     # ``native_enum=False`` keeps the column as VARCHAR in the database,
     # mirroring the production state of Apache Superset 6.0 after migration
     # ``07f9a902af1b`` (2023-03-29) which dropped the ``tagtypes`` PG ENUM and
@@ -79,19 +82,19 @@ class Tag(Base, AuditMixinNullable):
     # generates ``$1::tagtype`` casts that fail when the ENUM type doesn't
     # exist; psycopg2 (used by Apache Superset 6.0) sent values as plain text
     # and PG implicit-converted them.
-    type: Any = Column(Enum(TagType, native_enum=False))
-    description = Column(Text)
+    type: Mapped[TagType | None] = mapped_column(Enum(TagType, native_enum=False))
+    description: Mapped[str | None] = mapped_column(Text)
 
     # -- relationships --------------------------------------------------------
 
-    objects = relationship(
+    objects: Mapped[list["TaggedObject"]] = relationship(
         "TaggedObject",
         back_populates="tag",
         # Silences the SA overlap warning with SavedQuery.tags
         # (secondary="tagged_object").
         overlaps="objects,tags",
     )
-    users_favorited = relationship(
+    users_favorited: Mapped[list["User"]] = relationship(
         "User",
         secondary=user_favorite_tag_table,
     )
@@ -110,20 +113,24 @@ class TaggedObject(Base, AuditMixinNullable):
         ),
     )
 
-    id = Column(Integer, primary_key=True)
-    tag_id = Column(Integer, ForeignKey("tag.id"), nullable=True)
-    object_id = Column(Integer)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tag_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tag.id"), nullable=True
+    )
+    object_id: Mapped[int | None] = mapped_column(Integer)
     # See note on ``Tag.type`` above — ``native_enum=False`` keeps the column
     # VARCHAR in the database (Apache Superset 6.0 post-``07f9a902af1b``).
     # nullable (default) — matches both the init migration
     # (``object_type String(20) nullable=True``) and upstream
     # ``Column(Enum(ObjectType))``; the port model previously over-declared
     # ``nullable=False``, diverging from the actual DB.
-    object_type: Column[Any] = Column(Enum(ObjectType, native_enum=False))
+    object_type: Mapped[ObjectType | None] = mapped_column(
+        Enum(ObjectType, native_enum=False)
+    )
 
     # -- relationships --------------------------------------------------------
 
-    tag = relationship(
+    tag: Mapped["Tag | None"] = relationship(
         "Tag",
         foreign_keys=[tag_id],
         back_populates="objects",

@@ -23,7 +23,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Integer, String
+from sqlalchemy import DateTime, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column
 
 from superset.models.helpers import Base
 
@@ -37,8 +38,12 @@ class CacheKey(Base):
 
     __tablename__ = "cache_keys"
 
-    id = Column(Integer, primary_key=True)
-    cache_key = Column(String(256), nullable=False)
-    cache_timeout = Column(Integer, nullable=True)
-    datasource_uid = Column(String(64), nullable=False, index=True)
-    created_on = Column(DateTime, default=datetime.now, nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cache_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    cache_timeout: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    datasource_uid: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    created_on: Mapped[datetime | None] = mapped_column(
+        DateTime, default=datetime.now, nullable=True
+    )

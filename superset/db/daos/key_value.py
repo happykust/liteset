@@ -208,11 +208,11 @@ class AsyncKeyValueDAO(BaseAsyncDAO[KeyValueEntry]):
         result = await self.session.execute(stmt)
         existing = result.scalars().one_or_none()
         if existing:
-            existing.value = value.encode("utf-8")  # type: ignore[assignment]
-            existing.changed_on = datetime.now()  # type: ignore[assignment]
-            existing.changed_by_fk = user_id  # type: ignore[assignment]
+            existing.value = value.encode("utf-8")
+            existing.changed_on = datetime.now()
+            existing.changed_by_fk = user_id
             if expires_on is not None:
-                existing.expires_on = expires_on  # type: ignore[assignment]
+                existing.expires_on = expires_on
         else:
             entry = KeyValueEntry(
                 resource=resource,

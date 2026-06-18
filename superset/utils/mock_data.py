@@ -226,7 +226,7 @@ def add_data(
 
 
 def get_column_objects(columns: list[ColumnInfo]) -> list[Column[Any]]:
-    out = []
+    out: list[Column[Any]] = []
     for column in columns:
         kwargs = cast(dict[str, Any], column.copy())
         kwargs["type_"] = kwargs.pop("type")

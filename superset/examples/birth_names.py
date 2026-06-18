@@ -122,7 +122,7 @@ def load_birth_names(
 
 
 def _set_table_metadata(datasource: SqlaTable, database: Database) -> None:
-    datasource.main_dttm_col = "ds"  # type: ignore[assignment]
+    datasource.main_dttm_col = "ds"
     datasource.database = database
     datasource.filter_select_enabled = True  # type: ignore[assignment]
 
@@ -147,8 +147,10 @@ def _add_table_metrics(datasource: SqlaTable) -> None:
         )
 
     if not any(col.metric_name == "sum__num" for col in metrics):
-        col = str(column("num").compile(_ctx.engine))
-        metrics.append(SqlMetric(metric_name="sum__num", expression=f"SUM({col})"))
+        num_col_expr = str(column("num").compile(_ctx.engine))
+        metrics.append(
+            SqlMetric(metric_name="sum__num", expression=f"SUM({num_col_expr})")
+        )
 
     for col in columns:
         if col.column_name == "ds":
@@ -577,8 +579,8 @@ def create_dashboard(slices: list[Slice]) -> Dashboard:
         dash = Dashboard()
         _ctx.session.add(dash)
 
-    dash.published = True  # type: ignore[assignment]
-    dash.json_metadata = textwrap.dedent(  # type: ignore[assignment]
+    dash.published = True
+    dash.json_metadata = textwrap.dedent(
         """\
     {
         "label_colors": {
@@ -866,7 +868,7 @@ def create_dashboard(slices: list[Slice]) -> Dashboard:
     # dashboard v2 doesn't allow add markup slice
     dash.slices = [slc for slc in slices if slc.viz_type != "markup"]
     update_slice_ids(pos)
-    dash.dashboard_title = "USA Births Names"  # type: ignore[assignment]
-    dash.position_json = json.dumps(pos, indent=4)  # type: ignore[assignment]  # noqa: TID251
-    dash.slug = "births"  # type: ignore[assignment]
+    dash.dashboard_title = "USA Births Names"
+    dash.position_json = json.dumps(pos, indent=4)  # noqa: TID251
+    dash.slug = "births"
     return dash

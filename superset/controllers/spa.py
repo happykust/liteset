@@ -1142,7 +1142,7 @@ class SPAController(Controller):
                 new_user.last_name = reg_data["last_name"]
                 new_user.username = reg_data["username"]
                 new_user.email = reg_data["email"]
-                new_user.active = True  # type: ignore[assignment]
+                new_user.active = True
                 new_user.roles = [role] if role is not None else []
                 # password is already hashed (stored by add_register_user)
                 new_user.password = reg_data["password"]

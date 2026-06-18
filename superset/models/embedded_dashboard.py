@@ -22,12 +22,15 @@ Pure SQLAlchemy -- no legacy WSGI dependencies.
 from __future__ import annotations
 
 import uuid as uuid_mod
-from typing import Any
+from typing import TYPE_CHECKING
 
-from sqlalchemy import Column, ForeignKey, Integer, Text
-from sqlalchemy.orm import relationship
+from sqlalchemy import ForeignKey, Integer, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from superset.models.helpers import AuditMixinNullable, Base, BinaryUUID
+
+if TYPE_CHECKING:
+    from superset.models.dashboard import Dashboard
 
 
 class EmbeddedDashboard(Base, AuditMixinNullable):
@@ -35,9 +38,11 @@ class EmbeddedDashboard(Base, AuditMixinNullable):
 
     __tablename__ = "embedded_dashboards"
 
-    uuid: Any = Column(BinaryUUID(), default=uuid_mod.uuid4, primary_key=True)
-    allow_domain_list = Column(Text)
-    dashboard_id = Column(
+    uuid: Mapped[uuid_mod.UUID] = mapped_column(
+        BinaryUUID(), default=uuid_mod.uuid4, primary_key=True
+    )
+    allow_domain_list: Mapped[str | None] = mapped_column(Text)
+    dashboard_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("dashboards.id", ondelete="CASCADE"),
         nullable=False,
@@ -45,7 +50,7 @@ class EmbeddedDashboard(Base, AuditMixinNullable):
 
     # -- relationships --------------------------------------------------------
 
-    dashboard = relationship(
+    dashboard: Mapped["Dashboard"] = relationship(
         "Dashboard",
         foreign_keys=[dashboard_id],
         back_populates="embedded",

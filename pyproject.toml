@@ -275,7 +275,6 @@ multi_line_output = 3
 order_by_type = false
 
 [tool.mypy]
-plugins = ["sqlalchemy.ext.mypy.plugin"]
 check_untyped_defs = true
 disallow_any_generics = true
 disallow_untyped_calls = true
@@ -285,7 +284,9 @@ no_implicit_optional = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = "superset.migrations.versions.*"
+# Alembic migrations (versions + shared helpers like migrate_viz) use isolated
+# declarative_base() shims and raw Column access; not part of the typed runtime.
+module = "superset.migrations.*"
 ignore_errors = true
 
 # Vendored Apache Superset 6.0.0 reference source — kept verbatim for 1:1

@@ -20,6 +20,8 @@
 Pure SQLAlchemy -- no legacy WSGI dependencies.
 """
 
+from __future__ import annotations
+
 import enum
 import json
 from collections.abc import Hashable
@@ -28,7 +30,6 @@ from typing import Any, TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
-    Column,
     DateTime,
     Enum,
     ForeignKey,
@@ -38,7 +39,7 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.orm import backref as sa_backref, relationship
+from sqlalchemy.orm import backref as sa_backref, Mapped, mapped_column, relationship
 
 from superset.models.connectors import AsyncQueryExecutionMixin
 from superset.models.helpers import (
@@ -52,7 +53,11 @@ from superset.models.helpers import (
 )
 
 if TYPE_CHECKING:
+    from flask_appbuilder.security.sqla.models import User
+
     from superset.models.connectors import TableColumn
+    from superset.models.core import Database
+    from superset.models.tags import Tag
 
 
 # Enums
@@ -98,42 +103,52 @@ class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
     type = "query"
     query_language = "sql"
 
-    id = Column(Integer, primary_key=True)
-    client_id = Column(String(11), unique=True, nullable=False)
-    database_id = Column(Integer, ForeignKey("dbs.id"), nullable=False)
-    tmp_table_name = Column(String(256))
-    tmp_schema_name = Column(String(256))
-    user_id = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
-    status = Column(String(16), default="pending")
-    tab_name = Column(String(256))
-    sql_editor_id = Column(String(256), index=True)
-    schema = Column(String(256))
-    catalog = Column(String(256), nullable=True, default=None)
-    sql = Column(LongText())
-    select_sql = Column(LongText())
-    executed_sql = Column(LongText())
-    limit = Column(Integer)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client_id: Mapped[str] = mapped_column(String(11), unique=True, nullable=False)
+    database_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("dbs.id"), nullable=False
+    )
+    tmp_table_name: Mapped[str | None] = mapped_column(String(256))
+    tmp_schema_name: Mapped[str | None] = mapped_column(String(256))
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("ab_user.id"), nullable=True
+    )
+    status: Mapped[str | None] = mapped_column(String(16), default="pending")
+    tab_name: Mapped[str | None] = mapped_column(String(256))
+    sql_editor_id: Mapped[str | None] = mapped_column(String(256), index=True)
+    schema: Mapped[str | None] = mapped_column(String(256))
+    catalog: Mapped[str | None] = mapped_column(
+        String(256), nullable=True, default=None
+    )
+    sql: Mapped[str | None] = mapped_column(LongText())
+    select_sql: Mapped[str | None] = mapped_column(LongText())
+    executed_sql: Mapped[str | None] = mapped_column(LongText())
+    limit: Mapped[int | None] = mapped_column(Integer)
     # ``native_enum=False`` for asyncpg compatibility — see note on
     # ``Tag.type`` / ``TaggedObject.object_type`` / ``RLSFilter.filter_type``.
     # The metadata DB stores the column as VARCHAR (or as a native PG ENUM
     # ``limitingfactor`` on installations that ran migration 0002); both
     # cases work with text-based bind values.
-    limiting_factor = Column(
+    limiting_factor: Mapped[LimitingFactor | None] = mapped_column(
         Enum(LimitingFactor, native_enum=False), server_default="UNKNOWN"
     )
-    select_as_cta = Column(Boolean)
-    select_as_cta_used = Column(Boolean, default=False)
-    ctas_method = Column(String(16), default="TABLE")
-    progress = Column(Integer, default=0)
-    rows = Column(Integer)
-    error_message = Column(Text)
-    results_key = Column(String(64), index=True)
-    start_time = Column(Numeric(precision=20, scale=6))
-    start_running_time = Column(Numeric(precision=20, scale=6))
-    end_time = Column(Numeric(precision=20, scale=6))
-    end_result_backend_time = Column(Numeric(precision=20, scale=6))
-    tracking_url_raw = Column(Text, name="tracking_url")
-    changed_on = Column(
+    select_as_cta: Mapped[bool | None] = mapped_column(Boolean)
+    select_as_cta_used: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    ctas_method: Mapped[str | None] = mapped_column(String(16), default="TABLE")
+    progress: Mapped[int | None] = mapped_column(Integer, default=0)
+    rows: Mapped[int | None] = mapped_column(Integer)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    results_key: Mapped[str | None] = mapped_column(String(64), index=True)
+    start_time: Mapped[float | None] = mapped_column(Numeric(precision=20, scale=6))
+    start_running_time: Mapped[float | None] = mapped_column(
+        Numeric(precision=20, scale=6)
+    )
+    end_time: Mapped[float | None] = mapped_column(Numeric(precision=20, scale=6))
+    end_result_backend_time: Mapped[float | None] = mapped_column(
+        Numeric(precision=20, scale=6)
+    )
+    tracking_url_raw: Mapped[str | None] = mapped_column(Text, name="tracking_url")
+    changed_on: Mapped[datetime | None] = mapped_column(
         DateTime,
         default=datetime.utcnow,
         onupdate=datetime.utcnow,
@@ -142,12 +157,12 @@ class Query(Base, ExtraJSONMixin, ExploreMixin, AsyncQueryExecutionMixin):
 
     # -- relationships --------------------------------------------------------
 
-    database = relationship(
+    database: Mapped["Database"] = relationship(
         "Database",
         foreign_keys=[database_id],
         backref=sa_backref("queries", cascade="all, delete-orphan"),
     )
-    user = relationship(
+    user: Mapped["User | None"] = relationship(
         "User",
         foreign_keys=[user_id],
     )
@@ -426,34 +441,40 @@ class SavedQuery(Base, AuditMixinNullable, ExtraJSONMixin, ImportExportMixin):
 
     __tablename__ = "saved_query"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
-    db_id = Column(Integer, ForeignKey("dbs.id"), nullable=True)
-    schema = Column(String(128))
-    catalog = Column(String(256), nullable=True, default=None)
-    label = Column(String(256))
-    description = Column(Text)
-    sql = Column(MediumText())
-    template_parameters = Column(Text)
-    rows = Column(Integer)
-    last_run = Column(DateTime)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("ab_user.id"), nullable=True
+    )
+    db_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("dbs.id"), nullable=True
+    )
+    schema: Mapped[str | None] = mapped_column(String(128))
+    catalog: Mapped[str | None] = mapped_column(
+        String(256), nullable=True, default=None
+    )
+    label: Mapped[str | None] = mapped_column(String(256))
+    description: Mapped[str | None] = mapped_column(Text)
+    sql: Mapped[str | None] = mapped_column(MediumText())
+    template_parameters: Mapped[str | None] = mapped_column(Text)
+    rows: Mapped[int | None] = mapped_column(Integer)
+    last_run: Mapped[datetime | None] = mapped_column(DateTime)
 
     def __repr__(self) -> str:
         return str(self.label)
 
     # -- relationships --------------------------------------------------------
 
-    user = relationship(
+    user: Mapped["User | None"] = relationship(
         "User",
         foreign_keys=[user_id],
         backref=sa_backref("saved_queries", cascade="all, delete-orphan"),
     )
-    database = relationship(
+    database: Mapped["Database | None"] = relationship(
         "Database",
         foreign_keys=[db_id],
         backref=sa_backref("saved_queries", cascade="all, delete-orphan"),
     )
-    tags = relationship(
+    tags: Mapped[list["Tag"]] = relationship(
         "Tag",
         secondary="tagged_object",
         overlaps="objects,tag,tags",
@@ -489,28 +510,32 @@ class TabState(AuditMixinNullable, ExtraJSONMixin, Base):
 
     __tablename__ = "tab_state"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("ab_user.id"), nullable=True)
-    label = Column(String(256))
-    active = Column(Boolean, default=False)
-    database_id = Column(
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("ab_user.id"), nullable=True
+    )
+    label: Mapped[str | None] = mapped_column(String(256))
+    active: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    database_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("dbs.id", ondelete="CASCADE"),
         nullable=True,
     )
-    schema = Column(String(256))
-    catalog = Column(String(256), nullable=True, default=None)
-    sql = Column(MediumText())
-    query_limit = Column(Integer)
-    latest_query_id = Column(
+    schema: Mapped[str | None] = mapped_column(String(256))
+    catalog: Mapped[str | None] = mapped_column(
+        String(256), nullable=True, default=None
+    )
+    sql: Mapped[str | None] = mapped_column(MediumText())
+    query_limit: Mapped[int | None] = mapped_column(Integer)
+    latest_query_id: Mapped[str | None] = mapped_column(
         String(11),
         ForeignKey("query.client_id", ondelete="SET NULL"),
         nullable=True,
     )
-    autorun = Column(Boolean, default=False)
-    template_params = Column(Text)
-    hide_left_bar = Column(Boolean, default=False)
-    saved_query_id = Column(
+    autorun: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    template_params: Mapped[str | None] = mapped_column(Text)
+    hide_left_bar: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    saved_query_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("saved_query.id", ondelete="SET NULL"),
         nullable=True,
@@ -518,21 +543,21 @@ class TabState(AuditMixinNullable, ExtraJSONMixin, Base):
 
     # -- relationships --------------------------------------------------------
 
-    database = relationship(
+    database: Mapped["Database | None"] = relationship(
         "Database",
         foreign_keys=[database_id],
     )
-    table_schemas = relationship(
+    table_schemas: Mapped[list["TableSchema"]] = relationship(
         "TableSchema",
         cascade="all, delete-orphan",
         backref="tab_state",
         passive_deletes=True,
     )
-    latest_query = relationship(
+    latest_query: Mapped["Query | None"] = relationship(
         "Query",
         foreign_keys=[latest_query_id],
     )
-    saved_query = relationship(
+    saved_query: Mapped["SavedQuery | None"] = relationship(
         "SavedQuery",
         foreign_keys=[saved_query_id],
     )
@@ -566,26 +591,28 @@ class TableSchema(AuditMixinNullable, ExtraJSONMixin, Base):
 
     __tablename__ = "table_schema"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    tab_state_id = Column(
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tab_state_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("tab_state.id", ondelete="CASCADE"),
         nullable=True,
     )
-    database_id = Column(
+    database_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("dbs.id", ondelete="CASCADE"),
         nullable=False,
     )
-    schema = Column(String(256))
-    catalog = Column(String(256), nullable=True, default=None)
-    table = Column(String(256))
-    description = Column(Text)
-    expanded = Column(Boolean, default=False)
+    schema: Mapped[str | None] = mapped_column(String(256))
+    catalog: Mapped[str | None] = mapped_column(
+        String(256), nullable=True, default=None
+    )
+    table: Mapped[str | None] = mapped_column(String(256))
+    description: Mapped[str | None] = mapped_column(Text)
+    expanded: Mapped[bool | None] = mapped_column(Boolean, default=False)
 
     # -- relationships --------------------------------------------------------
 
-    database = relationship(
+    database: Mapped["Database"] = relationship(
         "Database",
         foreign_keys=[database_id],
     )

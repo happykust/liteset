@@ -472,7 +472,15 @@ class BaseAsyncEngineSpec(ABC):
             pass
 
         time_grain_expressions = cls._time_grain_expressions.copy()
-        time_grain_expressions.update(grain_addon_expressions.get(cls.engine, {}))
+        # grain_addon_expressions values are dict[str, str]; str keys are a valid
+        # subset of str | None so we cast rather than re-type the wider annotation.
+        from typing import cast
+
+        addon = cast(
+            "dict[str | None, str]",
+            grain_addon_expressions.get(cls.engine, {}),
+        )
+        time_grain_expressions.update(addon)
         for key in denylist:
             time_grain_expressions.pop(key, None)
 

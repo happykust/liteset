@@ -26,7 +26,7 @@ import json
 import logging
 import re
 from collections import defaultdict
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -38,7 +38,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import object_session, relationship
+from sqlalchemy.orm import Mapped, mapped_column, object_session, relationship
 
 from superset.models.helpers import (
     AuditMixinNullable,
@@ -47,6 +47,13 @@ from superset.models.helpers import (
     MediumText,
     metadata,
 )
+
+if TYPE_CHECKING:
+    from superset.models.core import Theme
+    from superset.models.embedded_dashboard import EmbeddedDashboard
+    from superset.models.security import Role, User
+    from superset.models.slice import Slice
+    from superset.models.tags import Tag
 
 logger = logging.getLogger(__name__)
 
@@ -107,49 +114,53 @@ class Dashboard(AuditMixinNullable, ImportExportMixin, Base):
 
     __tablename__ = "dashboards"
 
-    id = Column(Integer, primary_key=True)
-    dashboard_title = Column(String(500))
-    position_json = Column(MediumText())
-    description = Column(Text)
-    css = Column(MediumText())
-    theme_id = Column(Integer, ForeignKey("themes.id"), nullable=True)
-    certified_by = Column(Text)
-    certification_details = Column(Text)
-    json_metadata = Column(MediumText())
-    slug = Column(String(255), unique=True)
-    published = Column(Boolean, default=False)
-    is_managed_externally = Column(Boolean, nullable=False, default=False)
-    external_url = Column(Text, nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dashboard_title: Mapped[str | None] = mapped_column(String(500))
+    position_json: Mapped[str | None] = mapped_column(MediumText())
+    description: Mapped[str | None] = mapped_column(Text)
+    css: Mapped[str | None] = mapped_column(MediumText())
+    theme_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("themes.id"), nullable=True
+    )
+    certified_by: Mapped[str | None] = mapped_column(Text)
+    certification_details: Mapped[str | None] = mapped_column(Text)
+    json_metadata: Mapped[str | None] = mapped_column(MediumText())
+    slug: Mapped[str | None] = mapped_column(String(255), unique=True)
+    published: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    is_managed_externally: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    external_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     def __repr__(self) -> str:
         return f"Dashboard<{self.id or self.slug}>"
 
     # -- relationships --------------------------------------------------------
 
-    slices = relationship(
+    slices: Mapped[list["Slice"]] = relationship(
         "Slice",
         secondary=dashboard_slices,
         backref="dashboards",
     )
-    owners = relationship(
+    owners: Mapped[list["User"]] = relationship(
         "User",
         secondary=dashboard_user,
         passive_deletes=True,
     )
-    theme = relationship(
+    theme: Mapped["Theme | None"] = relationship(
         "Theme",
         foreign_keys=[theme_id],
     )
-    roles = relationship(
+    roles: Mapped[list["Role"]] = relationship(
         "Role",
         secondary=DashboardRoles,
     )
-    embedded = relationship(
+    embedded: Mapped[list["EmbeddedDashboard"]] = relationship(
         "EmbeddedDashboard",
         back_populates="dashboard",
         cascade="all, delete-orphan",
     )
-    tags = relationship(
+    tags: Mapped[list["Tag"]] = relationship(
         "Tag",
         secondary="tagged_object",
         primaryjoin="and_(Dashboard.id == foreign(TaggedObject.object_id), "

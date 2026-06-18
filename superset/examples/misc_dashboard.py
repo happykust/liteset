@@ -138,7 +138,7 @@ def load_misc_dashboard() -> None:
     )
     pos = json.loads(js)
     slices = update_slice_ids(pos)
-    dash.dashboard_title = "Misc Charts"  # type: ignore[assignment]
-    dash.position_json = json.dumps(pos, indent=4)  # type: ignore[assignment]
-    dash.slug = DASH_SLUG  # type: ignore[assignment]
+    dash.dashboard_title = "Misc Charts"
+    dash.position_json = json.dumps(pos, indent=4)
+    dash.slug = DASH_SLUG
     dash.slices = slices

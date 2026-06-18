@@ -46,7 +46,7 @@ class FavoriteMixin:
             FavStar.user_id == user_id,
         )
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        return [obj_id for obj_id in result.scalars().all() if obj_id is not None]
 
     async def is_favorited_by(self, obj_id: int, user_id: int) -> bool:
         """Check if a single object is favorited by the user."""
