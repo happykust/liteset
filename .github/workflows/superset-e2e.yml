@@ -41,7 +41,7 @@ jobs:
       fail-fast: false
       matrix:
         parallel_id: [0, 1, 2, 3, 4, 5]
-        browser: ["chrome"]
+        browser: ["electron"]
         app_root: ["", "/app/prefix"]
     env:
       LITESET_SQLALCHEMY_DATABASE_URI: postgresql+asyncpg://superset:superset@127.0.0.1:15432/superset
@@ -51,6 +51,12 @@ jobs:
       # gamma fixtures (the command no-ops unless ``testing`` is on); the Cypress
       # auth specs log in as admin/general, so without this the user never exists.
       LITESET_TESTING: "true"
+      # Disable CSRF for the Cypress run, matching upstream's test config
+      # (WTF_CSRF_ENABLED = False).  The Cypress harness posts fixtures with a
+      # placeholder X-CSRFToken (window.localStorage 'access_token', which is
+      # never set), so with CSRF on every state-changing request 400s
+      # ("CSRF token verification failed") and dashboards/charts never seed.
+      LITESET_WTF_CSRF_ENABLED: "false"
       PYTHONPATH: ${{ github.workspace }}
       GITHUB_TOKEN: ${{ github.token }}
       # Only use dashboard when explicitly requested via workflow_dispatch
