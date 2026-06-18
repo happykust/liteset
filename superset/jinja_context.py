@@ -100,8 +100,7 @@ def _get_config(key: str, default: Any = None) -> Any:
         from superset.config import SupersetSettings
 
         _settings_instance = SupersetSettings()  # type: ignore[call-arg]
-    mapped = getattr(_settings_instance, key.lower(), None)
-    if mapped is not None:
+    if (mapped := getattr(_settings_instance, key.lower(), None)) is not None:
         return mapped
     return default
 
@@ -289,8 +288,7 @@ class ExtraCache:
         First checks request.query_params, then falls back to
         form_data["url_params"].
         """
-        _request = get_current_request()
-        if _request is not None:
+        if (_request := get_current_request()) is not None:
             _query_params = getattr(_request, "query_params", None)
             if _query_params is not None:
                 _val = _query_params.get(param)
@@ -958,8 +956,7 @@ def _sync_user_can_access_dataset(
     role_ids = [r.id for r in roles if getattr(r, "id", None) is not None]
 
     # Group-inherited roles: include roles granted via group membership.
-    user_id = getattr(user, "id", None)
-    if user_id is not None:
+    if (user_id := getattr(user, "id", None)) is not None:
         try:
             group_roles = _sync_get_user_group_roles(int(user_id))
         except Exception:  # noqa: BLE001
@@ -1219,8 +1216,7 @@ def _merge_query_string_into_form_data(form_data: dict[str, Any]) -> None:
     _query_params = getattr(_request, "query_params", None)
     if _query_params is None:
         return
-    args_form_data = _query_params.get("form_data")
-    if args_form_data:
+    if args_form_data := _query_params.get("form_data"):
         form_data.update(_loads_request_json(args_form_data))
 
 

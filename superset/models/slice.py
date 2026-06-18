@@ -263,8 +263,7 @@ class Slice(AuditMixinNullable, ImportExportMixin, Base):
             if getattr(self.table, "default_endpoint", None):
                 return self.table.default_endpoint
             return f"/explore/?datasource_type=table&datasource_id={self.datasource_id}"
-        datasource = self.datasource
-        if datasource is not None:
+        if (datasource := self.datasource) is not None:
             if getattr(datasource, "default_endpoint", None):
                 return datasource.default_endpoint
             ds_type = getattr(datasource, "type", "table")

@@ -212,8 +212,7 @@ class RateLimitMiddleware(ASGIMiddleware):
 
 
 def _resolve_identity(scope: Scope) -> str:
-    client = scope.get("client")
-    if client:
+    if client := scope.get("client"):
         return f"ip:{client[0]}"
     return "ip:unknown"
 

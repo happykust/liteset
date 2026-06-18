@@ -544,8 +544,7 @@ def _build_sync_redis_from_config(
       from ``settings.redis_url``).
     """
     cfg = cache_config or {}
-    redis_url = cfg.get("CACHE_REDIS_URL")
-    if redis_url:
+    if redis_url := cfg.get("CACHE_REDIS_URL"):
         try:
             from redis import Redis as SyncRedis
         except ImportError:
@@ -1022,8 +1021,7 @@ def _build_async_redis_from_config(
     * No connection details → reuse ``default_redis`` (the process-wide
       Redis client built in :func:`superset.app.on_startup`).
     """
-    redis_url = cache_config.get("CACHE_REDIS_URL")
-    if redis_url:
+    if redis_url := cache_config.get("CACHE_REDIS_URL"):
         try:
             from redis.asyncio import Redis as AsyncRedis
         except ImportError:

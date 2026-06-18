@@ -484,9 +484,8 @@ def _build_user_data(user: Any) -> dict[str, Any]:
         return guest_payload
 
     # Authenticated regular user — full payload.
-    created_on = getattr(user, "created_on", None)
     created_on_str = ""
-    if created_on is not None:
+    if (created_on := getattr(user, "created_on", None)) is not None:
         if hasattr(created_on, "isoformat"):
             created_on_str = created_on.isoformat()
         else:
@@ -1234,7 +1233,6 @@ class SPAController(Controller):
         state: State,
         path: str = "",
     ) -> Any:
-
         settings = state.settings
 
         # Check authentication

@@ -107,9 +107,8 @@ def _build_async_cache_manager(settings: Any) -> Any:
     from superset.cache.manager import CacheManager
 
     manager = CacheManager()
-    redis_url = getattr(settings, "redis_url", None)
     redis_client = None
-    if redis_url:
+    if redis_url := getattr(settings, "redis_url", None):
         try:
             from redis.asyncio import Redis as AsyncRedis
 

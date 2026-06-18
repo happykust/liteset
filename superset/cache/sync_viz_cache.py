@@ -137,8 +137,7 @@ def build_sync_viz_cache(
     package is unavailable, so callers degrade gracefully.
     """
     cfg = cache_config or {}
-    redis_url = cfg.get("CACHE_REDIS_URL")
-    if redis_url:
+    if redis_url := cfg.get("CACHE_REDIS_URL"):
         conn_key: Any = ("url", redis_url)
     elif "CACHE_REDIS_HOST" in cfg:
         conn_key = (
@@ -153,8 +152,7 @@ def build_sync_viz_cache(
     else:
         return None
 
-    cached = _INSTANCE_CACHE.get(conn_key)
-    if cached is not None:
+    if (cached := _INSTANCE_CACHE.get(conn_key)) is not None:
         return cached
 
     try:

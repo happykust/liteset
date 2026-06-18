@@ -230,8 +230,7 @@ def _settings_config_get(settings: Any, key: str, default: Any) -> Any:
     feature_flags = getattr(settings, "feature_flags", None)
     if isinstance(feature_flags, dict) and key in feature_flags:
         return feature_flags[key]
-    attr = getattr(settings, key.lower(), None)
-    if attr is not None:
+    if (attr := getattr(settings, key.lower(), None)) is not None:
         return attr
     return default
 

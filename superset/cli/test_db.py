@@ -132,8 +132,7 @@ def engine_spec(sqlalchemy_uri: str) -> None:
 
     from superset.db.engine_specs import _get_sync_spec_map
 
-    sync_map = _get_sync_spec_map()
-    if backend in sync_map:
+    if backend in (sync_map := _get_sync_spec_map()):
         spec_cls = sync_map[backend]
         engine_name = getattr(spec_cls, "engine_name", spec_cls.__name__)
         console.print(

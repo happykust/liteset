@@ -146,7 +146,7 @@ class TestCheckPasswordHash:
         assert _check_password_hash(SCRYPT_HASH, "") is False
 
     def test_none_hash_returns_false(self) -> None:
-        # type: ignore -- intentionally passing wrong type
+        # intentionally passing the wrong type (suppressed on the assert below)
         assert _check_password_hash(None, "password") is False  # type: ignore[arg-type]
 
     def test_malformed_hash_returns_false(self) -> None:

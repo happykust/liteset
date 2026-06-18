@@ -272,8 +272,7 @@ class SyncFallbackEngineSpec(BaseAsyncEngineSpec):
         applied.  Without this delegation the mutators would never fire because
         BaseAsyncEngineSpec.get_datatype returns None for non-string codes.
         """
-        sync_spec = getattr(cls, "_sync_spec", None)
-        if sync_spec is not None:
+        if (sync_spec := getattr(cls, "_sync_spec", None)) is not None:
             return sync_spec.get_datatype(type_code)
         return super().get_datatype(type_code)
 

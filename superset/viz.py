@@ -174,8 +174,7 @@ def _merge_extra_form_data(form_data: dict[str, Any]) -> None:  # noqa: C901
     adhoc_filters.extend({"isExtra": True, **af} for af in append_adhoc)
 
     # Merge simple filters
-    append_filters = extra_form_data.get("filters")
-    if append_filters:
+    if append_filters := extra_form_data.get("filters"):
         for key, value in form_data.items():
             if re.match(r"adhoc_filter.*", key) and isinstance(value, list):
                 value.extend(
@@ -787,8 +786,7 @@ class BaseViz:
         The attribute is expected to expose a ``.get()`` / ``.set()`` interface
         (e.g. an upstream caching or compatible backend).
         """
-        cm = getattr(self, "cache_manager", None)
-        if cm is not None:
+        if (cm := getattr(self, "cache_manager", None)) is not None:
             # cache_manager may be an object with a ``data_cache`` attribute
             # (like the original CacheManager extension) or it may
             # *be* the data cache itself.

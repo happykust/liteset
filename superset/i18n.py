@@ -72,9 +72,8 @@ def ngettext(singular: str, plural: str, num: int, **variables: Any) -> str:
     like the upstream implementation.
     """
     locale = _current_locale.get()
-    forms = _plural_tables.get(locale, {}).get(singular)
     result: str | None = None
-    if forms:
+    if forms := _plural_tables.get(locale, {}).get(singular):
         rule = _plural_rules.get(locale)
         try:
             idx = int(rule(num)) if rule is not None else (0 if num == 1 else 1)

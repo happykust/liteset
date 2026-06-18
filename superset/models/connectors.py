@@ -568,8 +568,7 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
             except Exception:  # noqa: BLE001
                 type_ = None
 
-        expression = self.expression
-        if expression:
+        if expression := self.expression:
             if template_processor:
                 try:
                     expression = template_processor.process_template(expression)
@@ -581,8 +580,7 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
         else:
             col = sa_column(self.column_name, type_=type_)
 
-        db = self.database
-        if db is not None:
+        if (db := self.database) is not None:
             return db.make_sqla_column_compatible(col, label)
         return col
 
@@ -626,8 +624,7 @@ class TableColumn(AuditMixinNullable, ImportExportMixin, CertificationMixin, Bas
                 return db.make_sqla_column_compatible(sqla_col, label)
             return sqla_col
 
-        expression = self.expression
-        if expression:
+        if expression := self.expression:
             if template_processor:
                 try:
                     expression = template_processor.process_template(expression)
@@ -1756,8 +1753,7 @@ class SqlaTable(
     @property
     def _backend(self) -> str:
         """Extract database backend name from the sqlalchemy_uri."""
-        uri = getattr(self.database, "sqlalchemy_uri", "")
-        if "://" in uri:
+        if "://" in (uri := getattr(self.database, "sqlalchemy_uri", "")):
             return uri.split("://")[0].split("+")[0]
         return "postgresql"
 
@@ -2179,8 +2175,7 @@ class SqlaTable(
         # when the user picks a calculated column from the adhoc
         # picker.  In that case we use the column's own
         # ``get_sqla_col`` so the expression survives.
-        col_in_metadata = self.get_column(sql_expression)
-        if col_in_metadata is not None:
+        if (col_in_metadata := self.get_column(sql_expression)) is not None:
             sqla_column = col_in_metadata.get_sqla_col(
                 template_processor=template_processor
             )

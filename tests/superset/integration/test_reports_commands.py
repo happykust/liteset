@@ -130,8 +130,7 @@ DEFAULT_OWNER_EMAIL = "admin@fab.org"
 
 def _settings(**overrides: Any) -> SupersetSettings:
     settings = SupersetSettings()  # type: ignore[call-arg]
-    feature_overrides = overrides.pop("feature_flags", None)
-    if feature_overrides is not None:
+    if (feature_overrides := overrides.pop("feature_flags", None)) is not None:
         settings.feature_flags = {**settings.feature_flags, **feature_overrides}
     for key, value in overrides.items():
         setattr(settings, key, value)

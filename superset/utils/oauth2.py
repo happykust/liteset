@@ -158,11 +158,10 @@ def _default_oauth2_redirect_uri() -> str:
     """
     settings = _get_settings()
     override = getattr(settings, "database_oauth2_redirect_uri", "") or ""
-    base = (getattr(settings, "webdriver_baseurl", "") or "").rstrip("/")
     if override.startswith("http://") or override.startswith("https://"):
         return override
     path = override or "/api/v1/database/oauth2/"
-    if base:
+    if base := (getattr(settings, "webdriver_baseurl", "") or "").rstrip("/"):
         if not path.startswith("/"):
             path = "/" + path
         return f"{base}{path}"

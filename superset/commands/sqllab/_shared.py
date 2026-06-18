@@ -121,8 +121,7 @@ def build_connection_uri(database: Any) -> str:
     except Exception:  # noqa: BLE001
         return to_sync_uri(raw_uri)
 
-    password = getattr(database, "password", None)
-    if password:
+    if password := getattr(database, "password", None):
         url = url.set(password=password)
 
     return to_sync_uri(url.render_as_string(hide_password=False))
@@ -133,13 +132,11 @@ def get_engine_name(database: Any) -> str:
     Return the sqlglot-friendly engine name for ``database``;
     falls back to the raw SA backend name.
     """
-    spec = getattr(database, "db_engine_spec", None)
-    if spec is not None:
+    if (spec := getattr(database, "db_engine_spec", None)) is not None:
         engine = getattr(spec, "engine", None)
         if engine:
             return str(engine)
-    uri = str(getattr(database, "sqlalchemy_uri", "") or "")
-    if "://" in uri:
+    if "://" in (uri := str(getattr(database, "sqlalchemy_uri", "") or "")):
         return uri.split("://", 1)[0].split("+", 1)[0].lower()
     return "base"
 

@@ -201,8 +201,7 @@ class SupersetErrorsException(SupersetException):
         return out
 
     def to_sip40(self) -> dict[str, Any]:
-        dicts = self._errors_as_dicts()
-        if dicts:
+        if dicts := self._errors_as_dicts():
             return (
                 dicts[0]
                 if len(dicts) == 1

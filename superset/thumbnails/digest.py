@@ -266,8 +266,7 @@ def get_dashboard_digest(dashboard: "Dashboard") -> str | None:
     except ExecutorNotFoundError:
         return None
 
-    func = getattr(settings, "thumbnail_dashboard_digest_func", None)
-    if func:
+    if func := getattr(settings, "thumbnail_dashboard_digest_func", None):
         return func(dashboard, executor_type, executor)
 
     # The ``charts`` part (slice names) and the RLS datasources are both read
@@ -316,8 +315,7 @@ def get_chart_digest(chart: "Slice") -> str | None:
     except ExecutorNotFoundError:
         return None
 
-    func = getattr(settings, "thumbnail_chart_digest_func", None)
-    if func:
+    if func := getattr(settings, "thumbnail_chart_digest_func", None):
         return func(chart, executor_type, executor)
 
     unique_string = f"{chart.params or ''}.{executor}"

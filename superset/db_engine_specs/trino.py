@@ -604,8 +604,7 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
         if tracking_url := cls.get_tracking_url(cursor):
             query.tracking_url_raw = tracking_url
 
-        session = object_session(query)
-        if session is not None:
+        if (session := object_session(query)) is not None:
             session.commit()
 
         if query.extra.get(QUERY_EARLY_CANCEL_KEY):

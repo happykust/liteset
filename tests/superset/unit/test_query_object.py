@@ -659,7 +659,6 @@ def test_capped_row_limit_server_pagination_uses_higher_ceiling():
 
 
 def test_from_request_threads_server_pagination():
-
     with patch("superset.common.query_object._capped_row_limit") as mock_cap:
         mock_cap.return_value = 100
         AsyncQueryObject.from_request(

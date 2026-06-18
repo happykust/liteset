@@ -590,8 +590,7 @@ class SupersetConfigSettingsSource(PydanticBaseSettingsSource):
 
     @staticmethod
     def _load() -> dict[str, Any]:
-        path = os.environ.get("SUPERSET_CONFIG_PATH", "")
-        if path:
+        if path := os.environ.get("SUPERSET_CONFIG_PATH", ""):
             # 1) Explicit file path (useful when the app runs via pex and the
             #    config module is not on the PYTHONPATH).
             cache_key = path

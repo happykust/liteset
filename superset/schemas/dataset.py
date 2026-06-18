@@ -433,8 +433,7 @@ class DatasetDetailResult(ModelStruct):
             return None
         # Derive backend from sqlalchemy_uri
         backend: str | None = None
-        uri = getattr(database, "sqlalchemy_uri", None) or ""
-        if "://" in uri:
+        if "://" in (uri := getattr(database, "sqlalchemy_uri", None) or ""):
             backend = uri.split("://")[0].split("+")[0]
         return DatabaseRef.from_model(database, backend=backend)
 

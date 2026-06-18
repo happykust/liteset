@@ -586,8 +586,7 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
         Resolve the CTAS/CVAS target schema; force_ctas_schema takes
         precedence over the config hook.
         """
-        force_ctas_schema = getattr(database, "force_ctas_schema", None)
-        if force_ctas_schema:
+        if force_ctas_schema := getattr(database, "force_ctas_schema", None):
             return force_ctas_schema
 
         func: Any = None

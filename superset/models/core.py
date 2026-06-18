@@ -1024,8 +1024,7 @@ class Database(AuditMixinNullable, ImportExportMixin, Base):
 
         from superset.utils.core import get_current_user
 
-        user = get_current_user()
-        if user is not None:
+        if (user := get_current_user()) is not None:
             try:
                 from superset.config import SupersetSettings
 

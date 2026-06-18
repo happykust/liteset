@@ -1042,8 +1042,7 @@ def _handle_query_error(
     session.commit()
     payload.update({"status": query.status, "error": msg, "errors": errors_payload})
 
-    troubleshooting_link = _resolve_troubleshooting_link()
-    if troubleshooting_link:
+    if troubleshooting_link := _resolve_troubleshooting_link():
         payload["link"] = troubleshooting_link
     return payload
 

@@ -448,9 +448,7 @@ def _get_sqla_type(native_type: str) -> Any:
     """Map a YAML column type string to a SQLAlchemy type instance."""
     from sqlalchemy import String
 
-    type_map = _get_sqla_type_map()
-    upper = native_type.upper()
-    if upper in type_map:
+    if (upper := native_type.upper()) in (type_map := _get_sqla_type_map()):
         return type_map[upper]
     if match := _VARCHAR_RE.match(native_type):
         return String(int(match.group(1)))

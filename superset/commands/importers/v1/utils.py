@@ -842,8 +842,7 @@ def chart_schema(config: dict[str, Any]) -> None:
             allow_none=True,
         )
     _check_string(config.get("external_url"), "external_url", errors, allow_none=True)
-    tags = config.get("tags")
-    if tags is not None:
+    if (tags := config.get("tags")) is not None:
         if not isinstance(tags, list):
             _err("tags", "Not a valid list.", errors)
         else:
@@ -885,8 +884,7 @@ def dashboard_schema(config: dict[str, Any]) -> None:  # noqa: C901  # complex b
     )
     if "published" in config and config["published"] is not None:
         _check_bool(config.get("published"), "published", errors, allow_none=True)
-    tags = config.get("tags")
-    if tags is not None:
+    if (tags := config.get("tags")) is not None:
         if not isinstance(tags, list):
             _err("tags", "Not a valid list.", errors)
         else:

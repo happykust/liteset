@@ -159,8 +159,7 @@ def get_async_engine_spec(engine: str) -> type[BaseAsyncEngineSpec]:
         return _fallback_cache[engine]
 
     # Attempt to find and wrap a sync spec from superset (optional dependency)
-    sync_spec_map = _get_sync_spec_map()
-    if engine in sync_spec_map:
+    if engine in (sync_spec_map := _get_sync_spec_map()):
         async_spec = make_async_spec(sync_spec_map[engine])
         _fallback_cache[engine] = async_spec
         logger.info("Created sync fallback async spec for engine: %s", engine)

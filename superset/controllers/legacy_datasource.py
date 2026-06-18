@@ -365,9 +365,8 @@ def _parse_samples_params(
     if per_page_error:
         errors.append(per_page_error)
 
-    dashboard_id_raw = qp.get("dashboard_id")
     dashboard_id: int | None = None
-    if dashboard_id_raw is not None:
+    if (dashboard_id_raw := qp.get("dashboard_id")) is not None:
         try:
             dashboard_id = int(dashboard_id_raw)
         except (TypeError, ValueError):

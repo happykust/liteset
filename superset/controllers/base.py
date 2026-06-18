@@ -620,11 +620,10 @@ def _build_fallback_info_payload(
     add_title = "Add " + _prettify_name(model_name)
     edit_title = "Edit " + _prettify_name(model_name)
 
-    model_cls = getattr(dao, "model_cls", None)
     columns: list[dict[str, Any]] = []
     filters: dict[str, list[dict[str, str]]] = {}
 
-    if model_cls is not None:
+    if (model_cls := getattr(dao, "model_cls", None)) is not None:
         try:
             mapper = sa_inspect(model_cls)
             for col in mapper.columns:

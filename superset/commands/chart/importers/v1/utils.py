@@ -993,8 +993,7 @@ async def _load_data(  # noqa: C901  # complex business logic
     varchar_re = re.compile(r"VARCHAR\((\d+)\)", re.IGNORECASE)
 
     def _sqla_type(native: str) -> Any:
-        upper = (native or "").upper()
-        if upper in type_map:
+        if (upper := (native or "").upper()) in type_map:
             return type_map[upper]
         if match := varchar_re.match(native or ""):
             return String(int(match.group(1)))
@@ -1029,8 +1028,7 @@ async def _load_data(  # noqa: C901  # complex business logic
     catalog = getattr(dataset, "catalog", None)
 
     def _load_via_engine() -> None:
-        get_engine = getattr(database, "get_sqla_engine", None)
-        if get_engine is not None:
+        if (get_engine := getattr(database, "get_sqla_engine", None)) is not None:
             with get_engine(catalog=catalog, schema=schema) as engine:
                 df.to_sql(
                     table_name,

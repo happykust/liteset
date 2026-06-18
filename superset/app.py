@@ -835,14 +835,13 @@ def _apply_ssl_kwargs(target: dict[str, Any], cache_config: dict[str, Any]) -> N
     ssl_certfile = cache_config.get("CACHE_REDIS_SSL_CERTFILE") or None
     ssl_keyfile = cache_config.get("CACHE_REDIS_SSL_KEYFILE") or None
     ssl_cert_reqs = cache_config.get("CACHE_REDIS_SSL_CERT_REQS", "required")
-    ssl_ca_certs = cache_config.get("CACHE_REDIS_SSL_CA_CERTS") or None
     if ssl_certfile:
         target["ssl_certfile"] = ssl_certfile
     if ssl_keyfile:
         target["ssl_keyfile"] = ssl_keyfile
     if ssl_cert_reqs:
         target["ssl_cert_reqs"] = ssl_cert_reqs
-    if ssl_ca_certs:
+    if ssl_ca_certs := cache_config.get("CACHE_REDIS_SSL_CA_CERTS") or None:
         target["ssl_ca_certs"] = ssl_ca_certs
 
 

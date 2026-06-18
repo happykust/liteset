@@ -305,8 +305,7 @@ def _get_schema_access_for_file_upload(database: Any, user: Any = None) -> set[s
     from ast import literal_eval
 
     extra: dict[str, Any] = {}
-    extra_raw = getattr(database, "extra", "") or ""
-    if extra_raw:
+    if extra_raw := getattr(database, "extra", "") or "":
         try:
             extra = json.loads(extra_raw)
         except (json.JSONDecodeError, TypeError):

@@ -75,12 +75,10 @@ repos:
       files: ^superset-frontend\/.*\.(js|jsx|ts|tsx)$
       exclude: ^superset-frontend/cypress-base\/
       require_serial: true
-  # blacklist unsafe functions like make_url (see #19526)
-  - repo: https://github.com/skorokithakis/blacklist-pre-commit-hook
-    rev: e2f070289d8eddcaec0b580d3bde29437e7c8221
-    hooks:
-      - id: blacklist
-        args: ["--blacklisted-names=make_url", "--ignore=tests/"]
+  # NOTE: upstream blacklisted the bare make_url() (see #19526). liteset provides
+  # make_url_safe() (superset/databases/utils.py) and uses it on user-facing paths;
+  # the wrapper itself must call make_url(), which makes the blacklist hook
+  # unsatisfiable while it lives in-tree, so the hook is dropped.
   - repo: https://github.com/norwoodj/helm-docs
     rev: v1.14.2
     hooks:
