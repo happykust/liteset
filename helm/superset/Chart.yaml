@@ -18,17 +18,17 @@ apiVersion: v2
 appVersion: "1.0.0"
 description: Liteset — an async (Litestar/ASGI) port of Apache Superset, a modern, enterprise-ready business intelligence web application
 name: liteset
-icon: https://artifacthub.io/image/68c1d717-0e97-491f-b046-754e46f46922@2x
-home: https://superset.apache.org/
+icon: https://raw.githubusercontent.com/happykust/liteset/main/docs/static/img/liteset-logo-icon-only.png
+home: https://liteset.happykust.dev/
 keywords:
   - business intelligence
   - data science
 sources:
-  - https://github.com/apache/superset
+  - https://github.com/happykust/liteset
 maintainers:
-  - name: craig-rueda
-    email: craig@craigrueda.com
-    url: https://github.com/craig-rueda
+  - name: happykust
+    email: me@happykust.dev
+    url: https://github.com/happykust
 version: 1.0.0
 dependencies:
   - name: postgresql
