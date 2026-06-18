@@ -87,7 +87,7 @@ jobs:
           -v ${{ github.workspace }}/superset-frontend/coverage:/app/superset-frontend/coverage \
           --rm $TAG \
           bash -c \
-          "npm run test -- --coverage --shard=${{ matrix.shard }}/8 --coverageReporters=json-summary"
+          "npm run test -- --coverage --shard=${{ matrix.shard }}/8 --coverageReporters=json-summary --maxWorkers=2 --workerIdleMemoryLimit=1500MB"
 
       - name: Upload Coverage Artifact
         uses: actions/upload-artifact@v4
