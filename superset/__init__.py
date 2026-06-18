@@ -16,4 +16,4 @@
 # under the License.
 """Superset — async backend for Apache Superset powered by Litestar."""
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
