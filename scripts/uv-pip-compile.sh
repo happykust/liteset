@@ -22,7 +22,7 @@ set -e
 # Resolve for the lowest supported Python (see pyproject requires-python) so the
 # pins install across the whole range — otherwise the resolution would depend on
 # whoever runs this / the CI runner's interpreter and drift (check-python-deps).
-PYTHON_TARGET="3.10"
+PYTHON_TARGET="3.11"
 
 ADDITIONAL_ARGS="$@"
 

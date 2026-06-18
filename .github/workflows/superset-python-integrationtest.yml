@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        python-version: ["current", "previous", "next"]
+        python-version: ["previous", "current"]
     env:
       PYTHONPATH: ${{ github.workspace }}
       LITESET_SQLALCHEMY_DATABASE_URI: postgresql+asyncpg://superset:superset@127.0.0.1:15432/superset

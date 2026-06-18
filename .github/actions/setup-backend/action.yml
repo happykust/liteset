@@ -26,13 +26,13 @@ runs:
       shell: bash
       run: |
         if [ "${{ inputs.python-version }}" = "current" ]; then
-          echo "PYTHON_VERSION=3.11" >> $GITHUB_ENV
+          echo "PYTHON_VERSION=3.12" >> $GITHUB_ENV
         elif [ "${{ inputs.python-version }}" = "next" ]; then
-          # 3.12 is the highest version pandas<2.2 (pinned) builds on; pandas 2.1.4
-          # has no cp313 wheel and its sources fail to compile on Python 3.13.
+          # Supported range is 3.11-3.12: the code uses enum.StrEnum (3.11+) and
+          # pandas<2.2 (pinned) has no 3.13 build. 3.12 is the ceiling.
           echo "PYTHON_VERSION=3.12" >> $GITHUB_ENV
         elif [ "${{ inputs.python-version }}" = "previous" ]; then
-          echo "PYTHON_VERSION=3.10" >> $GITHUB_ENV
+          echo "PYTHON_VERSION=3.11" >> $GITHUB_ENV
         else
           echo "PYTHON_VERSION=${{ inputs.python-version }}" >> $GITHUB_ENV
         fi

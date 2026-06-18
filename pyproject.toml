@@ -24,14 +24,13 @@ name = "liteset"
 description = "Async version of Apache Superset powered by Litestar"
 readme = "README.md"
 dynamic = ["version"]
-requires-python = ">=3.10, <3.13"
+requires-python = ">=3.11, <3.13"
 license = { file="LICENSE.txt" }
 authors = [
     { name = "Apache Software Foundation", email = "dev@superset.apache.org" },
     { name = "Kirill Nikolaevsky", email = "me@happykust.dev" },
 ]
 classifiers = [
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
