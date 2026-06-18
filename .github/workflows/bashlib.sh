@@ -62,13 +62,21 @@ build-assets() {
 build-instrumented-assets() {
   cd "$GITHUB_WORKSPACE/superset-frontend"
 
-  say "::group::Build static assets with JS instrumented for test coverage"
-  cache-restore instrumented-assets
+  # Plain production build, NOT ``build-instrumented``.  The istanbul coverage
+  # instrumentation makes the bundled JS markedly slower, and nothing in the
+  # e2e workflow consumes the coverage (no nyc / .nyc_output / codecov step).
+  # On the slower CI runners that overhead pushed timing-sensitive specs
+  # (re-sort re-render, antd dropdown animation) past Cypress' default timeouts
+  # and they failed deterministically — reproduced locally: the same specs pass
+  # on a plain build but flake on an instrumented one.  Cache key bumped to
+  # ``e2e-assets`` so stale instrumented bundles aren't restored.
+  say "::group::Build static assets"
+  cache-restore e2e-assets
   if [[ -f "$ASSETS_MANIFEST" ]]; then
-    echo 'Skip frontend build because instrumented static assets already exist.'
+    echo 'Skip frontend build because static assets already exist.'
   else
-    npm run build-instrumented
-    cache-save instrumented-assets
+    npm run build
+    cache-save e2e-assets
   fi
   say "::endgroup::"
 }
