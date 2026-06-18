@@ -154,16 +154,18 @@ cypress-run-all() {
   local serverlog="${HOME}/liteset.log"
   local port=8081
   CYPRESS_BASE_URL="http://localhost:${port}"
-  local ROOT_PATH_FLAG=''
   if [ -n "$APP_ROOT" ]; then
-    # Litestar honours ASGI root_path; uvicorn exposes it via --root-path.
+    # create_app() reads SUPERSET_APP_ROOT and mounts every route under that
+    # prefix via Litestar's ``path=``.  We deliberately do NOT pass uvicorn
+    # ``--root-path``: that assumes a reverse proxy strips the prefix before
+    # forwarding, so against a directly-accessed server it doubles the path
+    # (root_path + already-prefixed path) and every request 404s.
     export SUPERSET_APP_ROOT=$APP_ROOT
-    ROOT_PATH_FLAG="--root-path $APP_ROOT"
     CYPRESS_BASE_URL=${CYPRESS_BASE_URL}${APP_ROOT}
   fi
   export CYPRESS_BASE_URL
 
-  nohup uvicorn superset.app:create_app --factory --host 127.0.0.1 --port $port $ROOT_PATH_FLAG \
+  nohup uvicorn superset.app:create_app --factory --host 127.0.0.1 --port $port \
     >"$serverlog" 2>&1 </dev/null &
   local serverProcessId=$!
 

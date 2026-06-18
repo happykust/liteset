@@ -1001,6 +1001,33 @@ def create_app(  # noqa: C901
     # When Global Async Queries is enabled, refuse to start with a weak JWT secret.
     _validate_global_async_queries_config(settings)
 
+    # ------------------------------------------------------------------
+    # Sub-path mounting (APPLICATION_ROOT / SUPERSET_APP_ROOT).
+    #
+    # When Superset is served under a URL prefix (e.g. behind a reverse
+    # proxy at ``/app/prefix`` or via the e2e ``app_root`` matrix), every
+    # route — API, SPA, static assets, OpenAPI — must live under that prefix
+    # and the SPA bootstrap / asset URLs must point at it too.
+    #
+    # We mount via Litestar's ``path=`` (which prefixes every handler) rather
+    # than uvicorn ``--root-path``: the latter assumes a reverse proxy STRIPS
+    # the prefix before forwarding, so on a directly-accessed server it
+    # prepends ``root_path`` to the already-prefixed request path and yields
+    # 404s (``full_path = root_path + path`` in uvicorn's HTTP protocol).
+    #
+    # Precedence: the ``SUPERSET_APP_ROOT`` env var (set by the e2e harness)
+    # wins, then the ``application_root`` config.  Normalised to ``/prefix``
+    # (leading slash, no trailing slash); "/" or "" means "no prefix".
+    # ------------------------------------------------------------------
+    app_root_raw = os.environ.get("SUPERSET_APP_ROOT") or settings.application_root
+    app_root = "/" + app_root_raw.strip("/") if app_root_raw.strip("/") else ""
+    if app_root:
+        # Keep the SPA bootstrap (``common.application_root``) and the asset
+        # URLs emitted by the templates in sync with the mount point.
+        settings.application_root = app_root
+        if not settings.static_assets_prefix:
+            settings.static_assets_prefix = app_root
+
     # Import core API controllers (Phase 4)
     # Import remaining API controllers (Phase 5)
     from superset.controllers.advanced_data_type import AdvancedDataTypeController
@@ -1270,6 +1297,7 @@ def create_app(  # noqa: C901
         )
 
     return Litestar(
+        path=app_root,
         route_handlers=route_handlers,
         dependencies={
             "session": Provide(provide_async_session),
