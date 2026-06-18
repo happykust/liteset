@@ -73,6 +73,7 @@ from superset.exceptions import (
     validation_error_handler,
 )
 from superset.logging import configure_logging
+from superset.middleware.app_root import AppRootMiddleware
 from superset.middleware.async_token import AsyncTokenMiddleware
 from superset.middleware.auth import SupersetAuthMiddleware
 from superset.middleware.http_headers import HTTPHeadersMiddleware
@@ -1002,18 +1003,23 @@ def create_app(  # noqa: C901
     _validate_global_async_queries_config(settings)
 
     # ------------------------------------------------------------------
-    # Sub-path mounting (APPLICATION_ROOT / SUPERSET_APP_ROOT).
+    # Sub-path serving (APPLICATION_ROOT / SUPERSET_APP_ROOT).
     #
-    # When Superset is served under a URL prefix (e.g. behind a reverse
-    # proxy at ``/app/prefix`` or via the e2e ``app_root`` matrix), every
-    # route — API, SPA, static assets, OpenAPI — must live under that prefix
-    # and the SPA bootstrap / asset URLs must point at it too.
+    # When Superset is served under a URL prefix (e.g. behind a reverse proxy
+    # at ``/app/prefix`` or via the e2e ``app_root`` matrix), the handlers stay
+    # registered at the root and an ASGI middleware strips the prefix off the
+    # incoming path — exactly what a path-stripping reverse proxy does.
     #
-    # We mount via Litestar's ``path=`` (which prefixes every handler) rather
-    # than uvicorn ``--root-path``: the latter assumes a reverse proxy STRIPS
-    # the prefix before forwarding, so on a directly-accessed server it
-    # prepends ``root_path`` to the already-prefixed request path and yields
-    # 404s (``full_path = root_path + path`` in uvicorn's HTTP protocol).
+    # This is deliberately NOT done via Litestar's ``path=`` (which would mount
+    # every route UNDER the prefix) nor uvicorn ``--root-path`` (which prepends
+    # root_path to the path and 404s on a directly-accessed server).  Both of
+    # those serve ONLY prefixed paths, but the Cypress harness hits the backend
+    # two different ways: ``cy.visit('/login/')`` resolves against the full
+    # baseUrl and keeps the prefix (``/app/prefix/login/``), while
+    # ``cy.request('/login/')`` resolves the root-relative path against the
+    # ORIGIN and drops it (``/login/``).  Stripping (prefix optional) serves
+    # both; the SPA bootstrap / asset URLs still carry the prefix so the
+    # browser requests it and the middleware strips it back off.
     #
     # Precedence: the ``SUPERSET_APP_ROOT`` env var (set by the e2e harness)
     # wins, then the ``application_root`` config.  Normalised to ``/prefix``
@@ -1023,7 +1029,7 @@ def create_app(  # noqa: C901
     app_root = "/" + app_root_raw.strip("/") if app_root_raw.strip("/") else ""
     if app_root:
         # Keep the SPA bootstrap (``common.application_root``) and the asset
-        # URLs emitted by the templates in sync with the mount point.
+        # URLs emitted by the templates in sync with the public prefix.
         settings.application_root = app_root
         if not settings.static_assets_prefix:
             settings.static_assets_prefix = app_root
@@ -1295,8 +1301,7 @@ def create_app(  # noqa: C901
             ),
         )
 
-    return Litestar(
-        path=app_root,
+    app = Litestar(
         route_handlers=route_handlers,
         dependencies={
             "session": Provide(provide_async_session),
@@ -1385,3 +1390,13 @@ def create_app(  # noqa: C901
         ),
         state=State({"settings": settings}),
     )
+
+    # Strip the application-root prefix BEFORE routing.  Litestar's own
+    # middleware wrap the matched handler (they run after routing), so a
+    # path-rewriting middleware must wrap the whole ASGI app from the outside.
+    # The wrapper is a transparent ASGI app; callers that introspect Litestar
+    # internals never set a prefix, so they always get the raw instance.
+    if app_root:
+        return cast("Litestar", AppRootMiddleware(app, app_root=app_root))
+
+    return app
