@@ -47,6 +47,10 @@ jobs:
       LITESET_SQLALCHEMY_DATABASE_URI: postgresql+asyncpg://superset:superset@127.0.0.1:15432/superset
       LITESET_SQLALCHEMY_EXAMPLES_URI: postgresql+asyncpg://superset:superset@127.0.0.1:15432/superset
       LITESET_SECRET_KEY: test-secret-key-at-least-32-bytes-long-xx
+      # Enables ``superset load_test_users`` to actually create the admin/alpha/
+      # gamma fixtures (the command no-ops unless ``testing`` is on); the Cypress
+      # auth specs log in as admin/general, so without this the user never exists.
+      LITESET_TESTING: "true"
       PYTHONPATH: ${{ github.workspace }}
       GITHUB_TOKEN: ${{ github.token }}
       # Only use dashboard when explicitly requested via workflow_dispatch
