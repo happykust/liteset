@@ -19,30 +19,20 @@ repos:
     rev: 0.3.4
     hooks:
       - id: auto-walrus
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.15.0
+  - repo: local
     hooks:
+      # Run mypy from the installed dev environment (not pre-commit's isolated
+      # venv) so it sees the real runtime deps (litestar, pydantic, msgspec, …)
+      # and the pinned mypy==2.1.0 + type stubs from requirements/development.txt.
+      # An isolated env mis-resolves those imports and emits spurious errors.
+      # Whole-package (pass_filenames: false) avoids "source file found twice".
       - id: mypy
-        # Check the package as a whole (not per-file): passing individual
-        # __init__.py paths makes mypy report "source file found twice".
-        args: [--check-untyped-defs, superset]
+        name: mypy
+        entry: mypy --check-untyped-defs superset
+        language: system
+        types: [python]
         pass_filenames: false
-        additional_dependencies: [
-            # for the sqlalchemy.ext.mypy.plugin declared in pyproject.toml
-            sqlalchemy,
-            types-simplejson,
-            types-python-dateutil,
-            types-requests,
-            # types-redis 4.6.0.5 is failing mypy
-            # because of https://github.com/python/typeshed/pull/10531
-            types-redis==4.6.0.4,
-            types-pytz,
-            types-croniter,
-            types-PyYAML,
-            types-setuptools,
-            types-paramiko,
-            types-Markdown,
-          ]
+        require_serial: true
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
