@@ -17,7 +17,14 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Liteset
+<p align="center">
+  <a href="https://liteset.happykust.dev">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/happykust/liteset/main/docs/static/img/liteset-logo-horiz-dark.svg" />
+      <img alt="Liteset" src="https://raw.githubusercontent.com/happykust/liteset/main/docs/static/img/liteset-logo-horiz.png" width="380" />
+    </picture>
+  </a>
+</p>
 
 <p align="center">
   <strong>Async port of Apache Superset — the same BI platform, rebuilt from Flask/WSGI onto Litestar/ASGI.</strong>
@@ -25,7 +32,7 @@ under the License.
 
 <p align="center">
   <a href="https://opensource.org/license/apache-2-0"><img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" /></a>
-  <a href="https://www.python.org/"><img alt="Python" src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg" /></a>
+  <a href="https://www.python.org/"><img alt="Python" src="https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg" /></a>
   <a href="https://litestar.dev/"><img alt="Litestar" src="https://img.shields.io/badge/Litestar-2.15+-7c3aed.svg" /></a>
   <a href="https://www.sqlalchemy.org/"><img alt="SQLAlchemy" src="https://img.shields.io/badge/SQLAlchemy-2.0-red.svg" /></a>
   <a href="https://liteset.happykust.dev"><img alt="Docs" src="https://img.shields.io/badge/docs-liteset.happykust.dev-1fa8a8.svg" /></a>
