@@ -182,7 +182,13 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
                     self.session,
                     dict(config),
                     overwrite=True,
-                    ignore_permissions=True,
+                    # No security_manager (CLI/test callers) -> permissive,
+                    # matching every other "no security context" fallback in
+                    # this codebase. The production HTTP path
+                    # (AsyncFullAssetManager.import_assets) always resolves a
+                    # real security_manager before constructing this command,
+                    # so this only degrades to permissive off that path.
+                    ignore_permissions=self.security_manager is None,
                     security_manager=self.security_manager,
                 )
                 database_ids[str(database.uuid)] = int(database.id)
@@ -201,7 +207,7 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
                     self.session,
                     ds_cfg,
                     overwrite=True,
-                    ignore_permissions=True,
+                    ignore_permissions=self.security_manager is None,
                     security_manager=self.security_manager,
                     current_user=self.current_user,
                 )
@@ -281,7 +287,7 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
             self.session,
             dict(config),
             overwrite=True,
-            ignore_permissions=True,
+            ignore_permissions=self.security_manager is None,
             security_manager=self.security_manager,
         )
 
@@ -431,7 +437,7 @@ class ImportAssetsCommand(AsyncBaseCommand[None]):
             self.session,
             dict(config),
             overwrite=True,
-            ignore_permissions=True,
+            ignore_permissions=self.security_manager is None,
             security_manager=self.security_manager,
             current_user=self.current_user,
         )

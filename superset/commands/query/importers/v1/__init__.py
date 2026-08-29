@@ -44,10 +44,12 @@ class ImportSavedQueriesCommand(AsyncImportModelsCommand):
         self,
         contents: io.BytesIO,
         dao: "CRUDDAOProtocol | None" = None,
+        security_manager: Any | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(contents, **kwargs)
         self._dao = dao
+        self._security_manager = security_manager
 
     async def _validate(self, configs: dict[str, dict[str, Any]]) -> None:
         for name, config in configs.items():
@@ -89,6 +91,7 @@ class ImportSavedQueriesCommand(AsyncImportModelsCommand):
                     session,
                     self._apply_password(dict(config), file_name),
                     overwrite=False,
+                    security_manager=self._security_manager,
                 )
                 database_ids[str(db.uuid)] = int(db.id)
 

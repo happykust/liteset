@@ -79,6 +79,44 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
         except Exception:  # noqa: BLE001
             return 200.0
 
+    @classmethod
+    def _check_zip_bomb_guards(cls, infos: list[Any], max_ratio: float) -> None:
+        """Reject an oversized entry or an excessive archive compress ratio.
+
+        Both checks read only ``ZipInfo`` header metadata (``file_size`` /
+        ``compress_size``) — no entry is decompressed to evaluate them.
+
+        * Per-entry: rejects any single member whose *declared* uncompressed
+          size exceeds ``MAX_ENTRY_SIZE``. This is the missing half of the
+          archive-total ratio check below — padding a bundle with
+          incompressible filler entries keeps the *total* ratio legal while
+          one member's declared size stays unbounded, so without this check
+          that member is only caught after ``zf.read`` has already fully
+          decompressed it into memory (a ~50MB upload can yield a ~10GB
+          allocation). Mirrors the equivalent header check the asset-path
+          importer already applies in
+          ``commands/importers/v1/utils.py::_check_is_safe_zip``.
+        * Archive-total: the missing half of upstream's ``check_is_safe_zip``
+          — reject when total uncompressed/compressed exceeds
+          ``ZIP_FILE_MAX_COMPRESS_RATIO`` (default 200x).
+        """
+        for zi in infos:
+            if zi.file_size > MAX_ENTRY_SIZE:
+                # Same exception type/message shape as the read-based check
+                # in ``_parse_zip`` (now unreachable for this case, since
+                # this header check runs first) — kept consistent so
+                # existing "too large" callers/tests don't need to
+                # distinguish which guard fired.
+                raise ValueError(
+                    f"ZIP entry '{zi.filename}' too large "
+                    f"({zi.file_size} > {MAX_ENTRY_SIZE} bytes)"
+                )
+
+        total_uncompressed = sum(zi.file_size for zi in infos)
+        total_compressed = sum(zi.compress_size for zi in infos)
+        if total_compressed and total_uncompressed / total_compressed > max_ratio:
+            raise CommandInvalidError("Zip compress ratio above allowed threshold.")
+
     def _parse_zip(self) -> dict[str, dict[str, Any]]:
         """Parse ZIP file into ``{filename: parsed_yaml_dict}``.
 
@@ -105,20 +143,14 @@ class AsyncImportModelsCommand(AsyncBaseCommand[None]):
             ) from ex
         configs: dict[str, dict[str, Any]] = {}
         with zf_ctx as zf:
-            # Zip-bomb guard — the missing half of upstream's
-            # ``check_is_safe_zip``: reject the archive when total
-            # uncompressed/compressed exceeds ``ZIP_FILE_MAX_COMPRESS_RATIO``
-            # (default 200x) BEFORE any ``zf.read`` decompresses an entry into
-            # memory. Inspects ``infolist()`` metadata only. The entry-count and
-            # path-traversal handling below remain the port's existing behavior
-            # (so we add only the ratio check rather than calling the full
-            # ``_check_is_safe_zip``, whose count/traversal semantics differ).
+            # Zip-bomb guards (header metadata only, nothing decompressed
+            # yet) — the missing half of upstream's ``check_is_safe_zip``.
+            # The entry-count and path-traversal handling below remain the
+            # port's existing behavior (so we add only these ratio/size
+            # checks rather than calling the full ``_check_is_safe_zip``,
+            # whose count/traversal semantics differ).
             infos = zf.infolist()
-            total_uncompressed = sum(zi.file_size for zi in infos)
-            total_compressed = sum(zi.compress_size for zi in infos)
-            max_ratio = self._zip_max_compress_ratio()
-            if total_compressed and total_uncompressed / total_compressed > max_ratio:
-                raise CommandInvalidError("Zip compress ratio above allowed threshold.")
+            self._check_zip_bomb_guards(infos, self._zip_max_compress_ratio())
             entries = [n for n in zf.namelist() if not n.endswith("/")]
             if len(entries) > MAX_ZIP_ENTRIES:
                 raise ValueError(

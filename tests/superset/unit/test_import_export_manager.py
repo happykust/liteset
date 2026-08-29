@@ -112,7 +112,11 @@ async def test_export_writes_per_resource_entries(
     """Per-resource export tuples are written into the ZIP under their
     asset-type directory; the manager dedupes on full path."""
 
-    async def fake_export_type(asset_type: str) -> list[tuple[str, str]]:
+    async def fake_export_type(
+        asset_type: str,
+        security_manager: Any = None,  # noqa: ARG001
+        user: Any = None,  # noqa: ARG001
+    ) -> list[tuple[str, str]]:
         if asset_type == "charts":
             return [
                 ("charts/item_1.yaml", yaml.safe_dump({"id": 1})),

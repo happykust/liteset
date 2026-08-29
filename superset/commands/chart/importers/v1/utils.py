@@ -251,7 +251,7 @@ async def _import_database(  # noqa: C901
     session: AsyncSession,
     config: dict[str, Any],
     overwrite: bool = False,
-    ignore_permissions: bool = True,
+    ignore_permissions: bool = False,
     security_manager: Any | None = None,
 ) -> Database:
     """Import a database from config dict.
@@ -507,6 +507,29 @@ async def _import_ssh_tunnel(
         .one_or_none()
     )
 
+    if existing is None:
+        # New tunnel row: enforce the SSH_TUNNELING feature flag and reject
+        # mixed/masked-without-a-real-value credentials, exactly like the
+        # standalone database importer does
+        # (``commands/database/importers/v1/__init__.py``). This shared
+        # writer is reached from every importer (chart/dashboard/dataset/
+        # saved-query bundles, plus the full asset bundle) and previously
+        # skipped both checks entirely, so any of those bundles could write
+        # an SSHTunnel row with attacker-supplied server_address/server_port/
+        # private_key even with the feature flag off. Updating an existing
+        # tunnel is left unvalidated (matches upstream, which skips the
+        # check entirely once the owning database already exists) so masked
+        # placeholders can keep round-tripping unchanged secrets.
+        from superset.commands.importers.v1.utils import (
+            _validate_database_masked_credentials,
+        )
+
+        _validate_database_masked_credentials(
+            {"ssh_tunnel": dict(config)},
+            f"databases/{database_id}",
+            {},
+        )
+
     attrs = {
         "server_address",
         "server_port",
@@ -540,7 +563,7 @@ async def _import_dataset(  # noqa: C901
     config: dict[str, Any],
     overwrite: bool = False,
     force_data: bool = False,
-    ignore_permissions: bool = True,
+    ignore_permissions: bool = False,
     security_manager: Any | None = None,
     current_user: Any | None = None,
 ) -> SqlaTable:

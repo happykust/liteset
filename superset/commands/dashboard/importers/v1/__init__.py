@@ -61,12 +61,16 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
         dao: AsyncDashboardDAO | None = None,
         security_manager: Any | None = None,
         current_user: Any | None = None,
+        ignore_permissions: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(contents, **kwargs)
         self._dao = dao
         self._security_manager = security_manager
         self._current_user = current_user
+        # Explicit opt-out for operator-run contexts with no HTTP user (the
+        # CLI). Defaulting to permissive is the defect this replaced.
+        self._ignore_permissions = ignore_permissions
 
     async def _validate(self, configs: dict[str, dict[str, Any]]) -> None:
         for name, config in configs.items():
@@ -145,7 +149,12 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
                 and isinstance(config, dict)
                 and config.get("uuid") in database_uuids
             ):
-                db = await _import_database(session, config)
+                db = await _import_database(
+                    session,
+                    config,
+                    security_manager=self._security_manager,
+                    ignore_permissions=self._ignore_permissions,
+                )
                 database_ids[str(db.uuid)] = db.id
 
         dataset_info: dict[str, dict[str, Any]] = {}
@@ -156,7 +165,13 @@ class ImportDashboardsCommand(AsyncImportModelsCommand):
                 and config.get("database_uuid") in database_ids
             ):
                 config["database_id"] = database_ids[config["database_uuid"]]
-                dataset = await _import_dataset(session, config)
+                dataset = await _import_dataset(
+                    session,
+                    config,
+                    security_manager=self._security_manager,
+                    current_user=self._current_user,
+                    ignore_permissions=self._ignore_permissions,
+                )
                 dataset_info[str(dataset.uuid)] = {
                     "datasource_id": dataset.id,
                     "datasource_type": getattr(dataset, "datasource_type", "table"),

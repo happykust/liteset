@@ -73,6 +73,35 @@ _ASSET_TYPES: tuple[str, ...] = (
 _AssetEntry = dict[str, Any]
 _REGISTRY: dict[str, _AssetEntry] = {}
 
+# Maps a bundle-prefix key to the ``superset.db.filters`` helper that scopes
+# that asset type to what the acting user can access. Populated lazily (on
+# first use) to avoid pulling the filters module — and everything it imports
+# — in at module load time, matching this module's existing lazy-import style.
+_ACCESS_FILTERS_BY_ASSET_TYPE: dict[str, Any] = {}
+
+
+def _register_access_filters() -> None:
+    if _ACCESS_FILTERS_BY_ASSET_TYPE:
+        return
+
+    from superset.db.filters import (
+        chart_access_filters,
+        dashboard_access_filters,
+        database_access_filters,
+        dataset_access_filters,
+        saved_query_access_filters,
+    )
+
+    _ACCESS_FILTERS_BY_ASSET_TYPE.update(
+        {
+            "databases": database_access_filters,
+            "datasets": dataset_access_filters,
+            "charts": chart_access_filters,
+            "dashboards": dashboard_access_filters,
+            "queries": saved_query_access_filters,
+        }
+    )
+
 
 def register_default_importers() -> None:
     """Populate :data:`_REGISTRY` with the built-in per-resource commands.
@@ -161,11 +190,20 @@ class AsyncFullAssetManager:
         self,
         asset_types: list[str] | None = None,
         root: str | None = None,
+        security_manager: Any | None = None,
+        user: Any | None = None,
     ) -> bytes:
         """Export every asset as a ZIP file.
 
         Returns the bytes of the archive — the controller streams them
         back to the client with ``Content-Type: application/zip``.
+
+        ``security_manager``/``user`` scope the export to objects the acting
+        user can access (see :meth:`_export_type`). Both are optional — the
+        ``/api/v1/assets/export`` controller predates this threading and
+        calls this method with neither, so when omitted a security manager
+        is built lazily and the user is read from the request-scoped
+        ContextVar (mirrors the fallback already used for imports, below).
         """
         # Nest every entry under ``assets_export_<timestamp>/``.  The importer
         # applies ``remove_root`` (``parts[1:]``) unconditionally, so a *flat*
@@ -176,6 +214,10 @@ class AsyncFullAssetManager:
         # timestamp (computed once).
         if root is None:
             root = f"assets_export_{datetime.now().strftime('%Y%m%dT%H%M%S')}"
+
+        security_manager, user = await self._resolve_security_context(
+            security_manager, user
+        )
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -194,7 +236,7 @@ class AsyncFullAssetManager:
 
             for asset_type in types_to_export:
                 try:
-                    items = await self._export_type(asset_type)
+                    items = await self._export_type(asset_type, security_manager, user)
                 except Exception:  # noqa: BLE001
                     logger.warning("Failed to export %s", asset_type, exc_info=True)
                     continue
@@ -207,13 +249,66 @@ class AsyncFullAssetManager:
 
         return buf.getvalue()
 
-    async def _export_type(self, asset_type: str) -> list[tuple[str, str]]:
-        """Export every record of ``asset_type``.
+    async def _resolve_security_context(
+        self,
+        security_manager: Any | None,
+        user: Any | None,
+    ) -> tuple[Any | None, Any | None]:
+        """Fill in a missing ``security_manager``/``user`` pair for export.
+
+        When neither is supplied (the current controller call site), read the
+        acting user off the request-scoped ContextVar and build a security
+        manager bound to this manager's session — same pattern used by
+        ``commands/report.py`` / ``controllers/database.py`` when a caller
+        hasn't threaded one through explicitly. With no authenticated user in
+        scope (CLI/background export) this degrades to ``(None, None)``,
+        matching ``AsyncExportModelsCommand._validate_access``'s own
+        documented CLI-permissive fallback (no security_manager -> unscoped).
+        """
+        if security_manager is not None:
+            return security_manager, user
+
+        if user is None:
+            from superset.utils.core import get_current_user
+
+            user = get_current_user()
+        if user is None:
+            return None, None
+
+        from superset.config import SupersetSettings
+        from superset.security.manager import build_async_security_manager
+
+        security_manager = build_async_security_manager(
+            self._session,
+            SupersetSettings(),  # type: ignore[call-arg]
+        )
+        return security_manager, user
+
+    async def _export_type(
+        self,
+        asset_type: str,
+        security_manager: Any | None = None,
+        user: Any | None = None,
+    ) -> list[tuple[str, str]]:
+        """Export every record of ``asset_type`` the acting user can access.
 
         Returns a list of ``(file_path, yaml_content)`` tuples ready to be
-        appended to a ZIP archive.  The per-resource export command's
-        ``_export_single(model_id)`` method produces these tuples
-        directly — we just enumerate every model id and concatenate.
+        appended to a ZIP archive.
+
+        Previously this enumerated every id in the table with no access
+        filter and called the export command's *private* ``_export_single``
+        directly, so ``validate()`` (and its ``_validate_access`` object-level
+        check) never ran — any holder of ``can_mulexport`` got every
+        database/dataset/chart/dashboard/saved-query in the deployment,
+        including other users' (and Admins') saved-query SQL. The id list is
+        now built through the same ``superset.db.filters`` helpers the
+        per-resource DAO-backed endpoints use, ``security_manager``/``user``
+        are threaded into the export command, and the command's public
+        ``run()`` (via ``execute()``) is used instead — so ``validate()`` /
+        ``_validate_access`` actually executes (redundantly-but-harmlessly,
+        since the id list is already scoped, except for
+        ``saved_query_access_filters``, which additionally restricts to the
+        acting user's own queries even for Admins).
         """
         entry = _REGISTRY.get(asset_type)
         if entry is None:
@@ -224,23 +319,48 @@ class AsyncFullAssetManager:
         dao_factory = entry["dao_factory"]
         dao = dao_factory(self._session)
 
-        # Fetch every id for this asset type via the DAO's underlying
-        # model_cls.  We don't need ``find_all`` because we only want ids.
         model_cls = dao.model_cls
-        ids = list((await self._session.execute(select(model_cls.id))).scalars().all())
+        _register_access_filters()
+        filters: list[Any] = []
+        access_filters_fn = _ACCESS_FILTERS_BY_ASSET_TYPE.get(asset_type)
+        if access_filters_fn is not None and security_manager is not None:
+            filters = await access_filters_fn(security_manager, user)
+
+        stmt = select(model_cls.id)
+        if filters:
+            stmt = stmt.where(*filters)
+        ids = list((await self._session.execute(stmt)).scalars().all())
         if not ids:
             return []
 
-        cmd = export_cls(model_ids=ids, dao=dao, export_related=False)
+        cmd = export_cls(
+            model_ids=ids,
+            dao=dao,
+            export_related=False,
+            security_manager=security_manager,
+            user=user,
+        )
+
+        try:
+            buf = await cmd.execute()
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to export %s", asset_type, exc_info=True)
+            return []
 
         results: list[tuple[str, str]] = []
-        for model_id in ids:
-            try:
-                results.extend(await cmd._export_single(model_id))  # noqa: SLF001
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "Failed to export %s id=%s", asset_type, model_id, exc_info=True
-                )
+        with zipfile.ZipFile(buf) as zf:
+            for name in zf.namelist():
+                if name == "metadata.yaml" or name.endswith("/"):
+                    continue
+                try:
+                    results.append((name, zf.read(name).decode("utf-8")))
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to read exported %s entry %s",
+                        asset_type,
+                        name,
+                        exc_info=True,
+                    )
         return results
 
     async def import_assets(
@@ -315,6 +435,23 @@ class AsyncFullAssetManager:
         # ``contents`` when the controller pre-parsed the bundle for us.
         if not by_type:
             by_type = _count_by_type(contents)
+
+        # The ``/api/v1/assets/import/`` controller does not pass a
+        # ``security_manager`` through (only ``current_user``). Without one,
+        # ``_import_database``/``_import_dataset`` cannot run their
+        # ``can_write`` check and — now that their unsafe ``ignore_permissions
+        # =True`` default is gone — would refuse to create ANY new database
+        # or dataset, even for an Admin. Build one here, bound to this
+        # manager's session, the same way ``commands/report.py`` and
+        # ``controllers/database.py`` do when a caller hasn't supplied one.
+        if security_manager is None:
+            from superset.config import SupersetSettings
+            from superset.security.manager import build_async_security_manager
+
+            security_manager = build_async_security_manager(
+                self._session,
+                SupersetSettings(),  # type: ignore[call-arg]
+            )
 
         from superset.commands.importers.v1 import ImportAssetsCommand
 

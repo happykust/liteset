@@ -16,7 +16,7 @@
 # under the License.
 """Unit tests for superset.commands.importers.v1.utils.
 
-Covers two audit findings:
+Covers two behaviours:
 
 Finding 1 — zip-bomb zero-guard:
   The original check_is_safe_zip performs an unconditional division

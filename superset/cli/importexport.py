@@ -224,6 +224,14 @@ def import_dashboards(path: str, username: Optional[str]) -> None:
                     dao=dao,
                     overwrite=True,
                     current_user=user,
+                    # Operator-run CLI: there is no HTTP request and no
+                    # security manager to check against, so the permission
+                    # gate is opted out of explicitly here rather than by the
+                    # importer silently defaulting to permissive. This is the
+                    # only place that opts out, matching upstream, where
+                    # ``ignore_permissions=True`` appears solely in the
+                    # example loader.
+                    ignore_permissions=True,
                 )
                 try:
                     await cmd.execute()

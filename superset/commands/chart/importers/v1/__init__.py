@@ -56,12 +56,17 @@ class ImportChartsCommand(AsyncImportModelsCommand):
         dao: AsyncChartDAO | None = None,
         security_manager: Any | None = None,
         current_user: Any | None = None,
+        ignore_permissions: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(contents, **kwargs)
         self._dao = dao
         self._security_manager = security_manager
         self._current_user = current_user
+        # Opt-out for operator-run contexts with no HTTP user (the CLI). It
+        # must stay explicit: defaulting to permissive is how a bundle carrying
+        # a ``databases/`` entry once created connections without ``can_write``.
+        self._ignore_permissions = ignore_permissions
 
     async def _validate(self, configs: dict[str, dict[str, Any]]) -> None:
         for name, config in configs.items():
@@ -116,7 +121,12 @@ class ImportChartsCommand(AsyncImportModelsCommand):
                 and isinstance(config, dict)
                 and config.get("uuid") in database_uuids
             ):
-                db = await _import_database(session, config)
+                db = await _import_database(
+                    session,
+                    config,
+                    security_manager=self._security_manager,
+                    ignore_permissions=self._ignore_permissions,
+                )
                 database_ids[str(db.uuid)] = db.id
 
         datasets: dict[str, Any] = {}
@@ -127,7 +137,13 @@ class ImportChartsCommand(AsyncImportModelsCommand):
                 and config.get("database_uuid") in database_ids
             ):
                 config["database_id"] = database_ids[config["database_uuid"]]
-                dataset = await _import_dataset(session, config)
+                dataset = await _import_dataset(
+                    session,
+                    config,
+                    security_manager=self._security_manager,
+                    current_user=self._current_user,
+                    ignore_permissions=self._ignore_permissions,
+                )
                 datasets[str(dataset.uuid)] = dataset
 
         for file_name, config in configs.items():

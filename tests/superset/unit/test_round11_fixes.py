@@ -181,7 +181,12 @@ async def test_shared_import_dataset_loads_data_when_table_missing(
         patch.object(chart_utils, "_table_exists", return_value=False) as mock_exists,
         patch.object(chart_utils, "_load_data") as mock_load,
     ):
-        await chart_utils._import_dataset(async_session, dict(config))
+        # ``ignore_permissions=True``: this test is about the data-loading
+        # branch, not permission gating (``_import_dataset`` now defaults to
+        # ``ignore_permissions=False`` — see FIX 1 / C3).
+        await chart_utils._import_dataset(
+            async_session, dict(config), ignore_permissions=True
+        )
 
     mock_exists.assert_awaited()
     mock_load.assert_awaited_once()
@@ -209,7 +214,12 @@ async def test_shared_import_dataset_skips_data_when_table_exists(
         patch.object(chart_utils, "_table_exists", return_value=True),
         patch.object(chart_utils, "_load_data") as mock_load,
     ):
-        await chart_utils._import_dataset(async_session, dict(config))
+        # ``ignore_permissions=True``: this test is about the data-loading
+        # branch, not permission gating (``_import_dataset`` now defaults to
+        # ``ignore_permissions=False`` — see FIX 1 / C3).
+        await chart_utils._import_dataset(
+            async_session, dict(config), ignore_permissions=True
+        )
 
     mock_load.assert_not_awaited()
 
