@@ -16,11 +16,16 @@
 # under the License.
 """Convert VARCHAR columns to native PostgreSQL ENUM types.
 
-The initial squashed migration created query.limiting_factor and
-tag.type as VARCHAR for compatibility.  The ORM models use
-SQLAlchemy Enum() which expects native PostgreSQL ENUM types
-when running under asyncpg.  This migration creates the ENUM types
-and converts the columns.
+.. deprecated::
+   The premise of this migration no longer holds.  ``Query.limiting_factor``
+   and ``Tag.type`` are declared ``Enum(..., native_enum=False)``, so the ORM
+   expects VARCHAR and sends plain text; revision ``c3d4e5f6a7b8`` converts
+   both columns back.  It is kept in the chain (never rewritten) so already
+   upgraded databases keep a linear history, but the type creation is now
+   guarded: ``tagtype`` survives on any metadata database that passed through
+   Apache Superset <= 2.1, where it was created as a native enum and never
+   dropped, and a bare ``CREATE TYPE`` — which has no ``IF NOT EXISTS`` form
+   in PostgreSQL — aborted the whole upgrade there.
 
 Revision ID: a1b2c3d4e5f6
 Revises: c233f5365c9e
@@ -38,16 +43,35 @@ branch_labels = None
 depends_on = None
 
 
+def _create_type_if_absent(name: str, labels: str) -> None:
+    """``CREATE TYPE`` guarded against the type already existing.
+
+    PostgreSQL has no ``CREATE TYPE ... IF NOT EXISTS``, and a leftover type
+    from an older Apache Superset schema would otherwise abort the upgrade.
+    """
+    op.execute(
+        f"""
+        DO $$
+        BEGIN
+            CREATE TYPE {name} AS ENUM ({labels});
+        EXCEPTION
+            WHEN duplicate_object THEN NULL;
+        END
+        $$;
+        """
+    )
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         return
 
     # --- query.limiting_factor: VARCHAR(20) → ENUM limitingfactor ---
-    op.execute(
-        "CREATE TYPE limitingfactor AS ENUM "
-        "('UNKNOWN', 'LIMITED', 'QUERY', 'QUERY_AND_DROPDOWN', "
-        "'NOT_LIMITED', 'DROPDOWN')"
+    _create_type_if_absent(
+        "limitingfactor",
+        "'UNKNOWN', 'LIMITED', 'QUERY', 'QUERY_AND_DROPDOWN', "
+        "'NOT_LIMITED', 'DROPDOWN'",
     )
     # Drop default before type change, re-add after
     op.execute("ALTER TABLE query ALTER COLUMN limiting_factor DROP DEFAULT")
@@ -62,9 +86,7 @@ def upgrade() -> None:
     )
 
     # --- tag.type: VARCHAR(20) → ENUM tagtype ---
-    op.execute(
-        "CREATE TYPE tagtype AS ENUM ('custom', 'type', 'owner', 'favorited_by')"
-    )
+    _create_type_if_absent("tagtype", "'custom', 'type', 'owner', 'favorited_by'")
     op.execute("ALTER TABLE tag ALTER COLUMN type TYPE tagtype USING type::tagtype")
 
 

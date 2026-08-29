@@ -27,8 +27,9 @@ small, dialect-aware deltas on top.
 | File | Revision | Notes |
 |---|---|---|
 | `2026-03-28_0001_initial_schema.py` | `c233f5365c9e` | Full snapshot of the Superset 6.0 schema (50 tables). |
-| `2026-04-04_0002_varchar_to_enum.py` | `a1b2c3d4e5f6` | PostgreSQL-only: convert `query.limiting_factor` and `tag.type` to native `ENUM`s. No-op on MySQL/SQLite. |
-| `2026-05-04_0003_ddl_drift_fixes.py` | `b2c3d4e5f6a7` | DDL drift corrections (NOT NULL / UNIQUE / index restorations + `tagged_object.object_type` → `Enum` on PG). |
+| `2026-04-04_0002_varchar_to_enum.py` | `a1b2c3d4e5f6` | PostgreSQL-only: convert `query.limiting_factor` and `tag.type` to native `ENUM`s. No-op on MySQL/SQLite. **Superseded by `c3d4e5f6a7b8`** — kept in the chain for history only. Its `CREATE TYPE` calls are guarded: `tagtype` survives on metadata DBs that passed through Apache Superset ≤ 2.1, and PostgreSQL has no `CREATE TYPE IF NOT EXISTS`. |
+| `2026-05-04_0003_ddl_drift_fixes.py` | `b2c3d4e5f6a7` | DDL drift corrections (NOT NULL / UNIQUE / index restorations; `tagged_object.object_type` stays VARCHAR, matching upstream `07f9a902af1b`). |
+| `2026-08-29_0004_enum_back_to_varchar.py` | `c3d4e5f6a7b8` | PostgreSQL-only: convert `query.limiting_factor` and `tag.type` back to `VARCHAR` and drop the enum types, so the schema matches the models — both are declared `Enum(..., native_enum=False)`. Idempotent. |
 
 ## Driver split
 

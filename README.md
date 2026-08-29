@@ -122,7 +122,14 @@ Liteset is a **drop-in replacement** for Apache Superset 6.0.0 at the backend le
 
 ### 1. Metadata database
 
-The schema of the metadata tables (`ab_user`, `ab_role`, `dashboards`, `slices`, `tables`, `dbs`, `query`, `saved_query`, `report_schedule`, etc.) is inherited without changes. Alembic revisions are carried over wholesale. An existing Superset installation can be migrated by simply swapping the backend — no `superset db upgrade` required.
+The schema of the metadata tables (`ab_user`, `ab_role`, `dashboards`, `slices`, `tables`, `dbs`, `query`, `saved_query`, `report_schedule`, etc.) is inherited from Apache Superset 6.0.0 — models, column names and types are unchanged, so an existing Superset database is read and written by Liteset as-is.
+
+The Alembic history, however, is **not** carried over: upstream's 339 revisions are squashed into a single initial revision (`c233f5365c9e`), and Liteset adds its own on top. Two consequences:
+
+- The metadata database must already be at upstream head `c233f5365c9e` (the 2025-08-05 release). If it is older, run the upstream chain to that revision first, using a legacy Apache Superset install.
+- Once it is, `alembic upgrade head` **is** required — Liteset's own revisions apply DDL drift corrections. It is not a zero-migration swap.
+
+See [`superset/migrations/README.md`](superset/migrations/README.md) for the exact procedure.
 
 ### 2. Frontend
 
