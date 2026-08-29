@@ -22,6 +22,50 @@ under the License.
 This file documents any backwards-incompatible changes in Superset and
 assists people when migrating to a new version.
 
+## Security hardening (August 2026)
+
+**`superset init` is required on upgrade.** Role synchronisation now creates 37
+permission rows that guards and `can_access()` calls have always checked but
+that were never seeded. They were invisible because `has_access` short-circuited
+on the Admin role; that short-circuit has been removed, so Admin — like every
+other role — is now authorized by its actual `permission_view` rows, matching
+Flask-AppBuilder.
+
+`sync_role_definitions()` runs only from the CLI, so an existing database does
+**not** pick these up on deploy. Until `superset init` is re-run, administrators
+get 403s on the navigation menu, SQL Lab tab state, cache invalidation, chart
+cache warm-up, database upload, and import/export. The shipped
+`docker/docker-init.sh` already runs it on every container boot; deployments
+that manage roles another way must run it explicitly:
+
+```bash
+superset init
+```
+
+**Existing sessions are invalidated.** Session cookies now carry a mandatory
+`type: "session"` claim, and cookies without it are rejected. Without this, any
+other `SECRET_KEY`-signed JWT carrying a `user_id` — notably the database OAuth2
+`state`, which is sent to a third-party IdP in a URL — was a usable session
+cookie. Users log in once more after the upgrade.
+
+**Other behaviour changes.**
+
+- `/ws/events` and `/api/v1/async_event/` are registered only when
+  `GLOBAL_ASYNC_QUERIES` is enabled, and the channel-token verifier refuses
+  known default secrets. Enabling the feature now requires a restart and a real
+  `GLOBAL_ASYNC_QUERIES_JWT_SECRET`.
+- `GLOBAL_ASYNC_QUERIES`, `EMBEDDED_SUPERSET` and `DASHBOARD_RBAC` are
+  reconciled between the `FEATURE_FLAGS` dict and their top-level settings
+  fields, so either form now enables the whole subsystem.
+- Virtual-dataset SQL is rejected if it mutates or contains more than one
+  statement, on the metadata-introspection path as well as at query time.
+- Row-level security on virtual datasets now fails closed: a dataset whose SQL
+  cannot be parsed for RLS injection raises instead of running unfiltered.
+- `PUT /api/v1/dataset/warm_up_cache` requires `can_warm_up_cache` (Admin), and
+  `GET /api/v1/saved_query/export/` requires `can_export`, both matching
+  upstream.
+- Database credentials are scrubbed from the event log payload.
+
 ## Production Docker (May 2026)
 
 - `docker-compose-non-dev.yml` now builds `target=lean` (production image:
