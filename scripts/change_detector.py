@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 from typing import List
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 # Define patterns for each group of files you're interested in
@@ -71,18 +72,42 @@ def fetch_changed_files_pr(repo: str, pr_number: str) -> List[str]:
     return [file_info["filename"] for file_info in files]
 
 
-def fetch_changed_files_push(repo: str, sha: str) -> List[str]:
-    """Fetches files changed in the last commit for push events using GitHub API."""
-    # Fetch commit details to get the parent SHA
+def push_base_candidates(repo: str, sha: str) -> List[str]:
+    """Yields the SHAs a push may be compared against, best first.
+
+    ``github.event.before`` covers the whole push, so a group is triggered by
+    any commit in it rather than only by the one that happens to sit at the
+    head. It is unusable for a brand new ref (all zeroes) and for a force push
+    (the old tip is gone), hence the head commit's parent as a fallback.
+    """
+    candidates = []
+    event_path = os.getenv("GITHUB_EVENT_PATH")
+    if event_path and os.path.exists(event_path):
+        with open(event_path) as f:
+            before = json.load(f).get("before") or ""
+        if before and set(before) != {"0"}:
+            candidates.append(before)
+
     commit_url = f"https://api.github.com/repos/{repo}/commits/{sha}"
     commit_data = fetch_files_github_api(commit_url)
     if "parents" not in commit_data or len(commit_data["parents"]) < 1:
         raise RuntimeError("No parent commit found for comparison.")
-    parent_sha = commit_data["parents"][0]["sha"]
-    # Compare the current commit against its parent
-    compare_url = f"https://api.github.com/repos/{repo}/compare/{parent_sha}...{sha}"
-    comparison_data = fetch_files_github_api(compare_url)
-    return [file["filename"] for file in comparison_data["files"]]
+    candidates.append(commit_data["parents"][0]["sha"])
+
+    return candidates
+
+
+def fetch_changed_files_push(repo: str, sha: str) -> List[str]:
+    """Fetches files changed by a push event using GitHub API."""
+    for base_sha in push_base_candidates(repo, sha):
+        compare_url = f"https://api.github.com/repos/{repo}/compare/{base_sha}...{sha}"
+        try:
+            comparison_data = fetch_files_github_api(compare_url)
+        except HTTPError as ex:
+            print(f"Cannot compare against {base_sha}: {ex}")
+            continue
+        return [file["filename"] for file in comparison_data.get("files", [])]
+    raise RuntimeError("No usable base commit found for comparison.")
 
 
 def detect_changes(files: List[str], check_patterns: List) -> bool:  # type: ignore
@@ -129,7 +154,7 @@ def main(event_type: str, sha: str, repo: str) -> None:
 
     elif event_type == "push":
         files = fetch_changed_files_push(repo, sha)
-        print("Files touched since previous commit:")
+        print("Files touched by this push:")
         print_files(files)
 
     elif event_type == "workflow_dispatch":
