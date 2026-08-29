@@ -20,7 +20,7 @@ import * as reactRedux from 'react-redux';
 import fetchMock from 'fetch-mock';
 import { render, screen, userEvent } from 'spec/helpers/testing-library';
 import setupExtensions from 'src/setup/setupExtensions';
-import { getExtensionsRegistry } from '@superset-ui/core';
+import { getExtensionsRegistry, supersetTheme } from '@superset-ui/core';
 import { Menu } from './Menu';
 
 const dropdownItems = [
@@ -274,20 +274,16 @@ test('should render the navigation', async () => {
 
 test('should render the brand', async () => {
   useSelectorMock.mockReturnValue({ roles: user.roles });
-  const {
-    data: {
-      brand: { alt, icon },
-    },
-  } = mockedProps;
+  const { brandLogoAlt, brandLogoUrl } = supersetTheme;
   render(<Menu {...mockedProps} />, {
     useRedux: true,
     useQueryParams: true,
     useRouter: true,
     useTheme: true,
   });
-  expect(await screen.findByAltText(alt)).toBeInTheDocument();
-  const image = screen.getByAltText(alt);
-  expect(image).toHaveAttribute('src', icon);
+  expect(await screen.findByAltText(brandLogoAlt)).toBeInTheDocument();
+  const image = screen.getByAltText(brandLogoAlt);
+  expect(image).toHaveAttribute('src', brandLogoUrl);
 });
 
 test('should render the environment tag', async () => {
