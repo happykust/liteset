@@ -3,12 +3,12 @@ name: Publish a Release
 env:
   REGISTRY: ghcr.io
   IMAGE_NAMESPACE: happykust
+  IMAGE_NAME: liteset
 
 on:
   release:
-    types: [published, edited]
+    types: [published]
 
-  # Can be triggered manually
   workflow_dispatch:
     inputs:
       release:
@@ -32,19 +32,62 @@ permissions:
 
 jobs:
 
+  release-meta:
+    name: Resolve and verify the release version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      git_ref: ${{ steps.meta.outputs.git_ref }}
+      push_latest: ${{ steps.meta.outputs.push_latest }}
+    steps:
+
+      - name: Resolve the release reference
+        id: ref
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "git_ref=${{ github.event.inputs.git-ref }}" >> $GITHUB_OUTPUT
+            echo "raw_version=${{ github.event.inputs.release }}" >> $GITHUB_OUTPUT
+            echo "push_latest=${{ github.event.inputs.force-latest }}" >> $GITHUB_OUTPUT
+          else
+            echo "git_ref=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+            echo "raw_version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+            echo "push_latest=${{ github.event.release.prerelease == false }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: "Checkout ${{ steps.ref.outputs.git_ref }}"
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.git_ref }}
+          fetch-depth: 0
+
+      - name: Verify the version matches the packaged one
+        id: meta
+        run: |
+          VERSION="${{ steps.ref.outputs.raw_version }}"
+          VERSION="${VERSION#v}"
+          PKG_VERSION=$(jq -r .version superset-frontend/package.json)
+          if [ "$VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Release '${VERSION}' does not match superset-frontend/package.json ('${PKG_VERSION}'), which is what setup.py publishes. Bump it there first, then retag."
+            exit 1
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "git_ref=${{ steps.ref.outputs.git_ref }}" >> $GITHUB_OUTPUT
+          echo "push_latest=${{ steps.ref.outputs.push_latest }}" >> $GITHUB_OUTPUT
+
   docker-release:
     name: docker-release
+    needs: release-meta
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        # Valid Dockerfile build targets are: dev, lean, ci (see repo-root Dockerfile).
         build_preset: ["dev", "lean", "ci"]
       fail-fast: false
     steps:
 
-      - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
+      - name: "Checkout ${{ needs.release-meta.outputs.git_ref }}"
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.release-meta.outputs.git_ref }}
           fetch-depth: 0
 
       - name: Set up QEMU
@@ -60,68 +103,97 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Determine release ref and image tag
-        id: release-meta
-        shell: bash
-        run: |
-          RELEASE="${{ github.event.release.tag_name }}"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            RELEASE="${{ github.event.inputs.release }}"
-            git checkout "${{ github.event.inputs.git-ref }}"
-          fi
-          echo "release=${RELEASE}" >> $GITHUB_OUTPUT
-          echo "image_tag=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/liteset:${RELEASE}-${{ matrix.build_preset }}" >> $GITHUB_OUTPUT
-
       - name: Build and push Docker image
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }}
+          VERSION: ${{ needs.release-meta.outputs.version }}
+          PRESET: ${{ matrix.build_preset }}
+          PUSH_LATEST: ${{ needs.release-meta.outputs.push_latest }}
         run: |
-          FORCE_LATEST_TAG=""
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.force-latest }}" = "true" ]; then
-            FORCE_LATEST_TAG="--tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/liteset:latest-${{ matrix.build_preset }}"
+          TAGS=(--tag "${IMAGE}:${VERSION}-${PRESET}")
+          if [ "$PUSH_LATEST" = "true" ]; then
+            TAGS+=(--tag "${IMAGE}:latest-${PRESET}")
+          fi
+          if [ "$PRESET" = "lean" ]; then
+            TAGS+=(--tag "${IMAGE}:${VERSION}")
+            if [ "$PUSH_LATEST" = "true" ]; then
+              TAGS+=(--tag "${IMAGE}:latest")
+            fi
           fi
 
           docker buildx build \
             --push \
-            --target ${{ matrix.build_preset }} \
+            --target "${PRESET}" \
             --build-arg INCLUDE_CHROMIUM=false \
-            --tag ${{ steps.release-meta.outputs.image_tag }} \
-            $FORCE_LATEST_TAG \
+            --build-arg BUILD_TRANSLATIONS=true \
+            "${TAGS[@]}" \
             --platform "linux/amd64" \
             .
 
-      - name: Checkout main after release build
-        if: github.event_name == 'workflow_dispatch'
-        run: git checkout main
-
   python-release:
     name: Build and publish Python package to PyPI
+    needs: release-meta
     runs-on: ubuntu-24.04
+    environment: pypi
     permissions:
-      # id-token: write enables PyPI Trusted Publishing (OIDC) — no API token needed.
-      # Configure the trusted publisher once on PyPI (project → Publishing): owner
-      # happykust, repo liteset, workflow tag-release.yml. contents: write is for the
-      # GitHub Release asset upload below (job-level perms replace the workflow default).
       id-token: write
       contents: write
     steps:
 
-      - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
+      - name: "Checkout ${{ needs.release-meta.outputs.git_ref }}"
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.release-meta.outputs.git_ref }}
           fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: superset-frontend/package-lock.json
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install build tools
-        run: pip install --upgrade build
+      - name: Build frontend assets and translation catalogs
+        working-directory: superset-frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          npm run build-translation
+
+      - name: Compile message catalogs
+        run: |
+          pip install -r requirements/translations.txt
+          pybabel compile -d superset/translations
 
       - name: Build sdist and wheel
-        run: python -m build
+        run: |
+          pip install --upgrade build
+          python -m build
+
+      - name: Verify the artifacts are complete
+        run: |
+          python - <<'PY'
+          import glob
+          import sys
+          import zipfile
+
+          wheel = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(wheel).namelist()
+          missing = []
+          if not any(n.startswith("superset/static/assets/") and n.endswith(".js") for n in names):
+              missing.append("frontend assets")
+          if not any(n.endswith("messages.mo") for n in names):
+              missing.append("compiled translations")
+          if missing:
+              sys.exit(f"{wheel} ships no {' and no '.join(missing)}")
+          print(f"{wheel} contains {len(names)} files, assets and translations included")
+          PY
 
       - name: Upload release assets to GitHub Release
         if: github.event_name == 'release'
@@ -132,8 +204,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to PyPI
-        # Uses OIDC Trusted Publishing (no password/secret). Requires the
-        # id-token: write permission above and a trusted publisher configured on PyPI.
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true
