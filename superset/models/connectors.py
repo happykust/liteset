@@ -753,42 +753,6 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
         return self.table.database.make_sqla_column_compatible(sqla_col, label)
 
 
-def _is_read_only_select(parsed_script: Any) -> bool:
-    """Return whether every statement is a plain, side-effect-free SELECT.
-
-    Upstream states the rule as "Only `SELECT` statements are allowed" but
-    implements it as ``has_mutation()`` alone, which sqlglot answers ``False``
-    for several statements that very much do have side effects — ``GRANT``,
-    ``CALL``, ``SET GLOBAL``, ``VACUUM``, ``COPY … TO PROGRAM`` all parse as an
-    opaque ``Command``. On engines where DDL implicitly commits (MySQL), the
-    probe's rollback does not undo them, so a user who can define a virtual
-    dataset could grant themselves privileges. ``COPY … TO PROGRAM`` takes
-    effect regardless of rollback.
-
-    Enforcing what upstream's own error message says is therefore a faithful
-    implementation of its rule, not a departure from it.
-
-    Two details matter for not over-rejecting legitimate datasets:
-
-    * a parenthesised query parses as ``Subquery``, so ``unnest()`` is applied
-      before the type check;
-    * ``SELECT … INTO`` parses as a ``Select`` and reports no mutation, yet
-      creates a table — detected via the ``into`` argument.
-    """
-    from sqlglot import expressions as exp
-
-    for statement in parsed_script.statements:
-        parsed = getattr(statement, "_parsed", None)
-        if parsed is None:
-            return False
-        target = parsed.unnest() if hasattr(parsed, "unnest") else parsed
-        if not isinstance(target, (exp.Select, exp.Union, exp.Except, exp.Intersect)):
-            return False
-        if isinstance(target, exp.Select) and target.args.get("into") is not None:
-            return False
-    return True
-
-
 class AsyncQueryExecutionMixin:
     """Datasource-agnostic async SQL build/execution helpers.
 
@@ -1438,7 +1402,7 @@ class SqlaTable(
                 message=f"Invalid SQL: {ex.error.message}"
             ) from ex
 
-        if parsed_script.has_mutation() or not _is_read_only_select(parsed_script):
+        if parsed_script.has_mutation() or not parsed_script.is_read_only_select():
             raise SupersetSecurityException(
                 SupersetError(
                     error_type=SupersetErrorType.DATASOURCE_SECURITY_ACCESS_ERROR,

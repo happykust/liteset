@@ -442,6 +442,19 @@ class BaseSQLStatement(Generic[InternalRepresentation]):
         """
         raise NotImplementedError()
 
+    def is_read_only_select(self) -> bool:
+        """
+        Check if the statement is a plain, side-effect-free `SELECT`.
+
+        Stricter than :meth:`is_mutating`, which answers `False` for a number of
+        statements that do have side effects (`GRANT`, `CALL`, `SET GLOBAL`,
+        `VACUUM`, `COPY ... TO PROGRAM`) because they parse as an opaque
+        command.
+
+        :return: True if the statement only reads data.
+        """
+        raise NotImplementedError()
+
     def optimize(self) -> BaseSQLStatement[InternalRepresentation]:
         """
         Return optimized statement.
@@ -695,6 +708,22 @@ class SQLStatement(BaseSQLStatement[exp.Expression]):
             ).is_mutating()
 
         return False
+
+    def is_read_only_select(self) -> bool:
+        """
+        Check if the statement is a plain, side-effect-free `SELECT`.
+
+        A parenthesized query parses as a `Subquery`, so it is unnested before
+        the type check; `SELECT ... INTO` parses as a `Select` and reports no
+        mutation, yet creates a table, so it is rejected via the `into` arg.
+        """
+        target = self._parsed.unnest()  # type: ignore[no-untyped-call]
+        if not isinstance(target, (exp.Select, exp.Union, exp.Except, exp.Intersect)):
+            return False
+
+        return not (
+            isinstance(target, exp.Select) and target.args.get("into") is not None
+        )
 
     def format(self, comments: bool = True) -> str:
         """
@@ -1144,6 +1173,15 @@ class KustoKQLStatement(BaseSQLStatement[str]):
         """
         return self._parsed.startswith(".") and not self._parsed.startswith(".show")
 
+    def is_read_only_select(self) -> bool:
+        """
+        Check if the statement is a plain, side-effect-free query.
+
+        In KQL every control command starts with a dot, so a statement that is
+        not a control command only reads data.
+        """
+        return self.is_select()
+
     def optimize(self) -> KustoKQLStatement:
         """
         Return optimized statement.
@@ -1279,6 +1317,14 @@ class SQLScript:
         :return: True if the script contains mutating statements
         """
         return any(statement.is_mutating() for statement in self.statements)
+
+    def is_read_only_select(self) -> bool:
+        """
+        Check if every statement in the script is a read-only `SELECT`.
+
+        :return: True if the script only reads data
+        """
+        return all(statement.is_read_only_select() for statement in self.statements)
 
     def optimize(self) -> SQLScript:
         """

@@ -2984,3 +2984,63 @@ def test_has_subquery(sql: str, engine: str, expected: bool) -> None:
     Test the `has_subquery` method.
     """
     assert SQLStatement(sql, engine).has_subquery() == expected
+
+
+@pytest.mark.parametrize(
+    "sql, engine, expected",
+    [
+        ("SELECT 1", "postgresql", True),
+        ("(SELECT 1)", "postgresql", True),
+        ("WITH cte AS (SELECT 1) SELECT * FROM cte", "postgresql", True),
+        ("SELECT 1 UNION SELECT 2", "postgresql", True),
+        ("SELECT 1 EXCEPT SELECT 2", "postgresql", True),
+        ("SELECT 1 INTERSECT SELECT 2", "postgresql", True),
+        ("SELECT a INTO new_table FROM t", "postgresql", False),
+        ("DELETE FROM t", "postgresql", False),
+        ("GRANT ALL ON t TO public", "postgresql", False),
+        ("CALL do_stuff()", "postgresql", False),
+        ("VACUUM t", "postgresql", False),
+        ("COPY t TO PROGRAM 'sh -c curl'", "postgresql", False),
+        ("SET GLOBAL max_connections = 1000", "mysql", False),
+        ("EXPLAIN SELECT 1", "postgresql", False),
+    ],
+)
+def test_is_read_only_select(sql: str, engine: str, expected: bool) -> None:
+    """
+    Test the `is_read_only_select` method.
+
+    Note that `GRANT`, `CALL`, `VACUUM`, `COPY ... TO PROGRAM` and `SET GLOBAL`
+    all parse as an opaque command and are reported as non-mutating, which is
+    exactly why a stricter check is needed.
+    """
+    assert SQLStatement(sql, engine).is_read_only_select() == expected
+
+
+@pytest.mark.parametrize(
+    "kql, expected",
+    [
+        ("foo | take 100", True),
+        (".drop table foo", False),
+        (".show tables", False),
+    ],
+)
+def test_is_read_only_select_kustokql(kql: str, expected: bool) -> None:
+    """
+    Test the `KustoKQLStatement.is_read_only_select()` method.
+    """
+    assert KustoKQLStatement(kql, "kustokql").is_read_only_select() == expected
+
+
+@pytest.mark.parametrize(
+    "script, engine, expected",
+    [
+        ("SELECT 1; SELECT 2", "postgresql", True),
+        ("SELECT 1; GRANT ALL ON t TO public", "postgresql", False),
+        ("DELETE FROM t; SELECT 1", "postgresql", False),
+    ],
+)
+def test_script_is_read_only_select(script: str, engine: str, expected: bool) -> None:
+    """
+    Test the `SQLScript.is_read_only_select()` method.
+    """
+    assert SQLScript(script, engine).is_read_only_select() == expected
