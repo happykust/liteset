@@ -42,6 +42,7 @@ from superset.schemas.security import (
     UserRoleRef,
     UsersSearchResponse,
 )
+from superset.security.auth_cache import invalidate_user
 
 logger = logging.getLogger(__name__)
 
@@ -502,6 +503,9 @@ class UserController(Controller):
         if user is None:
             raise ObjectNotFoundError("User", pk)
 
+        old_username = getattr(user, "username", None)
+        old_email = getattr(user, "email", None)
+
         # Upstream UserApi.put() lines 225-244: three guard blocks that prevent
         # clearing a user's last role/group, returning HTTP 400.
         _validate_user_update_payload(data.roles, data.groups, user)
@@ -532,6 +536,18 @@ class UserController(Controller):
             attrs["group_ids"] = data.groups
 
         await user_dao.update(user, attrs)
+        # Drop the Redis auth cache so a deactivation or role change takes
+        # effect on the next request instead of after the cache TTL.  Both
+        # the previous and the new username/email are cleared because the
+        # entry is mirrored under each of them.
+        redis = getattr(state, "redis", None)
+        await invalidate_user(redis, pk, old_username, old_email)
+        await invalidate_user(
+            redis,
+            pk,
+            attrs.get("username"),
+            attrs.get("email"),
+        )
         await event_logger.alog_with_context("user.update", object_ref=str(pk))
 
         result_dict = {
@@ -553,13 +569,19 @@ class UserController(Controller):
         self,
         user_dao: Any,
         pk: int,
+        state: State,
     ) -> dict[str, str]:
         """DELETE /api/v1/security/users/{pk} — delete a user."""
         user = await user_dao.find_by_id(pk)
         if user is None:
             raise ObjectNotFoundError("User", pk)
 
+        username = getattr(user, "username", None)
+        email = getattr(user, "email", None)
         await user_dao.delete(user)
+        # A deleted user must stop authenticating immediately, not once the
+        # cached entry expires.
+        await invalidate_user(getattr(state, "redis", None), pk, username, email)
         await event_logger.alog_with_context("user.delete", object_ref=str(pk))
         return {"message": "OK"}
 

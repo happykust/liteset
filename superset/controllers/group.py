@@ -23,6 +23,7 @@ from typing import Any
 
 import msgspec
 from litestar import Controller, delete, get, post, put
+from litestar.datastructures import State
 from litestar.di import Provide
 
 from superset.controllers.base import extract_pagination
@@ -37,6 +38,7 @@ from superset.schemas.security import (
     GroupsSearchResponse,
     GroupUserRef,
 )
+from superset.security.auth_cache import bump_auth_epoch
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +253,7 @@ class GroupController(Controller):
         self,
         group_dao: Any,
         data: GroupPostBody,
+        state: State,
     ) -> dict[str, Any]:
         """POST /api/v1/security/groups/ — create a new group."""
         if not data.name or not data.name.strip():
@@ -271,6 +274,9 @@ class GroupController(Controller):
             attrs["description"] = data.description.strip()
 
         group = await group_dao.create(attrs)
+        # A role / permission / group change affects an unbounded set of
+        # users, so invalidate every cached authorization payload at once.
+        await bump_auth_epoch(getattr(state, "redis", None))
         await event_logger.alog_with_context(
             "group.create", extra={"group_name": data.name}
         )
@@ -291,6 +297,7 @@ class GroupController(Controller):
         group_dao: Any,
         pk: int,
         data: GroupPutBody,
+        state: State,
     ) -> dict[str, Any]:
         """PUT /api/v1/security/groups/{pk} — update a group."""
         group = await group_dao.find_by_id(pk)
@@ -315,6 +322,9 @@ class GroupController(Controller):
             attrs["user_ids"] = data.users
 
         updated = await group_dao.update(group, attrs)
+        # A role / permission / group change affects an unbounded set of
+        # users, so invalidate every cached authorization payload at once.
+        await bump_auth_epoch(getattr(state, "redis", None))
         await event_logger.alog_with_context("group.update", object_ref=str(pk))
         return {
             "id": pk,
@@ -333,6 +343,7 @@ class GroupController(Controller):
         self,
         group_dao: Any,
         pk: int,
+        state: State,
     ) -> dict[str, str]:
         """DELETE /api/v1/security/groups/{pk} — delete a group."""
         group = await group_dao.find_by_id(pk)
@@ -340,6 +351,9 @@ class GroupController(Controller):
             raise ObjectNotFoundError("Group", pk)
 
         await group_dao.delete(group)
+        # A role / permission / group change affects an unbounded set of
+        # users, so invalidate every cached authorization payload at once.
+        await bump_auth_epoch(getattr(state, "redis", None))
         await event_logger.alog_with_context("group.delete", object_ref=str(pk))
         return {"message": "OK"}
 

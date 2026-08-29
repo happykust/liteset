@@ -140,6 +140,10 @@ class MockUser:
             ("can_read", "Query"),
             ("can_write", "Query"),
             ("can_read", "SavedQuery"),
+            # Bulk export is a distinct permission from read, matching
+            # upstream's MODEL_API_RW_METHOD_PERMISSION_MAP.
+            ("can_export", "SavedQuery"),
+            ("can_warm_up_cache", "Dataset"),
             ("can_write", "SavedQuery"),
             ("can_read", "SQLLab"),
             ("can_write", "SQLLab"),

@@ -72,6 +72,7 @@ async def test_provide_security_manager_passes_settings():
     state.settings.auth_role_public = "Viewer"
     state.settings.guest_role_name = "EmbedGuest"
     state.settings.dashboard_rbac = True
+    state.settings.custom_security_manager = None
 
     sm = await provide_security_manager(session, state)
     assert sm._admin_role_name == "SuperAdmin"

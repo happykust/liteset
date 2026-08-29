@@ -29,6 +29,7 @@ import json
 import logging
 import re
 import ssl
+from importlib import import_module
 from typing import Any, cast, TYPE_CHECKING
 
 from sqlalchemy import and_, or_, select
@@ -121,6 +122,39 @@ def query_context_modified(query_context: Any) -> bool:
     return False
 
 
+def _resolve_custom_security_manager(settings: Any) -> type["AsyncSecurityManager"]:
+    """Resolve ``CUSTOM_SECURITY_MANAGER``, defaulting to the built-in manager.
+
+    Accepts either the class itself or a dotted import path.  The class must
+    subclass :class:`AsyncSecurityManager` — a Flask-AppBuilder-era
+    ``SupersetSecurityManager`` subclass carried over from an upstream config
+    has an incompatible interface, and silently ignoring it (which is what
+    used to happen: the setting was declared and never read) would run the
+    deployment with different authorization rules than its config asks for.
+    """
+    configured = getattr(settings, "custom_security_manager", None)
+    if not configured:
+        return AsyncSecurityManager
+
+    if isinstance(configured, str):
+        module_name, _, attr = configured.rpartition(".")
+        if not module_name:
+            raise ValueError(
+                f"CUSTOM_SECURITY_MANAGER must be a dotted path, got {configured!r}"
+            )
+        configured = getattr(import_module(module_name), attr)
+
+    if not (
+        isinstance(configured, type) and issubclass(configured, AsyncSecurityManager)
+    ):
+        raise TypeError(
+            "CUSTOM_SECURITY_MANAGER must subclass "
+            "superset.security.manager.AsyncSecurityManager, got "
+            f"{configured!r}"
+        )
+    return configured
+
+
 def build_async_security_manager(
     session: Any,
     settings: Any,
@@ -140,7 +174,8 @@ def build_async_security_manager(
     embedded_enabled = getattr(
         settings, "embedded_superset", False
     ) or feature_flags.get("EMBEDDED_SUPERSET", False)
-    return AsyncSecurityManager(
+    manager_cls = _resolve_custom_security_manager(settings)
+    return manager_cls(
         dao=AsyncSecurityDAO(session),
         settings=settings,
         admin_role_name=settings.auth_role_admin,
@@ -314,6 +349,7 @@ class AsyncSecurityManager:
             and user_attributes
             and getattr(settings, "auth_roles_sync_at_login", False)
         ):
+            previous_roles = {getattr(r, "name", None) for r in (user.roles or [])}
             user.roles = await self._ldap_calculate_user_roles(
                 user_attributes, settings=settings
             )
@@ -322,6 +358,7 @@ class AsyncSecurityManager:
                 user_dn,
                 [r.name for r in user.roles],
             )
+            await self._invalidate_on_role_change(user, previous_roles, settings)
 
         # Self-register new LDAP users if enabled.
         if user is None and user_attributes and auth_user_registration:
@@ -504,12 +541,14 @@ class AsyncSecurityManager:
 
         # Sync the user's roles
         if user is not None and getattr(settings, "auth_roles_sync_at_login", False):
+            previous_roles = {getattr(r, "name", None) for r in (user.roles or [])}
             user.roles = await self._oauth_calculate_user_roles(
                 userinfo, settings=settings
             )
             logger.debug(
                 "Calculated new roles for user='%s' as: %s", username, user.roles
             )
+            await self._invalidate_on_role_change(user, previous_roles, settings)
 
         # If the user is new, register them
         if user is None and auth_user_registration:
@@ -1066,6 +1105,32 @@ class AsyncSecurityManager:
             except SQLAlchemyError:
                 pass
 
+    @staticmethod
+    async def _invalidate_on_role_change(
+        user: Any,
+        previous_roles: set[str | None],
+        settings: Any,
+    ) -> None:
+        """Drop the user's auth cache when AUTH_ROLES_SYNC_AT_LOGIN changed them.
+
+        The cached payload carries the user's roles and flattened permissions,
+        so an SSO-driven demotion that is not invalidated keeps the old grants
+        live for the rest of the cache TTL — the user re-logs in and is served
+        their pre-demotion entry, because the cache is keyed on user id rather
+        than on session. Only fires when the role set actually differs, so a
+        normal login costs nothing.
+        """
+        from superset.security.auth_cache import invalidate_user_for_settings
+
+        if {getattr(r, "name", None) for r in (user.roles or [])} == previous_roles:
+            return
+        await invalidate_user_for_settings(
+            settings,
+            getattr(user, "id", None),
+            getattr(user, "username", None),
+            getattr(user, "email", None),
+        )
+
     def is_admin(self, user: Any) -> bool:
         """Check if user has the Admin role."""
         roles = getattr(user, "roles", [])
@@ -1080,10 +1145,22 @@ class AsyncSecurityManager:
     ) -> bool:
         """Check if user has a specific permission on a view/resource.
 
-        Admin users bypass all permission checks.
+        There is no short-circuit for the Admin role.  Upstream
+        Flask-AppBuilder resolves Admin through its real ``permission_view``
+        rows (``_has_view_access`` compares against the role's actual
+        permissions; nothing there special-cases ``AUTH_ROLE_ADMIN``), so an
+        operator who revokes a permission from the Admin role — to contain a
+        suspected compromised account, say — expects that to take effect.
+        Returning ``True`` for anyone holding the role made the revocation a
+        no-op.
+
+        This depends on role seeding being complete: FAB materialised a
+        ``permission_view`` row per registered view automatically, while this
+        port seeds from ``sync_roles._STANDARD_VIEW_PERMISSIONS``.  A pair that
+        is checked but never seeded belongs to no role at all, Admin included.
+        ``tests/superset/unit/test_permission_seeding.py`` fails if that ever
+        drifts again.
         """
-        if self.is_admin(user):
-            return True
         # Fast path: check pre-resolved permissions (CachedUser, GuestUser)
         user_perms = getattr(user, "permissions", None)
         if isinstance(user_perms, (set, frozenset)):
@@ -1157,9 +1234,9 @@ class AsyncSecurityManager:
         :param template_params: Optional template parameters for Jinja templating
         :raises SupersetSecurityException: If the user cannot access the resource
         """
-        if self.is_admin(user):
-            return
-
+        # No blanket Admin short-circuit: upstream has none at the top of this
+        # method either.  Its two *per-branch* admin checks (dashboard, chart)
+        # are preserved below, matching ``superset_old/security/manager.py``.
         # ------------------------------------------------------------------
         # Synthetic Query from raw SQL  (original lines 2315-2324)
         # ------------------------------------------------------------------
@@ -1637,9 +1714,15 @@ class AsyncSecurityManager:
         return set(dimensions).issubset(drillable_columns)
 
     async def can_access_database(self, database: Any, *, user: Any) -> bool:
-        """Check if user can access a database."""
-        if self.is_admin(user):
-            return True
+        """Check if user can access a database.
+
+        No Admin short-circuit: upstream resolves this purely through
+        ``can_access_all_datasources`` / ``can_access_all_databases`` /
+        ``can_access`` (``superset_old/security/manager.py:517-530``).  Admin
+        still passes, because role seeding grants it ``all_database_access``
+        — but revoking that from the role now takes effect, as it does
+        upstream.
+        """
         if await self.has_access(
             ALL_DATASOURCE_ACCESS, ALL_DATASOURCE_ACCESS, user=user
         ):
@@ -1757,9 +1840,11 @@ class AsyncSecurityManager:
         schema access, datasource_access perm, AND ownership.
         We inline those checks here rather than recursing into
         raise_for_access to avoid the dashboard RBAC fallback path.
+
+        No Admin short-circuit, matching
+        ``superset_old/security/manager.py:561-574``; Admin passes via
+        ``all_datasource_access``.
         """
-        if self.is_admin(user):
-            return True
         if await self.has_access(
             ALL_DATASOURCE_ACCESS, ALL_DATASOURCE_ACCESS, user=user
         ):
@@ -2267,14 +2352,15 @@ class AsyncSecurityManager:
         This ensures cache is fully cleared regardless of which key
         was used to store the cached user data.
         """
-        keys = [f"auth:user:{user.id}"]
-        username = getattr(user, "username", None)
-        if username:
-            keys.append(f"auth:user:{username}")
-        email = getattr(user, "email", None)
-        if email:
-            keys.append(f"auth:user:{email}")
-        await redis.delete(*keys)
+        from superset.security.auth_cache import user_cache_keys
+
+        await redis.delete(
+            *user_cache_keys(
+                user.id,
+                getattr(user, "username", None),
+                getattr(user, "email", None),
+            )
+        )
 
     # --- Permission string formatters ---
 

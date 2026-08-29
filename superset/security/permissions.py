@@ -98,6 +98,15 @@ ADMIN_ONLY_VIEW_MENUS: frozenset[str] = frozenset(
         "Security",
         "SQL Lab",
         "User Registrations",
+        # Deliberate divergence from upstream. Upstream's
+        # ``UserRegistrationsRestAPI`` declares no ``class_permission_name``,
+        # so FAB derives the view menu from the class name — which is absent
+        # from upstream's admin-only list, handing Gamma read/write on it.
+        # That API serves ``registration_hash``, the account-activation token,
+        # so reproducing the upstream classification here would open it. The
+        # pair was never seeded before, meaning nobody held it; keeping it
+        # admin-only preserves that rather than granting it on the way in.
+        "UserRegistrationsRestAPI",
         "User's Statistics",
         # Guarding all AB_ADD_SECURITY_API = True REST APIs
         "RoleRestAPI",

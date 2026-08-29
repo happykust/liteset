@@ -24,6 +24,7 @@ from typing import Any
 
 import msgspec
 from litestar import Controller, delete, get, post, put
+from litestar.datastructures import State
 from litestar.di import Provide
 
 from superset.controllers.base import build_rison_query_params, extract_pagination
@@ -38,6 +39,7 @@ from superset.schemas.security import (
     PermissionViewsSearchResponse,
     ViewMenuRef,
 )
+from superset.security.auth_cache import bump_auth_epoch
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +194,7 @@ class PermissionViewController(Controller):
         self,
         pv_dao: Any,
         data: PermissionViewPostBody,
+        state: State,
     ) -> dict[str, Any]:
         """POST /api/v1/security/permissions-resources/ — create mapping.
 
@@ -211,6 +214,9 @@ class PermissionViewController(Controller):
                 f"Database exception occurred: {exc}"
             ) from exc
 
+        # A role / permission / group change affects an unbounded set of
+        # users, so invalidate every cached authorization payload at once.
+        await bump_auth_epoch(getattr(state, "redis", None))
         await event_logger.alog_with_context("permission_view.create")
         return {
             "id": pv.id,
@@ -232,6 +238,7 @@ class PermissionViewController(Controller):
         pv_dao: Any,
         pk: int,
         data: PermissionViewPutBody,
+        state: State,
     ) -> dict[str, Any]:
         """PUT /api/v1/security/permissions-resources/{pk} — update mapping.
 
@@ -256,6 +263,9 @@ class PermissionViewController(Controller):
                 f"Database exception occurred: {exc}"
             ) from exc
 
+        # A role / permission / group change affects an unbounded set of
+        # users, so invalidate every cached authorization payload at once.
+        await bump_auth_epoch(getattr(state, "redis", None))
         await event_logger.alog_with_context(
             "permission_view.update", object_ref=str(pk)
         )
@@ -278,6 +288,7 @@ class PermissionViewController(Controller):
         self,
         pv_dao: Any,
         pk: int,
+        state: State,
     ) -> dict[str, str]:
         """DELETE /api/v1/security/permissions-resources/{pk} — delete mapping.
 
@@ -296,6 +307,9 @@ class PermissionViewController(Controller):
                 f"Database exception occurred: {exc}"
             ) from exc
 
+        # A role / permission / group change affects an unbounded set of
+        # users, so invalidate every cached authorization payload at once.
+        await bump_auth_epoch(getattr(state, "redis", None))
         await event_logger.alog_with_context(
             "permission_view.delete", object_ref=str(pk)
         )

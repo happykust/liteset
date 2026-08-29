@@ -142,20 +142,16 @@ def require_permission(action: str, resource: str) -> GuardFn:
         connection: ASGIConnection[Any, Any, Any, Any], _: BaseRouteHandler
     ) -> None:
         user = connection.user
-        # Read admin role name from app state settings (not a stale cached
-        # value) so deployments with a custom AUTH_ROLE_ADMIN are respected.
-        admin_role = getattr(
-            getattr(connection.app.state, "settings", None),
-            "auth_role_admin",
-            _DEFAULT_ADMIN_ROLE_NAME,
-        )
         if not getattr(user, "is_authenticated", False):
             user_perms: set[tuple[str, str]] = getattr(user, "permissions", set())
             if permission_tuple in user_perms:
                 return
             raise NotAuthorizedException(detail="Not authenticated")
-        if is_admin(user, admin_role_name=admin_role):
-            return
+        # No Admin short-circuit here either: this guard fronts nearly every
+        # route, so leaving it in place made the removal in
+        # ``AsyncSecurityManager.has_access`` inert for route-level checks.
+        # Admin reaches its routes through its seeded permissions, as upstream
+        # Flask-AppBuilder's ``has_access`` decorator does.
         if not has_permissions(user, {permission_tuple}):
             raise PermissionDeniedException(
                 detail=f"Missing permission: {action} on {resource}"

@@ -58,12 +58,24 @@ async def test_is_admin_false(manager, mock_dao):
     assert manager.is_admin(gamma_user) is False
 
 
-async def test_has_access_admin_bypass(manager, mock_dao):
+async def test_has_access_admin_resolved_through_permissions(manager, mock_dao):
+    """Admin is authorized by its seeded permissions, not by its role name.
+
+    Upstream Flask-AppBuilder's ``_has_view_access`` never special-cases
+    ``AUTH_ROLE_ADMIN``; the role simply holds every permission after role
+    synchronisation.
+    """
     admin_user = MockUser(roles=[MockRole()])
-    result = await manager.has_access("can_read", "Chart", user=admin_user)
-    assert result is True
-    # Admin bypass — DAO should NOT be called
-    mock_dao.has_permission_view.assert_not_called()
+    mock_dao.has_permission_view.return_value = True
+    assert await manager.has_access("can_read", "Chart", user=admin_user) is True
+    mock_dao.has_permission_view.assert_called()
+
+
+async def test_has_access_admin_denied_when_permission_revoked(manager, mock_dao):
+    """Revoking a permission from the Admin role must actually deny it."""
+    admin_user = MockUser(roles=[MockRole()])
+    mock_dao.has_permission_view.return_value = False
+    assert await manager.has_access("can_read", "Chart", user=admin_user) is False
 
 
 async def test_has_access_non_admin_checks_dao(manager, mock_dao):
@@ -85,6 +97,7 @@ async def test_has_access_denied(manager, mock_dao):
 
 async def test_can_access_alias(manager, mock_dao):
     admin_user = MockUser(roles=[MockRole()])
+    mock_dao.has_permission_view.return_value = True
     result = await manager.can_access("can_read", "Chart", user=admin_user)
     assert result is True
 
@@ -785,3 +798,41 @@ def test_search_ldap_still_filters_referrals() -> None:
 
     assert user_dn is None
     assert attrs is None
+
+
+async def test_query_context_modified_detects_added_metric(manager):
+    """The guest payload check must actually compare against the saved chart.
+
+    It short-circuits to ``False`` when ``slice_`` or ``form_data`` is missing,
+    so this asserts the comparison itself works once both are populated — the
+    controllers now pass ``form_data`` through and the processor attaches
+    ``slice_`` for guests.
+    """
+    from superset.security.manager import query_context_modified
+
+    stored_chart = MagicMock()
+    stored_chart.id = 7
+    stored_chart.query_context = None
+    stored_chart.params_dict = {"metrics": ["count"], "columns": ["country"]}
+
+    shared = MagicMock()
+    shared.form_data = {"slice_id": 7, "metrics": ["count"], "columns": ["country"]}
+    shared.slice_ = stored_chart
+    shared.queries = []
+    assert query_context_modified(shared) is False
+
+    tampered = MagicMock()
+    tampered.form_data = {
+        "slice_id": 7,
+        "metrics": ["count"],
+        "columns": ["country", "salary"],
+    }
+    tampered.slice_ = stored_chart
+    tampered.queries = []
+    assert query_context_modified(tampered) is True
+
+    other_chart = MagicMock()
+    other_chart.form_data = {"slice_id": 99, "metrics": [], "columns": []}
+    other_chart.slice_ = stored_chart
+    other_chart.queries = []
+    assert query_context_modified(other_chart) is True

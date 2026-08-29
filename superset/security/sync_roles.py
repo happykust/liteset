@@ -435,6 +435,64 @@ _STANDARD_VIEW_PERMISSIONS: list[tuple[str, str]] = [
     # Tab state
     ("can_read", "TabStateView"),
     ("can_write", "TabStateView"),
+    # ------------------------------------------------------------------
+    # Pairs that guards and ``can_access`` calls check but that were never
+    # materialised. Flask-AppBuilder created a permission_view row for every
+    # registered view automatically; this port seeds from a literal list, so
+    # anything missing here exists in no role at all — including Admin, which
+    # only appeared to work because ``has_access`` short-circuits on the Admin
+    # role. Role membership below is decided by the same predicates as every
+    # other pair, so these land where upstream would put them.
+    #
+    # Regression guard: tests/superset/unit/test_permission_seeding.py fails
+    # if a checked pair is ever added without a row here.
+    # ------------------------------------------------------------------
+    # SQL Lab tab state / table schema (sql_lab role + Admin)
+    ("can_activate", "TabStateView"),
+    ("can_delete", "TabStateView"),
+    ("can_delete_query", "TabStateView"),
+    ("can_get", "TabStateView"),
+    ("can_migrate_query", "TabStateView"),
+    ("can_post", "TabStateView"),
+    ("can_put", "TabStateView"),
+    ("can_delete", "TableSchemaView"),
+    ("can_expanded", "TableSchemaView"),
+    ("can_post", "TableSchemaView"),
+    ("can_read", "SqlLabPermalinkRestApi"),
+    ("can_write", "SqlLabPermalinkRestApi"),
+    ("can_export", "SavedQuery"),
+    # Legacy Superset views (Gamma-accessible, as upstream's @has_access)
+    ("can_dashboard", "Superset"),
+    ("can_language_pack", "Superset"),
+    ("can_log", "Superset"),
+    # Datasource helper endpoints
+    ("can_external_metadata", "Datasource"),
+    ("can_external_metadata_by_name", "Datasource"),
+    ("can_samples", "Datasource"),
+    ("can_save", "Datasource"),
+    # Admin-only operations (``can_warm_up_cache`` / ``can_set_embedded`` are
+    # in ADMIN_ONLY_PERMISSIONS, so the predicates keep these off Alpha)
+    ("can_warm_up_cache", "Chart"),
+    ("can_warm_up_cache", "Dataset"),
+    ("can_set_embedded", "Dashboard"),
+    ("can_cache_dashboard_screenshot", "Dashboard"),
+    # Import / export
+    ("can_add", "ImportExportRestApi"),
+    ("can_mulexport", "ImportExportRestApi"),
+    ("can_upload", "Database"),
+    # Infrastructure endpoints
+    ("can_get", "MenuApi"),
+    ("can_get", "OpenApi"),
+    ("can_invalidate", "CacheRestApi"),
+    ("can_list", "AsyncEventsRestApi"),
+    ("can_get", "TemporaryCacheRestApi"),
+    ("can_post", "TemporaryCacheRestApi"),
+    ("can_put", "TemporaryCacheRestApi"),
+    ("can_delete", "TemporaryCacheRestApi"),
+    # User registrations — admin-only via ADMIN_ONLY_VIEW_MENUS, see the note
+    # in ``superset/security/permissions.py``
+    ("can_read", "UserRegistrationsRestAPI"),
+    ("can_write", "UserRegistrationsRestAPI"),
 ]
 
 
@@ -610,4 +668,22 @@ async def sync_role_definitions(
         "total_pvms": len(pvms),
     }
     logger.info("Role sync complete: %s", summary)
+
+    # Every cached authorization payload is now potentially stale: this call
+    # rewrites role permissions wholesale. There is no request and therefore no
+    # ``app.state.redis`` here (``superset init`` runs from the CLI), so the
+    # client is resolved from settings — without this, a permission removed by
+    # a re-sync stays live for the cache TTL.
+    try:
+        from superset.config import SupersetSettings
+        from superset.security.auth_cache import bump_auth_epoch_for_settings
+
+        await bump_auth_epoch_for_settings(SupersetSettings())  # type: ignore[call-arg]
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Role sync completed but the auth cache could not be invalidated; "
+            "cached permissions may be stale for up to the cache TTL.",
+            exc_info=True,
+        )
+
     return summary

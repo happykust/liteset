@@ -23,6 +23,7 @@ from typing import Any
 
 import msgspec
 from litestar import Controller, delete, get, post, put
+from litestar.datastructures import State
 from litestar.di import Provide
 
 from superset.controllers.base import extract_pagination
@@ -32,6 +33,7 @@ from superset.guards.rbac import require_permission
 from superset.params.rison import provide_rison_query
 from superset.providers import provide_role_dao
 from superset.schemas.security import RoleResponse, RolesSearchResponse
+from superset.security.auth_cache import bump_auth_epoch
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +249,7 @@ class RoleController(Controller):
         role_dao: Any,
         pk: int,
         data: RolePutBody,
+        state: State,
     ) -> dict[str, Any]:
         """PUT /api/v1/security/roles/{pk} — update a role.
 
@@ -260,6 +263,9 @@ class RoleController(Controller):
             raise SupersetValidationException("Role name is required")
 
         updated = await role_dao.update(role, {"name": data.name.strip()})
+        # A role / permission / group change affects an unbounded set of
+        # users, so invalidate every cached authorization payload at once.
+        await bump_auth_epoch(getattr(state, "redis", None))
         await event_logger.alog_with_context("role.update", object_ref=str(pk))
         return {"id": pk, "result": {"id": updated.id, "name": updated.name}}
 
@@ -275,6 +281,7 @@ class RoleController(Controller):
         self,
         role_dao: Any,
         pk: int,
+        state: State,
     ) -> dict[str, str]:
         """DELETE /api/v1/security/roles/{pk} — delete a role.
 
@@ -285,6 +292,9 @@ class RoleController(Controller):
             raise ObjectNotFoundError("Role", pk)
 
         await role_dao.delete(role)
+        # A role / permission / group change affects an unbounded set of
+        # users, so invalidate every cached authorization payload at once.
+        await bump_auth_epoch(getattr(state, "redis", None))
         await event_logger.alog_with_context("role.delete", object_ref=str(pk))
         return {"message": "OK"}
 
@@ -343,6 +353,7 @@ class RoleController(Controller):
         role_dao: Any,
         role_id: int,
         data: RolePermissionsPostBody,
+        state: State,
     ) -> dict[str, Any]:
         """POST /api/v1/security/roles/{role_id}/permissions — replace role permissions.
 
@@ -352,6 +363,9 @@ class RoleController(Controller):
         if result is None:
             raise ObjectNotFoundError("Role", role_id)
 
+        # A role / permission / group change affects an unbounded set of
+        # users, so invalidate every cached authorization payload at once.
+        await bump_auth_epoch(getattr(state, "redis", None))
         await event_logger.alog_with_context(
             "role.set_permissions", object_ref=str(role_id)
         )
@@ -373,6 +387,7 @@ class RoleController(Controller):
         role_dao: Any,
         role_id: int,
         data: RoleUsersPutBody,
+        state: State,
     ) -> dict[str, Any]:
         """PUT /api/v1/security/roles/{role_id}/users — replace role users.
 
@@ -384,6 +399,9 @@ class RoleController(Controller):
         if result == "not_found":
             raise ObjectNotFoundError("User", "some user_ids not found")
 
+        # A role / permission / group change affects an unbounded set of
+        # users, so invalidate every cached authorization payload at once.
+        await bump_auth_epoch(getattr(state, "redis", None))
         await event_logger.alog_with_context("role.set_users", object_ref=str(role_id))
         return {"result": {"user_ids": data.user_ids}}
 
@@ -399,6 +417,7 @@ class RoleController(Controller):
         role_dao: Any,
         role_id: int,
         data: RoleGroupsPutBody,
+        state: State,
     ) -> dict[str, Any]:
         """PUT /api/v1/security/roles/{role_id}/groups — replace role groups.
 
@@ -410,6 +429,9 @@ class RoleController(Controller):
         if result == "not_found":
             raise ObjectNotFoundError("Group", "some group_ids not found")
 
+        # A role / permission / group change affects an unbounded set of
+        # users, so invalidate every cached authorization payload at once.
+        await bump_auth_epoch(getattr(state, "redis", None))
         await event_logger.alog_with_context("role.set_groups", object_ref=str(role_id))
         return {"result": {"group_ids": data.group_ids}}
 

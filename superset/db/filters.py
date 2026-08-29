@@ -274,15 +274,15 @@ async def dashboard_access_filters(  # noqa: C901
     if security_manager.is_admin(user):
         return []
 
-    try:
-        from superset.models.connectors import SqlaTable
-        from superset.models.core import Database
-        from superset.models.dashboard import Dashboard
-        from superset.models.embedded_dashboard import EmbeddedDashboard
-        from superset.models.slice import Slice
-    except (ImportError, ModuleNotFoundError):
-        return []
-
+    # NOTE: these are late imports only to avoid an import cycle, never
+    # because the modules might be absent. Swallowing an ImportError here and
+    # returning ``[]`` would read as "no restriction" to every caller — the
+    # inverse of what an access filter must do when it cannot be built.
+    from superset.models.connectors import SqlaTable
+    from superset.models.core import Database
+    from superset.models.dashboard import Dashboard
+    from superset.models.embedded_dashboard import EmbeddedDashboard
+    from superset.models.slice import Slice
     from superset.utils.feature_flags import feature_flag_manager
 
     rbac_enabled = feature_flag_manager.is_feature_enabled("DASHBOARD_RBAC")
@@ -493,19 +493,16 @@ async def query_access_filters(
 
     user_id = getattr(user, "id", None)
     if user_id is None:
-        try:
-            from superset.models.sql_lab import Query
-
-            return [Query.user_id == -1]  # No access
-        except (ImportError, ModuleNotFoundError):
-            return []
-
-    try:
+        # Late import to avoid an import cycle. An ImportError must NOT be
+        # swallowed into ``[]``: that reads as "no restriction", the exact
+        # inverse of the deny-all this branch exists to return.
         from superset.models.sql_lab import Query
 
-        return [Query.user_id == user_id]
-    except (ImportError, ModuleNotFoundError):
-        return []
+        return [Query.user_id == -1]  # No access
+
+    from superset.models.sql_lab import Query
+
+    return [Query.user_id == user_id]
 
 
 async def report_access_filters(
@@ -525,10 +522,11 @@ async def report_access_filters(
     if can_access_all_datasources:
         return []
 
-    try:
-        from superset.models.reports import ReportSchedule
-    except (ImportError, ModuleNotFoundError):
-        return []
+    # NOTE: these are late imports only to avoid an import cycle, never
+    # because the modules might be absent. Swallowing an ImportError here and
+    # returning ``[]`` would read as "no restriction" to every caller — the
+    # inverse of what an access filter must do when it cannot be built.
+    from superset.models.reports import ReportSchedule
 
     user_id = getattr(user, "id", None)
     if user_id is None:
@@ -563,10 +561,11 @@ async def saved_query_access_filters(
 
     user_id = getattr(user, "id", None)
 
-    try:
-        from superset.models.sql_lab import SavedQuery
-    except (ImportError, ModuleNotFoundError):
-        return []
+    # NOTE: these are late imports only to avoid an import cycle, never
+    # because the modules might be absent. Swallowing an ImportError here and
+    # returning ``[]`` would read as "no restriction" to every caller — the
+    # inverse of what an access filter must do when it cannot be built.
+    from superset.models.sql_lab import SavedQuery
 
     if user_id is None:
         return [SavedQuery.created_by_fk == -1]

@@ -168,9 +168,35 @@ def test_is_gamma_pvm() -> None:
     assert _is_gamma_pvm(_build_pvm("can_read", "Dataset"))
 
 
+async def _grant(session: Any, role: Any, action: str, resource: str) -> None:
+    """Attach a permission-view pair to a role, as role seeding would."""
+    from superset.models.security import Permission, PermissionView, ViewMenu
+
+    permission = Permission(name=action)
+    view_menu = ViewMenu(name=resource)
+    session.add_all([permission, view_menu])
+    await session.flush()
+    pvm = PermissionView(permission_id=permission.id, view_menu_id=view_menu.id)
+    session.add(pvm)
+    await session.flush()
+    # ``Role.permissions`` is lazy="select"; touching it on a persisted object
+    # under asyncpg would fire a synchronous load. Await it explicitly first.
+    await session.refresh(role, ["permissions"])
+    role.permissions.append(pvm)
+    await session.flush()
+
+
 async def test_schemas_accessible_by_user_admin(db_session: Any) -> None:
+    """Admin reaches every schema through ``all_database_access``.
+
+    Holding a role *named* Admin is not itself authorization — there is no
+    name-based short-circuit, here or upstream. Role seeding is what grants
+    ``all_database_access``, so the fixture grants it explicitly rather than
+    relying on a permission-less role passing by name.
+    """
     sm = _make_manager(db_session)
     admin_role = await f.create_role(db_session, name="Admin")
+    await _grant(db_session, admin_role, "all_database_access", "all_database_access")
     admin = await f.create_user(db_session, username="sec_admin", roles=[admin_role])
     database = await _get_example_database(db_session)
     schemas = await sm.get_schemas_accessible_by_user(
