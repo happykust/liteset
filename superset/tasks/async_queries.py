@@ -65,21 +65,106 @@ query_timeout = _resolve_query_timeout()
 _sync_redis: Any = None
 
 
-def _get_sync_redis() -> Any:
-    """Lazily create a sync Redis client matching the configured redis_url."""
-    global _sync_redis  # noqa: PLW0603
-    if _sync_redis is None:
+def _apply_sync_ssl_kwargs(
+    target: dict[str, Any], cache_config: dict[str, Any]
+) -> None:
+    """Merge SSL-related keys from *cache_config* into *target* in-place.
+
+    Sync counterpart of ``superset.app._apply_ssl_kwargs`` — kept as a
+    separate copy rather than importing ``superset.app`` (which builds the
+    full Litestar application graph at import time and would be a heavy,
+    unwanted dependency for a Celery worker process).
+    """
+    target["ssl"] = True
+    if ssl_certfile := cache_config.get("CACHE_REDIS_SSL_CERTFILE") or None:
+        target["ssl_certfile"] = ssl_certfile
+    if ssl_keyfile := cache_config.get("CACHE_REDIS_SSL_KEYFILE") or None:
+        target["ssl_keyfile"] = ssl_keyfile
+    if ssl_cert_reqs := cache_config.get("CACHE_REDIS_SSL_CERT_REQS", "required"):
+        target["ssl_cert_reqs"] = ssl_cert_reqs
+    if ssl_ca_certs := cache_config.get("CACHE_REDIS_SSL_CA_CERTS") or None:
+        target["ssl_ca_certs"] = ssl_ca_certs
+
+
+def _build_gaq_sync_redis(settings: Any) -> Any:
+    """Build a SYNC Redis client from ``GLOBAL_ASYNC_QUERIES_CACHE_BACKEND``.
+
+    Mirrors ``superset.app._build_gaq_redis`` (the web process's async
+    client for the SAME config key) so the Celery worker publishes job
+    status to the exact Redis instance the web process's WebSocket relay
+    and polling endpoint read from.  Previously this built a client from
+    ``settings.redis_url`` instead — the SAME client that backs
+    ``auth:user:*`` / ``auth:cache_epoch`` — which silently writes events
+    nobody reads whenever the two backends differ, and pollutes the
+    auth cache under an eviction policy like ``allkeys-lru`` when they
+    happen to point at the same instance for the wrong reason (audit
+    finding M19).
+
+    Supports ``RedisCache`` and ``RedisSentinelCache`` CACHE_TYPEs, matching
+    the web process; any other value raises ``UnsupportedCacheBackendError``.
+    """
+    from superset.async_events.manager import UnsupportedCacheBackendError
+
+    cache_config: dict[str, Any] = (
+        getattr(settings, "global_async_queries_cache_backend", {}) or {}
+    )
+    cache_type = cache_config.get("CACHE_TYPE")
+
+    if cache_type == "RedisCache":
         import redis
 
+        kwargs: dict[str, Any] = {
+            "host": cache_config.get("CACHE_REDIS_HOST", "localhost"),
+            "port": int(cache_config.get("CACHE_REDIS_PORT", 6379)),
+            "db": int(cache_config.get("CACHE_REDIS_DB", 0)),
+        }
+        if password := cache_config.get("CACHE_REDIS_PASSWORD") or None:
+            kwargs["password"] = password
+        if username := cache_config.get("CACHE_REDIS_USER") or None:
+            kwargs["username"] = username
+        if cache_config.get("CACHE_REDIS_SSL", False):
+            _apply_sync_ssl_kwargs(kwargs, cache_config)
+        return redis.Redis(**kwargs)
+
+    if cache_type == "RedisSentinelCache":
+        from redis.sentinel import Sentinel
+
+        sentinels: list[tuple[str, int]] = cache_config.get(
+            "CACHE_REDIS_SENTINELS", [("127.0.0.1", 26379)]
+        )
+        master: str = cache_config.get("CACHE_REDIS_SENTINEL_MASTER", "mymaster")
+        sentinel_kwargs: dict[str, Any] = {}
+        if sentinel_password := (
+            cache_config.get("CACHE_REDIS_SENTINEL_PASSWORD") or None
+        ):
+            sentinel_kwargs["password"] = sentinel_password
+        master_kwargs: dict[str, Any] = {
+            "db": int(cache_config.get("CACHE_REDIS_DB", 0)),
+        }
+        if password := cache_config.get("CACHE_REDIS_PASSWORD") or None:
+            master_kwargs["password"] = password
+        if cache_config.get("CACHE_REDIS_SSL", False):
+            _apply_sync_ssl_kwargs(master_kwargs, cache_config)
+        sentinel = Sentinel(sentinels, sentinel_kwargs=sentinel_kwargs)
+        return sentinel.master_for(master, **master_kwargs)
+
+    raise UnsupportedCacheBackendError("Unsupported cache backend configuration")
+
+
+def _get_sync_redis() -> Any:
+    """Lazily create the sync Redis client used to publish job-status events.
+
+    Built from ``GLOBAL_ASYNC_QUERIES_CACHE_BACKEND`` — see
+    :func:`_build_gaq_sync_redis` — NOT ``redis_url`` (the auth-cache
+    client); see that function's docstring for why the distinction matters
+    (audit finding M19).
+    """
+    global _sync_redis  # noqa: PLW0603
+    if _sync_redis is None:
         from superset.config import SupersetSettings
 
         settings = SupersetSettings()  # type: ignore[call-arg]
-        redis_url = settings.redis_url
-        if not redis_url:
-            raise RuntimeError(
-                "redis_url is not configured; cannot update async query job status"
-            )
-        _sync_redis = redis.Redis.from_url(redis_url)
+        _sync_redis = _build_gaq_sync_redis(settings)
     return _sync_redis
 
 
@@ -292,6 +377,18 @@ async def _load_guest_user_from_token(
     try:
         role = await dao.get_role_by_name(role_name)
         if role is not None:
+            # Set roles (not just merged permissions) so
+            # ``_resolve_user_roles_for_rls`` resolves the Guest role in the
+            # worker the same way ``AuthMiddleware._load_guest_role_permissions``
+            # does for a live request.  Previously only permissions were
+            # merged, so ``guest_user.roles`` stayed ``[]`` here:
+            # REGULAR RLS filters bound to the Guest role matched nothing in
+            # the worker, and the unfiltered result set was cached in the
+            # shared data cache for every subsequent reader (security audit
+            # finding M15).
+            from superset.middleware.auth import _CachedRole
+
+            guest_user.roles = [_CachedRole(id=role.id, name=role.name)]
             role_perms = await dao.get_permissions_for_role_name(role_name)
             guest_user.permissions = guest_user.permissions | role_perms
     except Exception:

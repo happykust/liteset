@@ -39,6 +39,7 @@ from litestar.openapi.plugins import SwaggerRenderPlugin
 from litestar.response import Response
 from litestar.static_files import create_static_files_router
 from litestar.template.config import TemplateConfig
+from litestar.types import ASGIApp, Receive, Scope, Send
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import (
     DataError as _DataError,
@@ -300,6 +301,18 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
     # default placeholder.
     _check_secret_key(settings)
 
+    # ── thread pools ──────────────────────────────────────────────────────
+    # Size the executor behind every ``asyncio.to_thread`` offload before any
+    # request can run; CPython's default is 8 threads on a 4-vCPU box, which
+    # silently serialises sync engine specs, Jinja rendering and screenshots.
+    from superset.utils.threadpool import (
+        install_default_executor,
+        install_sqllab_executor,
+    )
+
+    app.state.default_executor = install_default_executor(settings)
+    app.state.sqllab_executor = install_sqllab_executor(settings)
+
     # ── i18n: load translation catalogs ───────────────────────────────────
     # Load all available language packs from ``superset/translations/`` and
     # register them with the module-level ``i18n`` catalog so that
@@ -505,8 +518,10 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
     # Initialize a dedicated Redis client for Global Async Query event streams.
     # Only when GLOBAL_ASYNC_QUERIES is enabled; when disabled we fall back to
     # the shared auth-cache Redis so DI providers reading ``state.event_redis``
-    # still work without a NoneType dereference.
-    if feature_flag_manager.is_feature_enabled("GLOBAL_ASYNC_QUERIES"):
+    # still work without a NoneType dereference.  Reads the single
+    # reconciled gate (see ``_global_async_queries_enabled``) rather than
+    # the feature flag alone (security audit finding H6).
+    if _global_async_queries_enabled(settings):
         # Raises UnsupportedCacheBackendError for unsupported CACHE_TYPE —
         # hard startup failure on misconfiguration is intentional.
         app.state.event_redis = _build_gaq_redis(settings)
@@ -643,28 +658,54 @@ async def on_startup(app: Litestar) -> None:  # noqa: C901
     except Exception:  # noqa: BLE001
         logger.debug("sync_config_to_db failed (non-fatal)", exc_info=True)
 
+    # ── BLUEPRINTS ─────────────────────────────────────────────────────────
+    # Flask Blueprints cannot be mounted on a Litestar app.  The setting is
+    # still accepted so an upstream ``superset_config.py`` loads unchanged, but
+    # a deployment whose extensions silently disappear is worse than one that
+    # is told, so say so loudly and name what was dropped.
+    blueprints = getattr(settings, "blueprints", None) or []
+    if blueprints:
+        logger.error(
+            "BLUEPRINTS is not supported: Flask Blueprints cannot be registered "
+            "on the Litestar application. %d blueprint(s) were ignored: %s. "
+            "Port them to Litestar route handlers and register them via "
+            "FLASK_APP_MUTATOR.",
+            len(blueprints),
+            ", ".join(
+                str(getattr(bp, "name", None) or getattr(bp, "__name__", repr(bp)))
+                for bp in blueprints
+            ),
+        )
+
     # ── FLASK_APP_MUTATOR ──────────────────────────────────────────────────
-    # Call the user-supplied last-mile hook with the Litestar app object.
-    # Mirrors ``SupersetAppInitializer.init_app_in_ctx`` which calls the
-    # configured app-mutator with ``self.superset_app``.
+    # Call the user-supplied last-mile hook.  Mirrors
+    # ``SupersetAppInitializer.init_app_in_ctx``, which calls the configured
+    # app-mutator with ``self.superset_app`` — here that object is the Litestar
+    # app, so a mutator carried over from upstream will be handling a different
+    # type.  Upstream lets the exception propagate and abort startup; so do we.
+    # Swallowing it left broken integrations running as if they were installed.
     flask_app_mutator = getattr(settings, "flask_app_mutator", None)
     if callable(flask_app_mutator):
         try:
             flask_app_mutator(app)
-        except Exception:  # noqa: BLE001
-            logger.warning("FLASK_APP_MUTATOR raised an exception", exc_info=True)
+        except Exception:
+            logger.exception(
+                "FLASK_APP_MUTATOR raised an exception. Note that it receives "
+                "the Litestar application, not a Flask app."
+            )
+            raise
 
     # Initialize active WebSocket connections tracker
     app.state.active_websockets = {}
 
     # Start periodic channel cleanup only when GLOBAL_ASYNC_QUERIES is enabled.
     # Starting it when GAQ is disabled would sweep streams that were never
-    # written — harmless but wasteful.
+    # written — harmless but wasteful.  Same reconciled gate as above
+    # (security audit finding H6 / M19: this task previously never started
+    # on the settings-field-only branch, letting stale channel streams and
+    # the global firehose grow unbounded).
     _cleanup_redis = app.state.event_redis
-    if (
-        feature_flag_manager.is_feature_enabled("GLOBAL_ASYNC_QUERIES")
-        and _cleanup_redis is not None
-    ):
+    if _global_async_queries_enabled(settings) and _cleanup_redis is not None:
         import asyncio
 
         from superset.async_events.manager import AsyncEventManager
@@ -746,6 +787,19 @@ async def on_shutdown(app: Litestar) -> None:
         await app.state.redis.close()
         logger.info("Redis connection closed")
 
+    # Release both pools.  Threads still blocked in a driver call that
+    # outlived its timeout are not waited on — shutdown must not hang on them.
+    from superset.utils.threadpool import shutdown_executors
+
+    shutdown_executors()
+    default_executor = getattr(app.state, "default_executor", None)
+    if default_executor is not None:
+        # ``shutdown_executors`` only owns the SQL Lab pool; the default
+        # executor is held on app state. Without this, every ``create_app()``
+        # in a long-lived process (notably the test suite) leaks a thread pool
+        # that is only reaped by the interpreter's atexit hook.
+        default_executor.shutdown(wait=False, cancel_futures=True)
+
 
 def _check_secret_key(settings: SupersetSettings) -> None:
     """Refuse to start (or warn in debug/test mode) when SECRET_KEY is the
@@ -789,6 +843,31 @@ def _check_secret_key(settings: SupersetSettings) -> None:
     sys.exit(1)
 
 
+def _global_async_queries_enabled(settings: SupersetSettings) -> bool:
+    """Single source of truth for whether Global Async Queries is enabled.
+
+    ``GLOBAL_ASYNC_QUERIES`` exists as both a dedicated settings field
+    (``global_async_queries``, mapped from the upstream ``GLOBAL_ASYNC_QUERIES``
+    config key) and a ``FEATURE_FLAGS`` entry — different call sites in this
+    file historically read different ones, so a config that set only one of
+    the pair left half the code on the "off" branch: the >= 32 byte
+    JWT-secret startup guard skipped on one branch, the dedicated event
+    Redis client and the periodic stale-channel cleanup task skipped on the
+    other (security audit finding H6).
+
+    ``SupersetSettings`` reconciles the two with an OR at construction time
+    (``_reconcile_duplicate_config_switches`` in config.py), so in practice
+    ``settings.global_async_queries`` alone is correct; this helper reads
+    both anyway so every gate is correct even against a settings object that
+    bypassed that validator, and so there is exactly ONE place every call
+    site in this module reads.
+    """
+    feature_flags = getattr(settings, "feature_flags", {}) or {}
+    return bool(getattr(settings, "global_async_queries", False)) or bool(
+        feature_flags.get("GLOBAL_ASYNC_QUERIES", False)
+    )
+
+
 def _validate_global_async_queries_config(settings: SupersetSettings) -> None:
     """Validate Global Async Queries config at app build time.
 
@@ -796,7 +875,7 @@ def _validate_global_async_queries_config(settings: SupersetSettings) -> None:
       1. CACHE_CONFIG or DATA_CACHE_CONFIG has a null/None cache type, or
       2. the JWT secret is shorter than 32 bytes.
     """
-    if not getattr(settings, "global_async_queries", False):
+    if not _global_async_queries_enabled(settings):
         return
 
     # ── Cache-backend-null check ──────────────────────────────────────────
@@ -992,6 +1071,102 @@ def _build_cors_config(settings: SupersetSettings) -> CORSConfig | None:
     )
 
 
+def _build_guarded_openapi_controller() -> type:
+    """Return an ``OpenAPIController`` subclass gated behind the same guard
+    as the upstream-compatible ``/api/v1/_openapi`` copy.
+
+    Litestar auto-registers its built-in OpenAPI router (schema JSON +
+    Swagger/Redoc UI) from ``openapi_config`` rather than through our own
+    ``route_handlers`` list, so it never picked up an RBAC guard — proved by
+    execution: ``200 /swagger/v1/openapi.json`` for an anonymous caller
+    while the guarded ``/api/v1/_openapi`` correctly returns ``401``
+    (security audit finding L1).  Reusing the same ``can_get`` / ``OpenApi``
+    permission (``superset.controllers.openapi.OpenApiController``) makes
+    the two match.
+
+    Import of ``superset.guards.rbac`` is deferred to keep it out of this
+    module's import-time footprint, matching every controller import in
+    ``create_app`` below.
+    """
+    from litestar.openapi.controller import OpenAPIController
+
+    from superset.guards.rbac import require_permission
+
+    class _GuardedOpenAPIController(OpenAPIController):
+        guards = [require_permission("can_get", "OpenApi")]  # noqa: RUF012
+
+    return _GuardedOpenAPIController
+
+
+class _HeaderWrappedApp:
+    """Wrap a Litestar instance so security/HTTP headers apply to EVERY
+    response, including one Litestar's own ``middleware=[...]`` stack never
+    reaches.
+
+    ``SecurityHeadersMiddleware`` and ``HTTPHeadersMiddleware`` are
+    registered on the Litestar app's own ``middleware=[...]`` list, which
+    wraps only the MATCHED route handler — so a request for a path that
+    matches no route (a 404) never runs them: no CSP, no ``nosniff``, no
+    frame-options, and an operator's ``HTTP_HEADERS`` / ``OVERRIDE_HTTP_HEADERS``
+    are lost there too.  Flask ran Talisman as an ``after_request`` hook,
+    which fires for error responses as well (security audit finding L8).
+
+    Wrapping the ASGI app from the OUTSIDE — the same pattern
+    ``AppRootMiddleware`` already uses for path-prefix stripping — makes
+    both middlewares run around every response Litestar ever sends,
+    regardless of whether a route matched.
+
+    Delegates attribute access to the wrapped instance (``__getattr__``) so
+    callers that introspect the Litestar app directly (``.routes``,
+    ``.cors_config``, test fixtures, etc.) keep working unchanged; only
+    ``isinstance(x, Litestar)`` no longer holds for the wrapper itself — use
+    ``.app`` to reach the real instance.
+    """
+
+    #: Attributes belonging to the wrapper itself; everything else is
+    #: delegated to the wrapped Litestar instance.
+    _OWN_ATTRS = frozenset({"app", "_security_headers", "_http_headers"})
+
+    def __init__(self, app: Litestar) -> None:
+        self.app = app
+        self._security_headers = SecurityHeadersMiddleware()
+        self._http_headers = HTTPHeadersMiddleware()
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Forward attribute writes to the wrapped app.
+
+        ``__getattr__`` alone only delegates *reads*: a top-level assignment
+        would land in the wrapper's own ``__dict__`` and be invisible to
+        anything reading it off the real ``Litestar`` instance. Own attributes
+        are set before delegation is possible, so they are matched by name.
+        """
+        if name in self._OWN_ATTRS:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self.app, name, value)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.app, name)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] in ("http", "websocket"):
+            # Litestar's own ``__call__`` sets these, but only once the
+            # request reaches ``self.app`` below — the header middlewares
+            # need ``scope["app"]`` (to resolve ``app.state.settings``)
+            # BEFORE that, since they build headers ahead of calling
+            # ``next_app``.  Pre-set it to the real instance; Litestar's own
+            # ``__call__`` overwrites it with the same object once reached.
+            scope["app"] = scope["litestar_app"] = self.app
+
+        async def _security_next(scope: Scope, receive: Receive, send: Send) -> None:
+            await self.app(scope, receive, send)
+
+        async def _http_next(scope: Scope, receive: Receive, send: Send) -> None:
+            await self._security_headers.handle(scope, receive, send, _security_next)
+
+        await self._http_headers.handle(scope, receive, send, _http_next)
+
+
 def create_app(  # noqa: C901
     settings: SupersetSettings | None = None,
 ) -> Litestar:
@@ -1095,6 +1270,15 @@ def create_app(  # noqa: C901
     # Import WebSocket handler (Phase 6)
     from superset.websocket.events import AsyncQueryWebSocket
 
+    # Register the GAQ polling controller and the ``/ws/events`` WebSocket
+    # route ONLY when Global Async Queries is actually enabled (the
+    # reconciled gate — see ``_global_async_queries_enabled``).  Previously
+    # both were registered unconditionally: with the shipped default JWT
+    # secret and no cookies at all, a forged token was accepted onto the
+    # global firehose channel in EVERY deployment, whether or not GAQ was
+    # configured (security audit finding H5, point 1).
+    _gaq_enabled = _global_async_queries_enabled(settings)
+
     route_handlers: list[Any] = [
         # Legacy /superset/explore_json endpoints (deprecated, eol 5.0.0) —
         # serve deck.gl and other legacy viz types that POST/GET form_data
@@ -1141,7 +1325,7 @@ def create_app(  # noqa: C901
         EmbeddedDashboardController,
         EmbeddedSSRController,
         CacheController,
-        AsyncEventController,
+        *([AsyncEventController] if _gaq_enabled else []),
         RLSController,
         ImportExportController,
         LegacyApiController,
@@ -1154,7 +1338,7 @@ def create_app(  # noqa: C901
         ViewMenuController,
         MenuController,
         OpenApiController,
-        AsyncQueryWebSocket,
+        *([AsyncQueryWebSocket] if _gaq_enabled else []),
     ]
     startup_hooks: list[Any] = [on_startup]
 
@@ -1338,17 +1522,17 @@ def create_app(  # noqa: C901
                 if settings.enable_proxy_fix
                 else []
             ),
-            SecurityHeadersMiddleware(),
+            # SecurityHeadersMiddleware / HTTPHeadersMiddleware are NOT listed
+            # here — they wrap the Litestar instance from the OUTSIDE (see
+            # ``_HeaderWrappedApp`` below) so they also cover unrouted (404)
+            # responses, which this ``middleware=[...]`` stack never reaches
+            # (security audit finding L8).
             # RateLimitMiddleware: gated on the RATELIMIT_ENABLED master switch
             # (off by default outside production).  Applies RATELIMIT_APPLICATION
             # to every request and AUTH_RATE_LIMIT to login POSTs.  Placed after
             # ProxyFix so the client IP used as the limit key is the corrected one.
             RateLimitMiddleware(),
             LocaleMiddleware(),
-            # HTTPHeadersMiddleware applies OVERRIDE_HTTP_HEADERS / HTTP_HEADERS /
-            # DEFAULT_HTTP_HEADERS from settings onto every response.  Equivalent
-            # to the original ``register_request_handlers`` after-request hook.
-            HTTPHeadersMiddleware(),
             # RequestContextMiddleware must run BEFORE the auth middleware
             # so audit-logging code paths inside auth/guards (which fire
             # synchronously from controllers) can resolve the request /
@@ -1364,7 +1548,7 @@ def create_app(  # noqa: C901
             *(
                 [AsyncTokenMiddleware()]
                 if (
-                    settings.global_async_queries
+                    _global_async_queries_enabled(settings)
                     and settings.global_async_queries_register_request_handlers
                 )
                 else []
@@ -1380,6 +1564,7 @@ def create_app(  # noqa: C901
             version=settings.version_string or "v0.0.0-dev",
             path="/swagger/v1",
             render_plugins=[SwaggerRenderPlugin()],
+            openapi_controller=_build_guarded_openapi_controller(),
         ),
         cors_config=_build_cors_config(settings),
         compression_config=CompressionConfig(backend="gzip"),
@@ -1391,12 +1576,17 @@ def create_app(  # noqa: C901
         state=State({"settings": settings}),
     )
 
+    # Wrap with the security/HTTP-headers middleware from the OUTSIDE (see
+    # ``_HeaderWrappedApp``) so they apply to every response, including a
+    # 404 for a path that matches no route handler.
+    served_app: ASGIApp = _HeaderWrappedApp(app)
+
     # Strip the application-root prefix BEFORE routing.  Litestar's own
     # middleware wrap the matched handler (they run after routing), so a
     # path-rewriting middleware must wrap the whole ASGI app from the outside.
     # The wrapper is a transparent ASGI app; callers that introspect Litestar
     # internals never set a prefix, so they always get the raw instance.
     if app_root:
-        return cast("Litestar", AppRootMiddleware(app, app_root=app_root))
+        return cast("Litestar", AppRootMiddleware(served_app, app_root=app_root))
 
-    return app
+    return cast("Litestar", served_app)

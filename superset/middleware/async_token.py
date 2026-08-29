@@ -45,6 +45,7 @@ This matches the four-condition reset logic in the original
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from http.cookies import SimpleCookie
 from typing import Any
@@ -67,6 +68,54 @@ def _resolve_secret_key(settings: Any) -> str:
     if hasattr(secret, "get_secret_value"):
         secret = secret.get_secret_value()  # type: ignore[union-attr]
     return str(secret)
+
+
+# Known shipped placeholder for GLOBAL_ASYNC_QUERIES_JWT_SECRET (matches
+# upstream's own default of the same string).  A channel-token VERIFIER
+# built on this public value would authenticate a token forged by anyone
+# who reads the source — see security audit finding H5.
+_KNOWN_DEFAULT_GAQ_SECRETS = frozenset({"test-secret-change-me"})
+
+
+def _is_known_default_secret(secret: str) -> bool:
+    """Return True when *secret* is empty or a recognisable shipped default.
+
+    Deliberately broader than an exact match on
+    ``_KNOWN_DEFAULT_GAQ_SECRETS``: also flags any secret containing
+    "change-me" / "change_me" (case-insensitive), mirroring the spirit of
+    upstream's Node ``superset-websocket`` relay, which refuses to boot on a
+    "CHANGE-ME"-style secret.
+    """
+    if not secret:
+        return True
+    normalized = secret.strip().lower()
+    if normalized in _KNOWN_DEFAULT_GAQ_SECRETS:
+        return True
+    return "change-me" in normalized or "change_me" in normalized
+
+
+def _resolve_verified_secret_key(settings: Any) -> str | None:
+    """Resolve the GAQ JWT secret for VERIFICATION, failing closed.
+
+    Returns ``None`` — instructing the caller to reject every token,
+    regardless of what it decodes to — when the resolved secret is empty or
+    matches a known shipped default.  The ``>= 32`` byte startup guard in
+    ``superset.app._validate_global_async_queries_config`` already refuses
+    to start the app in that configuration once GLOBAL_ASYNC_QUERIES is
+    enabled, but a verifier must not rely on that guard alone: it can be
+    bypassed by constructing settings directly (tests, alternate entry
+    points) or by a future change to the default string.
+
+    NOT used on the minting side (:class:`AsyncTokenMiddleware`): minting a
+    token that a fail-closed verifier will always reject is harmless, and
+    keeping ``_resolve_secret_key`` unconditional there avoids breaking
+    cookie issuance when GLOBAL_ASYNC_QUERIES is configured but not (yet)
+    validated.
+    """
+    secret = _resolve_secret_key(settings)
+    if _is_known_default_secret(secret):
+        return None
+    return secret
 
 
 def _decode_existing_cookie(
@@ -107,8 +156,15 @@ def _build_set_cookie(
     secure: bool,
     samesite: str | None,
     domain: str | None,
+    max_age: int | None = None,
 ) -> bytes:
-    """Compose a Set-Cookie header value; HttpOnly always set."""
+    """Compose a Set-Cookie header value; HttpOnly always set.
+
+    ``max_age`` bounds the cookie's lifetime in the browser's cookie jar to
+    match the JWT's own ``exp`` claim — previously neither was set, so a
+    captured cookie/token never expired and there was no server-side
+    revocation (audit finding M21).
+    """
     parts: list[str] = [f"{name}={token}"]
     parts.append("Path=/")
     parts.append("HttpOnly")
@@ -118,6 +174,8 @@ def _build_set_cookie(
         parts.append(f"SameSite={samesite}")
     if domain:
         parts.append(f"Domain={domain}")
+    if max_age is not None:
+        parts.append(f"Max-Age={max_age}")
     return "; ".join(parts).encode("ascii")
 
 
@@ -164,8 +222,9 @@ class AsyncTokenMiddleware(ASGIMiddleware):
     @staticmethod
     def _resolve_cookie_config(
         scope: Scope,
-    ) -> tuple[str, bool, str | None, str | None, str] | None:
-        """Return (cookie_name, secure, samesite, domain, secret_key) or None."""
+    ) -> tuple[str, bool, str | None, str | None, str, int] | None:
+        """Return (cookie_name, secure, samesite, domain, secret_key,
+        exp_seconds) or None."""
         app = scope.get("app")
         if app is None:
             return None
@@ -188,7 +247,10 @@ class AsyncTokenMiddleware(ASGIMiddleware):
         )
         samesite = getattr(settings, "global_async_queries_jwt_cookie_samesite", None)
         domain = getattr(settings, "global_async_queries_jwt_cookie_domain", None)
-        return cookie_name, secure, samesite, domain, secret_key
+        exp_seconds = int(
+            getattr(settings, "global_async_queries_jwt_exp_seconds", 86400) or 86400
+        )
+        return cookie_name, secure, samesite, domain, secret_key, exp_seconds
 
     @staticmethod
     def _needs_token_refresh(
@@ -219,7 +281,7 @@ class AsyncTokenMiddleware(ASGIMiddleware):
         cookie_config = AsyncTokenMiddleware._resolve_cookie_config(scope)
         if cookie_config is None:
             return None
-        cookie_name, secure, samesite, domain, secret_key = cookie_config
+        cookie_name, secure, samesite, domain, secret_key, exp_seconds = cookie_config
 
         raw_cookie: bytes | None = None
         for name, value in scope.get("headers", []):
@@ -235,9 +297,17 @@ class AsyncTokenMiddleware(ASGIMiddleware):
 
         channel_id = str(uuid.uuid4())
 
+        # ``exp`` bounds the token's lifetime (audit finding M21); a token
+        # that outlives it fails ``_decode_existing_cookie`` on the next
+        # request, which ``_needs_token_refresh`` already treats as "missing"
+        # — so it self-heals with a fresh mint, no other change required.
         sub = str(user_id) if user_id else None
         token = pyjwt.encode(
-            {"channel": channel_id, "sub": sub},
+            {
+                "channel": channel_id,
+                "sub": sub,
+                "exp": int(time.time()) + exp_seconds,
+            },
             secret_key,
             algorithm="HS256",
         )
@@ -250,6 +320,7 @@ class AsyncTokenMiddleware(ASGIMiddleware):
             secure=secure,
             samesite=samesite,
             domain=domain,
+            max_age=exp_seconds,
         )
 
 
@@ -297,7 +368,9 @@ def resolve_async_channel_id_from_request(
     try:
         if settings is None:
             return None
-        secret = _resolve_secret_key(settings)
+        # Fail closed on an empty/known-default secret (audit finding H5) —
+        # see ``_resolve_verified_secret_key``.
+        secret = _resolve_verified_secret_key(settings)
         if not secret:
             return None
         cookie_name = getattr(

@@ -202,9 +202,24 @@ async def test_session_cookie_fallback_returns_empty_channel():
     async-channels:user:{user_id}; fabricating 'events:{id}' here would
     cause catch-up reads against a non-existent stream.
     """
+    import time
+
     secret = "test-session-secret-32-bytes!!!"
-    # Mint a JWT-style session cookie with user_id claim (Liteset auth format)
-    session_token = pyjwt.encode({"user_id": 13}, secret, algorithm="HS256")
+    # Mint a JWT-style session cookie in the exact shape
+    # ``controllers.auth._create_session_cookie`` / ``utils.machine_auth``
+    # produce: {"type": "session", "user_id": ..., "iat": ..., "exp": ...}.
+    # A type-less / exp-less token is now rejected — see
+    # ``_resolve_user_id_from_session``.
+    session_token = pyjwt.encode(
+        {
+            "type": "session",
+            "user_id": 13,
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 3600,
+        },
+        secret,
+        algorithm="HS256",
+    )
 
     socket = _make_socket(headers={"cookie": f"session={session_token}"})
     result = await authenticate_websocket(
@@ -219,3 +234,67 @@ async def test_session_cookie_fallback_returns_empty_channel():
     # CRITICAL: channel must be empty string, NOT "events:13"
     assert result.channel == ""
     assert result.channel != f"events:{result.user_id}"
+
+
+async def test_typeless_secret_key_jwt_not_accepted_as_session():
+    """A SECRET_KEY-signed JWT carrying ``user_id`` but no ``type: "session"``
+    claim must NOT authenticate via the session-cookie fallback.
+
+    The database OAuth2 flow
+    signs a ``state`` JWT with the SAME key/algorithm and the SAME
+    ``user_id`` claim shape, then puts it in a URL query parameter sent
+    off-origin to a third-party IdP — exposed in IdP logs, Referer headers,
+    and browser history.  Without the ``type == "session"`` + ``require:
+    ["exp"]`` check, that token would double as a fully authenticated
+    WebSocket session cookie.  No itsdangerous fallback exists for this
+    shape, so a type-less token must resolve to no user at all — not a
+    degraded/anonymous success.
+    """
+    import time
+
+    secret = "test-session-secret-32-bytes!!!"
+
+    # Missing "type" claim (matches the OAuth2 "state" JWT shape).
+    no_type_token = pyjwt.encode(
+        {"user_id": 13, "exp": int(time.time()) + 3600},
+        secret,
+        algorithm="HS256",
+    )
+    socket = _make_socket(headers={"cookie": f"session={no_type_token}"})
+    result = await authenticate_websocket(
+        socket,
+        jwt_secret=secret,
+        cookie_name="async-token",
+        session_cookie_name="session",
+    )
+    assert result is None
+
+    # "type" present but wrong value must also be rejected.
+    wrong_type_token = pyjwt.encode(
+        {"type": "access", "user_id": 13, "exp": int(time.time()) + 3600},
+        secret,
+        algorithm="HS256",
+    )
+    socket2 = _make_socket(headers={"cookie": f"session={wrong_type_token}"})
+    result2 = await authenticate_websocket(
+        socket2,
+        jwt_secret=secret,
+        cookie_name="async-token",
+        session_cookie_name="session",
+    )
+    assert result2 is None
+
+    # Missing "exp" claim entirely must also be rejected (require: ["exp"]).
+    no_exp_token = pyjwt.encode(
+        {"type": "session", "user_id": 13},
+        secret,
+        algorithm="HS256",
+    )
+    socket3 = _make_socket(headers={"cookie": f"session={no_exp_token}"})
+    result3 = await authenticate_websocket(
+        socket3,
+        jwt_secret=secret,
+        cookie_name="async-token",
+        session_cookie_name="session",
+    )
+    assert result3 is None

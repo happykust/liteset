@@ -59,6 +59,46 @@ def validate_origin(origin: str, allowed_origins: list[str]) -> bool:
     return origin in allowed_origins
 
 
+def is_same_origin(origin: str, host_header: str) -> bool:
+    """Return True when ``origin``'s hostname matches ``host_header``'s.
+
+    Browsers always send the page's http(s) ``Origin`` on a WebSocket
+    handshake (even though the socket itself is ws(s)://); a same-origin
+    browser tab connecting to the app's own ``/ws/events`` endpoint must
+    always be allowed regardless of CORS configuration — ``CORS_OPTIONS`` /
+    ``cors_allow_origins`` govern cross-origin *fetches* the frontend makes
+    (e.g. to map-tile servers), not who may open the app's own WebSocket.
+
+    Compares hostnames only (not full origin incl. scheme/port) — a
+    pragmatic heuristic that tolerates a reverse proxy terminating TLS or a
+    ``Host`` header that omits a default port.
+    """
+    if not origin or not host_header:
+        return False
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(origin)
+    except ValueError:
+        return False
+    origin_host = parts.hostname
+    if not origin_host:
+        return False
+
+    # Compare host AND port: a service on a different port of the same
+    # hostname is a different origin to a browser, and treating it as
+    # same-origin would let it open this socket.
+    request_host, _, request_port = host_header.partition(":")
+    origin_port = (
+        str(parts.port) if parts.port else ("443" if parts.scheme == "https" else "80")
+    )
+    request_port = request_port.strip() or ("443" if parts.scheme == "https" else "80")
+    return (
+        origin_host.lower() == request_host.strip().lower()
+        and origin_port == request_port
+    )
+
+
 def _extract_cookie_token(headers: dict[str, str], cookie_name: str) -> str | None:
     """Extract a JWT token from the cookie header."""
     cookie_header = headers.get("cookie", "")
@@ -76,11 +116,13 @@ async def authenticate_websocket(
     jwt_algorithm: str = "HS256",
     cookie_name: str = "async-token",
     session_cookie_name: str = "session",
+    allow_query_token: bool = True,
 ) -> WebSocketAuthResult | None:
     """Authenticate a WebSocket connection.
 
     Attempts authentication in order:
-    1. JWT token from query parameter ``?token=<jwt>``
+    1. JWT token from query parameter ``?token=<jwt>`` (only when
+       ``allow_query_token`` is True — see note below)
     2. JWT token from HTTP-only cookie (``async-token``)
     3. Session cookie (legacy itsdangerous / Liteset JWT) — fallback for
        browser WebSocket connections that carry the standard session cookie.
@@ -91,6 +133,15 @@ async def authenticate_websocket(
         jwt_algorithm: JWT algorithm (default: HS256).
         cookie_name: Name of the async-token cookie.
         session_cookie_name: Name of the session cookie (legacy compat).
+        allow_query_token: Whether to honour ``?token=`` at all. Defaults to
+            True at this level so this general-purpose function's own
+            behaviour (and its direct unit tests) are unaffected; the
+            production caller (``superset.websocket.events.AsyncQueryWebSocket``)
+            passes the ``global_async_queries_ws_allow_query_token`` setting,
+            which defaults to **False** — the frontend never sends
+            ``?token=`` (it relies solely on the HttpOnly cookie), so
+            accepting it is unused surface that leaks into proxy logs and
+            browser history (audit finding M21).
 
     Returns:
         WebSocketAuthResult if authentication succeeds, None otherwise.
@@ -103,8 +154,8 @@ async def authenticate_websocket(
     else:
         headers = socket.headers
 
-    # 1. Try query parameter first
-    token = socket.query_params.get("token")
+    # 1. Try query parameter first (only when explicitly enabled)
+    token = socket.query_params.get("token") if allow_query_token else None
 
     # 2. Fallback to async-token cookie
     if not token:
@@ -159,14 +210,34 @@ async def authenticate_websocket(
 def _resolve_user_id_from_session(cookie: str, secret_key: str) -> int | None:
     """Extract user_id from a session cookie (JWT or itsdangerous).
 
-    Mirrors the logic in SupersetAuthMiddleware._authenticate_cookie.
+    Mirrors the logic in ``SupersetAuthMiddleware._authenticate_cookie``
+    (``superset/middleware/auth.py``), including its hardening for audit
+    finding H4: ``require: ["exp"]`` plus the ``type == "session"`` check
+    below together ensure only a cookie minted by
+    ``controllers.auth._create_session_cookie`` (or
+    ``utils.machine_auth``, which also stamps ``"type": "session"``)
+    authenticates here — not just any HS256/SECRET_KEY JWT carrying a
+    ``user_id`` claim.  Without this, the signed ``state`` JWT the database
+    OAuth2 flow puts in a URL query parameter (sent off-origin to a
+    third-party IdP, and so exposed in its logs / Referer / browser
+    history) would double as a fully authenticated session cookie here too.
+    A hard cut, deliberately with no grace-period branch: a type-less
+    "has exp" cookie is exactly the OAuth2 state token shape.
     """
     # Try JWT session first (Liteset auth controller sets this)
     try:
-        payload = pyjwt.decode(cookie, secret_key, algorithms=["HS256"])
-        uid = payload.get("user_id")
-        if uid is not None:
-            return int(uid)
+        payload = pyjwt.decode(
+            cookie,
+            secret_key,
+            algorithms=["HS256"],
+            options={"require": ["exp"]},
+        )
+        if payload.get("type") == "session":
+            uid = payload.get("user_id")
+            if uid is not None:
+                return int(uid)
+        else:
+            logger.debug("Rejecting session-cookie JWT without a 'session' type claim")
     except Exception:  # noqa: S110
         pass
 

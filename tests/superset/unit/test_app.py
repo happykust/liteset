@@ -23,7 +23,15 @@ def app():
 
 
 async def test_app_is_litestar_instance(app):
-    assert isinstance(app, Litestar)
+    """``create_app()`` now wraps the Litestar instance with the security /
+    HTTP-headers middleware from the OUTSIDE (``_HeaderWrappedApp``) so they
+    also apply to unrouted (404) responses, which Litestar's own
+    ``middleware=[...]`` stack never reaches.
+    The wrapper delegates attribute access to the underlying instance (so
+    ``app.routes`` etc. keep working unchanged); assert the identity check
+    against the real instance it wraps.
+    """
+    assert isinstance(app.app, Litestar)
 
 
 async def test_health_endpoint(app):
@@ -33,15 +41,16 @@ async def test_health_endpoint(app):
         assert resp.text == "OK"
 
 
-@pytest.mark.skip(
-    reason="OpenAPI path requires auth exclusion — deferred to superset/cleanup"
-)
-async def test_openapi_available(app):
+async def test_openapi_unauthenticated_rejected(app):
+    """Litestar's built-in OpenAPI router must require the same
+    ``can_get``/``OpenApi`` permission as the guarded ``/api/v1/_openapi``
+    copy. Confirmed by execution: an anonymous
+    caller previously got ``200`` here while ``/api/v1/_openapi`` correctly
+    returned ``401``.
+    """
     async with AsyncTestClient(app=app) as client:
         resp = await client.get("/swagger/v1/openapi.json")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["info"]["title"] == "Superset API"
+        assert resp.status_code == 401
 
 
 async def test_static_routes_have_unique_names(app):

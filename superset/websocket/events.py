@@ -36,6 +36,8 @@ Custom close codes:
 - 4401: Unauthorized (JWT invalid or missing)
 - 4403: Forbidden (origin not allowed)
 - 4429: Too many connections (per-user limit exceeded)
+- 4400: Invalid channel claim (missing, or colliding with the reserved
+  global-stream channel name)
 """
 
 from __future__ import annotations
@@ -53,8 +55,12 @@ from litestar.exceptions import WebSocketDisconnect
 
 from superset.async_events.manager import increment_id, parse_event
 from superset.extensions import stats_logger_manager
-from superset.middleware.async_token import _resolve_secret_key
-from superset.websocket.auth import authenticate_websocket, validate_origin
+from superset.middleware.async_token import _resolve_verified_secret_key
+from superset.websocket.auth import (
+    authenticate_websocket,
+    is_same_origin,
+    validate_origin,
+)
 
 # Graceful disconnect exceptions — import defensively
 try:
@@ -72,6 +78,15 @@ logger = logging.getLogger(__name__)
 WS_CLOSE_UNAUTHORIZED = 4401
 WS_CLOSE_FORBIDDEN_ORIGIN = 4403
 WS_CLOSE_TOO_MANY_CONNECTIONS = 4429
+WS_CLOSE_INVALID_CHANNEL = 4400
+
+# Reserved channel-name suffix for the global firehose stream (mirrors
+# ``superset.async_events.manager``'s ``global_stream_key`` construction:
+# ``f"{stream_prefix}full"``).  A forged JWT ``channel`` claim equal to this
+# would resolve to the SAME Redis Stream key every user's events are also
+# written to — granting a live read of every user's async-query events
+# (security audit finding H5, point 3).
+RESERVED_GLOBAL_CHANNEL_NAME = "full"
 
 # Defaults (overridable via settings)
 MAX_WS_PER_USER = 10
@@ -135,10 +150,36 @@ class AsyncQueryWebSocket(Controller):
         """
         settings = state.settings
 
-        # Origin validation (CORS does not apply to WebSocket upgrade)
+        # Origin validation (CORS does not apply to WebSocket upgrade).
+        # Sources, in order of trust:
+        #  1. Same-origin browser tab — always allowed regardless of CORS
+        #     config (CORS_OPTIONS governs cross-origin *fetches* the
+        #     frontend makes, e.g. to map-tile servers — not who may open
+        #     the app's own WebSocket).
+        #  2. An origin explicitly listed in CORS_OPTIONS['origins'] (the
+        #     upstream-compatible surface — also applied to the HTTP CORS
+        #     middleware in app.py:_build_cors_config) or the Liteset-only
+        #     ``cors_allow_origins`` (kept for backward compatibility; the
+        #     key it maps from does not exist in upstream Superset).
+        #  3. No Origin header at all — not a browser-driven request, so
+        #     not a cross-site-WebSocket-hijacking vector; let it through
+        #     to the auth check below.
+        # Anything else is REJECTED even when nothing is configured — the
+        # previous ``if allowed_origins and ...`` skipped validation
+        # entirely whenever no allow-list was configured, which is the
+        # common case, since CORS_ALLOW_ORIGINS is not even an upstream
+        # config key (security audit finding M20).
         origin = socket.headers.get("origin", "")
-        allowed_origins: list[str] = getattr(settings, "cors_allow_origins", []) or []
-        if allowed_origins and not validate_origin(origin, allowed_origins):
+        host_header = socket.headers.get("host", "")
+        cors_options: dict[str, Any] = getattr(settings, "cors_options", None) or {}
+        allowed_origins: list[str] = list(cors_options.get("origins") or []) + list(
+            getattr(settings, "cors_allow_origins", None) or []
+        )
+        if (
+            origin
+            and not is_same_origin(origin, host_header)
+            and not (allowed_origins and validate_origin(origin, allowed_origins))
+        ):
             await socket.accept()
             await socket.close(code=WS_CLOSE_FORBIDDEN_ORIGIN)
             logger.warning("WebSocket rejected: forbidden origin %s", origin)
@@ -149,23 +190,59 @@ class AsyncQueryWebSocket(Controller):
         # (default "test-secret-change-me"), NOT with secret_key.  Use the same
         # canonical helper as AsyncTokenMiddleware and the polling endpoint:
         # prefer global_async_queries_jwt_secret, fall back to secret_key,
-        # unwrap SecretStr if needed.
-        jwt_secret: str = _resolve_secret_key(settings)
+        # unwrap SecretStr if needed.  Fails closed (returns None) on an
+        # empty or known-default secret rather than verifying against a
+        # public string (security audit finding H5) — refuse the connection
+        # immediately in that case, without even attempting to decode a
+        # token.
+        jwt_secret: str | None = _resolve_verified_secret_key(settings)
+        if jwt_secret is None:
+            await socket.accept()
+            await socket.close(code=WS_CLOSE_UNAUTHORIZED)
+            logger.warning(
+                "WebSocket rejected: GLOBAL_ASYNC_QUERIES_JWT_SECRET is unset "
+                "or a known shipped default; refusing to verify any channel token"
+            )
+            return
 
         cookie_name: str = getattr(
             settings, "global_async_queries_jwt_cookie_name", "async-token"
         )
         session_cookie_name = getattr(settings, "session_cookie_name", "session")
+        allow_query_token = bool(
+            getattr(settings, "global_async_queries_ws_allow_query_token", False)
+        )
         auth_result = await authenticate_websocket(
             socket,
             jwt_secret=jwt_secret,
             cookie_name=cookie_name,
             session_cookie_name=session_cookie_name,
+            allow_query_token=allow_query_token,
         )
         if auth_result is None:
             await socket.accept()
             await socket.close(code=WS_CLOSE_UNAUTHORIZED)
             logger.debug("WebSocket rejected: authentication failed")
+            return
+
+        # Resolve the per-browser channel id early and reject a claim that
+        # collides with the reserved global-stream channel name BEFORE the
+        # connection is accepted/registered — accepting it would grant a
+        # live read of EVERY user's async-query events (audit finding H5,
+        # point 3).  A genuinely missing/empty channel (rare: session-cookie
+        # -only auth with no async-token cookie) is intentionally left to
+        # idle further down rather than rejected outright: it never
+        # resolves a stream key, so nothing is exposed by keeping the
+        # socket open — see ``_relay_events``.
+        channel = auth_result.channel
+        if channel and channel == RESERVED_GLOBAL_CHANNEL_NAME:
+            await socket.accept()
+            await socket.close(code=WS_CLOSE_INVALID_CHANNEL)
+            logger.warning(
+                "WebSocket rejected: channel claim %r collides with the "
+                "reserved global stream channel name",
+                channel,
+            )
             return
 
         # --- Per-user connection limit enforcement ---
@@ -195,13 +272,9 @@ class AsyncQueryWebSocket(Controller):
             # Increment the ws_connected_client metric for monitoring.
             stats_logger_manager.incr("ws_connected_client")
 
-        # Resolve per-browser channel id.  The JWT ``channel`` claim is the
-        # canonical source — it is the uuid4 minted by AsyncTokenMiddleware
-        # when the browser first contacted the server.  If the claim
-        # is absent (rare: session-cookie-only auth with no async-token cookie)
-        # the relay idles harmlessly until the client disconnects.
-        channel = auth_result.channel
-
+        # ``channel`` was already resolved (and validated against the
+        # reserved global-stream name) above, before this connection was
+        # accepted/registered.
         logger.info(
             "WebSocket accepted: user=%d, channel=%s",
             auth_result.user_id,
