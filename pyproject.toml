@@ -511,7 +511,7 @@ pyxlsb = "1"  # GPL
 # Override the transitive constraint so the resolver can proceed.
 # Note: the databricks adapter is incompatible with SA 2.x at runtime.
 override-dependencies = [
-    "sqlalchemy>=2.0, <2.1",
+    "sqlalchemy==2.0.51",
 ]
 
 [tool.pytest.ini_options]
