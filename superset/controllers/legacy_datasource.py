@@ -27,6 +27,8 @@ import copy
 import json
 import logging
 from collections import Counter
+from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 import pandas as pd
@@ -180,6 +182,68 @@ async def _get_datasource_by_name(
     return None
 
 
+def _inspect_columns_sync(
+    sync_conn: Any,
+    table: Table,
+    normalize_columns: bool,
+) -> list[dict[str, Any]]:
+    """Reflect *table*'s columns over a blocking connection.
+
+    Module level rather than a closure so the async wrapper stays within the
+    project's complexity budget; ``table`` and ``normalize_columns`` are passed
+    explicitly instead of being captured.
+    """
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy.exc import NoSuchTableError as _NoSuchTableError
+
+    inspector = sa_inspect(sync_conn)
+
+    # Raise NoSuchTableError when the table / view is not visible to the
+    # connection (mirrors ``has_table`` + ``has_view`` check in the original).
+    table_exists = inspector.has_table(table.table, schema=table.schema or None)
+    if not table_exists:
+        # Also check views (mirrors database.has_view in the original).
+        try:
+            views = inspector.get_view_names(schema=table.schema or None)
+        except Exception:  # noqa: BLE001
+            views = []
+        if table.table not in views:
+            raise _NoSuchTableError(table.table)
+
+    raw_cols = inspector.get_columns(table.table, schema=table.schema)
+
+    cols: list[dict[str, Any]] = []
+    for col in raw_cols:
+        col_name: str = col.get("name") or col.get("column_name", "")
+        if normalize_columns:
+            col_name = col_name.lower()
+        type_str: str = ""
+        try:
+            type_str = str(col.get("type", ""))
+        except Exception:  # noqa: BLE001
+            type_str = type(col.get("type", "")).__name__
+        cols.append(
+            {
+                "name": col_name,
+                "type": type_str.split("(")[0] if "(" in type_str else type_str,
+                "longType": type_str,
+                "comment": col.get("comment"),
+            }
+        )
+    return cols
+
+
+def _reflect_over_sync_connection(
+    database: Any,
+    inspect_fn: Callable[[Any], list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Run *inspect_fn* against a blocking connection to *database*."""
+    from superset.utils.database import get_sync_connection
+
+    with get_sync_connection(database) as (sync_conn, _):
+        return inspect_fn(sync_conn)
+
+
 async def _get_physical_table_metadata_async(
     database: Any,
     table: Table,
@@ -196,49 +260,22 @@ async def _get_physical_table_metadata_async(
     """
     from sqlalchemy.exc import NoSuchTableError
 
-    from superset.utils.database import get_async_connection
+    from superset.utils.database import (
+        database_has_async_driver,
+        get_async_connection,
+    )
 
-    def _inspect_sync(sync_conn: Any) -> list[dict[str, Any]]:
-        from sqlalchemy import inspect as sa_inspect
-        from sqlalchemy.exc import NoSuchTableError as _NoSuchTableError
-
-        inspector = sa_inspect(sync_conn)
-
-        # Raise NoSuchTableError when the table / view is not visible to the
-        # connection (mirrors ``has_table`` + ``has_view`` check in the original).
-        table_exists = inspector.has_table(table.table, schema=table.schema or None)
-        if not table_exists:
-            # Also check views (mirrors database.has_view in the original).
-            try:
-                views = inspector.get_view_names(schema=table.schema or None)
-            except Exception:  # noqa: BLE001
-                views = []
-            if table.table not in views:
-                raise _NoSuchTableError(table.table)
-
-        raw_cols = inspector.get_columns(table.table, schema=table.schema)
-
-        cols: list[dict[str, Any]] = []
-        for col in raw_cols:
-            col_name: str = col.get("name") or col.get("column_name", "")
-            if normalize_columns:
-                col_name = col_name.lower()
-            type_str: str = ""
-            try:
-                type_str = str(col.get("type", ""))
-            except Exception:  # noqa: BLE001
-                type_str = type(col.get("type", "")).__name__
-            cols.append(
-                {
-                    "name": col_name,
-                    "type": type_str.split("(")[0] if "(" in type_str else type_str,
-                    "longType": type_str,
-                    "comment": col.get("comment"),
-                }
-            )
-        return cols
+    _inspect_sync = partial(
+        _inspect_columns_sync, table=table, normalize_columns=normalize_columns
+    )
 
     try:
+        if not database_has_async_driver(database):
+            # Sync-only engine (Trino, ClickHouse, …): ``create_async_engine``
+            # cannot open this URI, so reflect over the sync engine in a thread.
+            return await asyncio.to_thread(
+                _reflect_over_sync_connection, database, _inspect_sync
+            )
         async with get_async_connection(database) as (async_conn, _):
             return await async_conn.run_sync(_inspect_sync)
     except NoSuchTableError:

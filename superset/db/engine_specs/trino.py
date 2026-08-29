@@ -347,6 +347,24 @@ class AsyncTrinoEngineSpec(BaseAsyncEngineSpec):
         return _json.loads(row[0]) if row else {}
 
     @classmethod
+    def estimate_statement_cost_sync(
+        cls,
+        conn: Any,
+        statement: str,
+    ) -> dict[str, Any]:
+        """Same EXPLAIN as the async path, over a blocking connection.
+
+        Trino has no asyncio driver, so this — not
+        :meth:`estimate_statement_cost` — is the branch cost estimation
+        actually takes for Trino databases.
+        """
+        import json as _json
+
+        sql = f"EXPLAIN (TYPE IO, FORMAT JSON) {statement}"
+        row = conn.execute(text(sql)).fetchone()
+        return _json.loads(row[0]) if row else {}
+
+    @classmethod
     def query_cost_formatter(
         cls,
         raw_cost: list[dict[str, Any]],

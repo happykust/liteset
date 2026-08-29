@@ -23,7 +23,7 @@ Covers:
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -393,3 +393,69 @@ def test_legacy_test_helpers_importable():
         assert "superset.db.base import" not in src, (
             "phantom module superset.db.base referenced"
         )
+
+
+# ---------------------------------------------------------------------------
+# H9: database.extra["engine_params"] must survive into the async engine
+# kwargs, matching the sync path's precedence.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_async_connection_merges_extra_engine_params(
+    monkeypatch: Any,
+) -> None:
+    """Regression: ``get_async_connection`` built its ``connect_args`` from
+    ``adjust_engine_params`` alone and never read ``database.get_extra()``.
+    An admin-pinned ``extra.engine_params.connect_args`` (e.g.
+    ``sslmode=verify-full``) was honoured by SQL Lab (the sync path already
+    reads ``get_extra()`` in ``_build_engine_kwargs_sync``) but silently
+    dropped for every chart/dashboard query, which connects with asyncpg's
+    unverified TLS default instead.
+    """
+    import superset.utils.database as ud
+
+    captured: dict[str, Any] = {}
+
+    class _FakeAsyncEngine:
+        async def dispose(self) -> None:
+            pass
+
+        def connect(self) -> Any:
+            @asynccontextmanager
+            async def _cm() -> Any:
+                yield MagicMock()
+
+            return _cm()
+
+    def _fake_create_async_engine(uri: str, **kwargs: Any) -> Any:
+        captured["uri"] = uri
+        captured["kwargs"] = kwargs
+        return _FakeAsyncEngine()
+
+    monkeypatch.setattr(ud, "create_async_engine", _fake_create_async_engine)
+
+    class _AsyncDB:
+        sqlalchemy_uri = "postgresql://svc@localhost:5432/db"
+        sqlalchemy_uri_decrypted = sqlalchemy_uri
+        impersonate_user = False
+
+        def get_extra(self, source: Any = None) -> dict[str, Any]:
+            return {
+                "engine_params": {
+                    "connect_args": {
+                        "sslmode": "verify-full",
+                        "sslrootcert": "/etc/ssl/ca.pem",
+                    }
+                }
+            }
+
+        def get_effective_user(self, url: Any) -> str | None:
+            return None
+
+    async with ud.get_async_connection(_AsyncDB()):
+        pass
+
+    connect_args = captured["kwargs"].get("connect_args") or {}
+    assert connect_args.get("sslmode") == "verify-full", connect_args
+    assert connect_args.get("sslrootcert") == "/etc/ssl/ca.pem", connect_args

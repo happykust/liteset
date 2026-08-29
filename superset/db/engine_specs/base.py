@@ -513,7 +513,16 @@ class BaseAsyncEngineSpec(ABC):
 
     @classmethod
     def extract_errors(cls, ex: Exception) -> list[dict[str, Any]]:
-        error_str = str(ex)
+        # Route through the sync package's sanitizer so the SQLAlchemy 2.0
+        # ``[SQL: ...] [parameters: ...]`` tail and the ``<class '...'>:``
+        # DBAPIError-repr prefix are stripped before the message reaches a
+        # response body, matching the sync engine-spec path (which already
+        # calls this via its own ``extract_errors``). Late-imported to avoid
+        # a module-load-time dependency between the async and sync
+        # engine-spec packages.
+        from superset.db_engine_specs.base import BaseEngineSpec
+
+        error_str = BaseEngineSpec._extract_error_message(ex)
         for pattern, message_template in cls._custom_errors:
             match = pattern.search(error_str)
             if match:
@@ -523,7 +532,7 @@ class BaseAsyncEngineSpec(ABC):
                         "error_type": "DatabaseError",
                     }
                 ]
-        return [{"message": str(ex), "error_type": type(ex).__name__}]
+        return [{"message": error_str, "error_type": type(ex).__name__}]
 
     @classmethod
     def adjust_engine_params(
@@ -602,4 +611,18 @@ class BaseAsyncEngineSpec(ABC):
         conn: Any,
         statement: str,
     ) -> dict[str, Any]:
+        raise Exception("Database does not support cost estimation")  # noqa: TRY002
+
+    @classmethod
+    def estimate_statement_cost_sync(
+        cls,
+        conn: Any,
+        statement: str,
+    ) -> dict[str, Any]:
+        """Blocking counterpart of :meth:`estimate_statement_cost`.
+
+        Engines without an asyncio driver (Trino, ClickHouse, …) cannot be
+        reached through ``create_async_engine``; the estimate command runs
+        this over a sync connection in a thread instead.
+        """
         raise Exception("Database does not support cost estimation")  # noqa: TRY002

@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -186,7 +187,9 @@ async def test_async_values_for_column_applies_mutator_percent_and_jinja(
     import sqlalchemy as sa
 
     monkeypatch.setattr(
-        SqlaTable, "_build_from_ast", lambda self: (sa.table("t"), None)
+        SqlaTable,
+        "get_from_clause",
+        lambda self, template_processor=None: (sa.table("t"), None),
     )
     monkeypatch.setattr(SqlaTable, "_apply_cte", lambda self, sql, cte: sql)
 
@@ -205,6 +208,234 @@ async def test_async_values_for_column_applies_mutator_percent_and_jinja(
     assert database.mutate_sql_based_on_config.called
     assert "x LIKE '%a%'" in executed["sql"]
     assert "%%" not in executed["sql"]
+
+
+def _virtual_table(sql: str) -> Any:
+    """Build a SqlaTable with a passthrough template processor, for the
+    ``_get_virtual_table_metadata`` guard tests below."""
+    from superset.models.connectors import SqlaTable
+
+    tbl = SqlaTable()
+    tbl.sql = sql
+    tbl.template_params = None
+
+    fake_processor = MagicMock()
+    fake_processor.process_template.side_effect = lambda s, **kw: s
+    tbl.get_template_processor = lambda **kw: fake_processor
+
+    database = MagicMock()
+    database.db_engine_spec.engine = "postgresql"
+    tbl.database = database
+
+    return tbl
+
+
+def test_get_virtual_table_metadata_rejects_mutating_sql():
+    r"""C1 regression: a single mutating statement must never reach the
+    database -- upstream's ``Only `SELECT` statements are allowed``.
+    """
+    from superset.exceptions import SupersetSecurityException
+
+    tbl = _virtual_table("DELETE FROM users")
+
+    with pytest.raises(SupersetSecurityException, match="SELECT"):
+        tbl._get_virtual_table_metadata()
+
+    tbl.database.apply_limit_to_sql.assert_not_called()
+    tbl.database.mutate_sql_based_on_config.assert_not_called()
+
+
+def test_get_virtual_table_metadata_rejects_multi_statement_sql():
+    """C1 regression: a parseable-but-multi-statement script must be
+    rejected even when neither statement is individually a mutation --
+    upstream's ``Only single queries supported``.
+    """
+    from superset.exceptions import SupersetSecurityException
+
+    tbl = _virtual_table("SELECT 1; SELECT 2")
+
+    with pytest.raises(SupersetSecurityException, match="single"):
+        tbl._get_virtual_table_metadata()
+
+    tbl.database.apply_limit_to_sql.assert_not_called()
+    tbl.database.mutate_sql_based_on_config.assert_not_called()
+
+
+def test_get_virtual_table_metadata_rejects_proven_stacked_query_exploit():
+    """C1 regression (critical): the exact proven exploit -- a virtual
+    dataset ``sql`` that closes the old wrapping ``SELECT * FROM (...) AS
+    virtual_table LIMIT 0`` subquery early and appends
+    ``COMMIT; DROP TABLE ...`` -- must be rejected without ever touching
+    the database. Confirmed live against Postgres pre-fix: 201 with a
+    normal ``['x']`` column list while the table was dropped.
+
+    The malformed SQL fails to parse at all (it is not valid on its own --
+    that is *how* the guard catches it here), so the guard raises via the
+    ``SupersetParseError`` branch inside ``_validate_and_limit_virtual_sql``
+    -- ``SupersetGenericDBErrorException("Invalid SQL: Error parsing ...")``
+    -- rather than the ``SupersetSecurityException`` the two sibling tests
+    above cover for syntactically-valid-but-mutating/multi-statement SQL.
+    Asserting only the ``SupersetException`` base class (both are
+    subclasses of it, as is the unrelated DB-connection-failure wrapper
+    this same method raises from its execution try/except) would also be
+    satisfied by removing the guard entirely and letting the raw SQL reach
+    ``get_sync_connection``, which fails for its own unrelated reason
+    ("No async engine spec found" against this test's mocked database) --
+    so the exception type/message must be pinned precisely.
+    """
+    from superset.exceptions import SupersetGenericDBErrorException
+
+    exploit_sql = (
+        "SELECT 1 AS x) AS v LIMIT 0; COMMIT; DROP TABLE public.users; "
+        "COMMIT; SELECT * FROM (SELECT 1 AS x"
+    )
+    tbl = _virtual_table(exploit_sql)
+
+    with pytest.raises(SupersetGenericDBErrorException, match="Error parsing"):
+        tbl._get_virtual_table_metadata()
+
+    tbl.database.apply_limit_to_sql.assert_not_called()
+    tbl.database.mutate_sql_based_on_config.assert_not_called()
+
+
+def _stub_sync_connection(monkeypatch, columns: list[tuple[str, None]]):
+    """Patch ``get_sync_connection`` (imported inside the method under a
+    local ``from ... import`` on every call) with a fake connection whose
+    cursor reports *columns*, and return the dict recording the executed
+    SQL string."""
+    from contextlib import contextmanager
+    from unittest.mock import MagicMock
+
+    executed: dict[str, str] = {}
+
+    class _FakeCursor:
+        description = columns
+
+    class _FakeResult:
+        cursor = _FakeCursor()
+
+    class _FakeConnection:
+        def execute(self, stmt: Any) -> _FakeResult:
+            executed["sql"] = str(stmt)
+            return _FakeResult()
+
+    fake_spec = MagicMock()
+    fake_spec.get_datatype.side_effect = lambda _code: "VARCHAR"
+
+    @contextmanager
+    def _fake_get_sync_connection(database: Any):
+        yield _FakeConnection(), fake_spec
+
+    monkeypatch.setattr(
+        "superset.utils.database.get_sync_connection",
+        _fake_get_sync_connection,
+    )
+    return executed
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        pytest.param("SELECT a, b FROM t", id="plain_select"),
+        pytest.param("WITH cte AS (SELECT a, b FROM t) SELECT a, b FROM cte", id="cte"),
+        pytest.param("SELECT a, b FROM t;", id="trailing_semicolon"),
+    ],
+)
+def test_get_virtual_table_metadata_accepts_legitimate_select(monkeypatch, sql):
+    """Positive-path C1 coverage: a legitimate single ``SELECT`` -- including
+    a CTE and a trailing semicolon -- must parse, get a LIMIT applied, and
+    return column metadata. This runs on every virtual-dataset save; without
+    this test an over-rejection regression in the guard (rejecting valid
+    SQL it shouldn't) would go undetected even though only the rejection
+    tests above are covered.
+    """
+    tbl = _virtual_table(sql)
+    tbl.database.apply_limit_to_sql.side_effect = lambda inner_sql, limit=None: (
+        f"{inner_sql} LIMIT {limit}"
+    )
+    tbl.database.mutate_sql_based_on_config.side_effect = lambda inner_sql: inner_sql
+
+    executed = _stub_sync_connection(monkeypatch, [("a", None), ("b", None)])
+
+    columns = tbl._get_virtual_table_metadata()
+
+    assert columns == [
+        {"column_name": "a", "type": "VARCHAR"},
+        {"column_name": "b", "type": "VARCHAR"},
+    ]
+    tbl.database.apply_limit_to_sql.assert_called_once()
+    assert "LIMIT" in executed["sql"]
+    # The trailing semicolon (if any) must not survive into the executed
+    # SQL -- it would be invalid before an appended ``LIMIT`` clause.
+    assert ";" not in executed["sql"].split(" LIMIT ")[0]
+
+
+@pytest.mark.asyncio
+async def test_async_values_for_column_uses_guarded_from_clause(monkeypatch):
+    """M4 regression: ``async_values_for_column`` must resolve its FROM
+    clause via ``get_from_clause`` (renders Jinja, rejects multi-statement/
+    mutating virtual-dataset SQL, and applies the underlying physical
+    tables' RLS predicates), never the unguarded ``_build_from_ast`` --
+    which skipped RLS entirely for this endpoint.
+    """
+    import sqlalchemy as sa
+
+    from superset.models.connectors import SqlaTable
+
+    tbl = SqlaTable()
+    tbl.sql = "SELECT * FROM sales"  # virtual dataset
+    tbl.fetch_values_predicate = None
+    tbl.catalog = None
+    tbl.schema = None
+
+    col = MagicMock()
+    col.column_name = "region"
+
+    def fake_get_sqla_col(label=None, template_processor=None):
+        return sa.literal_column("region").label("column_values")
+
+    col.get_sqla_col.side_effect = fake_get_sqla_col
+    tbl.columns = [col]
+
+    database = MagicMock()
+    from sqlalchemy.dialects import sqlite
+
+    database.get_dialect.return_value = sqlite.dialect()
+    database.mutate_sql_based_on_config.side_effect = lambda sql: sql
+    tbl.database = database
+
+    fake_tp = MagicMock()
+    fake_tp.process_template.side_effect = lambda s: s
+    monkeypatch.setattr(
+        "superset.jinja_context.get_template_processor",
+        lambda **kw: fake_tp,
+    )
+
+    called = {"get_from_clause": False}
+
+    def fake_get_from_clause(self, template_processor=None):
+        called["get_from_clause"] = True
+        return sa.table("sales"), None
+
+    def fail_build_from_ast(self):
+        raise AssertionError(
+            "async_values_for_column must not use the unguarded "
+            "_build_from_ast for a virtual dataset"
+        )
+
+    monkeypatch.setattr(SqlaTable, "get_from_clause", fake_get_from_clause)
+    monkeypatch.setattr(SqlaTable, "_build_from_ast", fail_build_from_ast)
+    monkeypatch.setattr(SqlaTable, "_apply_cte", lambda self, sql, cte: sql)
+
+    async def fake_execute(self, sql):
+        return pd.DataFrame({"column_values": ["west"]})
+
+    monkeypatch.setattr(SqlaTable, "_execute_sql", fake_execute)
+
+    result = await tbl.async_values_for_column("region", limit=10)
+
+    assert called["get_from_clause"] is True
+    assert result == ["west"]
 
 
 @pytest.mark.asyncio

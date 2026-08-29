@@ -640,6 +640,28 @@ def _md_to_html(raw: str) -> str:
     return nh3.clean(html, tags=_SAFE_MD_TAGS, attributes=_SAFE_MD_ATTRS)
 
 
+def _context_form_data(payload: Any) -> dict[str, Any]:
+    """Return the ``form_data`` a query-context payload carries.
+
+    ``security_manager.query_context_modified`` needs it to find the saved
+    chart (``form_data["slice_id"]``) and compare the requested metrics and
+    columns against it — the "Guest user cannot modify chart payload" control.
+    Upstream's ``QueryContextFactory`` receives ``form_data`` directly; here the
+    controllers build the context, so each construction site passes it through.
+
+    Accepts the chart-data body in either shape: a plain dict (legacy JSON
+    body) or a msgspec struct.
+    """
+    if payload is None:
+        return {}
+    nested = (
+        payload.get("form_data")
+        if isinstance(payload, dict)
+        else getattr(payload, "form_data", None)
+    )
+    return nested if isinstance(nested, dict) else {}
+
+
 class ChartController(Controller):
     path = "/api/v1/chart"
     tags = ["Charts"]
@@ -1600,6 +1622,7 @@ class ChartController(Controller):
         self,
         request: Request[Any, Any, Any],
         dao: ChartDAOProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
         # Read the multipart body manually (see parse_import_request): the
         # ``data: UploadFile = Body(MULTI_PART)`` injection 500'd when no file
@@ -1613,9 +1636,15 @@ class ChartController(Controller):
             ssh_private_keys_dict,
             ssh_private_key_passwords_dict,
         ) = await parse_import_request(request)
+        # ``security_manager`` is what makes the importer enforce
+        # ``can_write`` on Database/Dataset. Without it the importer falls
+        # back to ``ignore_permissions``, which is how a bundle carrying a
+        # ``databases/`` entry could create a connection with an
+        # attacker-controlled URI.
         cmd = ImportChartsCommand(
             contents=buf,
             dao=cast("AsyncChartDAO", dao),
+            security_manager=security_manager,
             overwrite=overwrite,
             passwords=passwords_dict,
             ssh_tunnel_passwords=ssh_dict,
@@ -1812,6 +1841,7 @@ class ChartController(Controller):
                     datasource=datasource,
                     queries=query_objects,
                     force=form_data.get("force", False),
+                    form_data=_context_form_data(form_data),
                     result_type="full",
                     result_format="json",
                 )
@@ -1901,6 +1931,7 @@ class ChartController(Controller):
             datasource=datasource,
             queries=query_objects,
             force=qc_data.get("force", False),
+            form_data=_context_form_data(qc_data),
             # Honor the ``?type=`` override so the processor runs the matching
             # result-type branch (``query_obj.result_type or
             # query_context.result_type`` precedence).
@@ -2088,6 +2119,7 @@ class ChartController(Controller):
                     datasource=datasource,
                     queries=query_objects,
                     force=data.force,
+                    form_data=_context_form_data(data),
                     result_type="full",
                     result_format="json",
                 )
@@ -2218,6 +2250,7 @@ class ChartController(Controller):
                 datasource=datasource,
                 queries=query_objects,
                 force=data.force,
+                form_data=_context_form_data(data),
                 result_format=result_format,
             )
             processor = AsyncQueryContextProcessor(
@@ -2244,6 +2277,7 @@ class ChartController(Controller):
                 datasource=datasource,
                 queries=_pp_qobjs,
                 force=data.force,
+                form_data=_context_form_data(data),
                 result_format=result_format,
             )
             _pp_proc = AsyncQueryContextProcessor(
@@ -2270,6 +2304,7 @@ class ChartController(Controller):
                 datasource=datasource,
                 queries=query_objects,
                 force=data.force,
+                form_data=_context_form_data(data),
                 result_format=result_format,
                 # Propagate result_type so the processor runs the matching
                 # branch (``results`` skips post-processing; columns/timegrains

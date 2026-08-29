@@ -22,6 +22,7 @@ source databases registered in the ``dbs`` table.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from collections.abc import AsyncIterator, Iterator
@@ -292,6 +293,79 @@ def _sync_check_for_oauth2(database: Any) -> Iterator[None]:
         raise
 
 
+async def _resolve_ssh_tunnel(database: Any) -> Any:
+    """Resolve ``database``'s configured SSH tunnel via its live ORM session.
+
+    Mirrors upstream's ``ssh_tunnel = override_ssh_tunnel or
+    DatabaseDAO.get_ssh_tunnel(self.id)`` (``superset_old/models/core.py:445``)
+    for the *async* connection path, where ``database`` is reached in the
+    same event loop/task it was loaded in, so reusing its own
+    ``AsyncSession`` is safe.
+
+    Returns ``None`` (no tunnel) whenever resolution isn't possible --
+    e.g. ``database`` has no live session attached -- rather than raising,
+    so this is safe to call unconditionally.
+    """
+    database_id = getattr(database, "id", None)
+    if not database_id:
+        return None
+    try:
+        from sqlalchemy.ext.asyncio import async_object_session
+
+        session = async_object_session(database)
+        if session is None:
+            return None
+
+        from superset.db.daos.database import AsyncDatabaseDAO
+
+        return await AsyncDatabaseDAO(session).get_ssh_tunnel(database_id)
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "Could not resolve SSH tunnel for database id=%s",
+            database_id,
+            exc_info=True,
+        )
+        return None
+
+
+async def _resolve_ssh_tunnel_standalone(database: Any) -> Any:
+    """Resolve ``database``'s configured SSH tunnel from a throwaway session.
+
+    Used by the *sync* bridge (:func:`_setup_ssh_tunnel` via
+    :func:`superset.utils.async_bridge.run_async`), which runs this
+    coroutine on a freshly-spun event loop in a worker thread. Reusing the
+    ``AsyncSession`` that loaded ``database`` (bound to the caller's own,
+    different, event loop/thread) would hand an asyncpg connection to a
+    loop it was never created on. A short-lived session against the
+    metadata database sidesteps that entirely -- SSH-tunnelled databases
+    are a narrow slice of deployments, so the extra round-trip is an
+    acceptable, safe trade-off.
+    """
+    database_id = getattr(database, "id", None)
+    if not database_id:
+        return None
+    try:
+        from superset.config import SupersetSettings
+        from superset.db.daos.database import AsyncDatabaseDAO
+        from superset.db.engine import create_db_engine, create_session_factory
+
+        settings = SupersetSettings()  # type: ignore[call-arg]
+        engine = create_db_engine(settings.sqlalchemy_database_uri)
+        try:
+            session_factory = create_session_factory(engine)
+            async with session_factory() as session:
+                return await AsyncDatabaseDAO(session).get_ssh_tunnel(database_id)
+        finally:
+            await engine.dispose()
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "Could not resolve SSH tunnel for database id=%s",
+            database_id,
+            exc_info=True,
+        )
+        return None
+
+
 def _setup_ssh_tunnel(
     database: Any,
     sqlalchemy_uri: str,
@@ -299,9 +373,25 @@ def _setup_ssh_tunnel(
 ) -> tuple[Any, Any]:
     """Return ``(ssh_manager, tunnel_cm)`` for the SSH tunnel.
 
-    Returns ``(None, nullcontext())`` when no tunnel is configured.
-    Only an explicit ``override_ssh_tunnel`` is honoured here.
+    Returns ``(None, nullcontext())`` when no tunnel is configured. Honours
+    an explicit ``override_ssh_tunnel``; otherwise resolves the database's
+    own configured tunnel (see :func:`_resolve_ssh_tunnel_standalone`) so a
+    bastion-only database isn't contacted directly just because no caller
+    on this path happened to pass one in -- previously only
+    ``test_connection``/``sync_permissions``/the importers ever did.
     """
+    if override_ssh_tunnel is None:
+        from superset.utils.async_bridge import run_async
+
+        try:
+            override_ssh_tunnel = run_async(_resolve_ssh_tunnel_standalone(database))
+        except RuntimeError:
+            # Called directly on an event-loop thread (no off-loop
+            # dispatch via asyncio.to_thread) -- bridging here would risk
+            # a deadlock. Fall back to "no tunnel" rather than crash the
+            # caller; matches pre-fix behaviour for this narrow case.
+            override_ssh_tunnel = None
+
     if override_ssh_tunnel is not None:
         from superset.extensions import ssh_manager_factory
 
@@ -533,6 +623,42 @@ def get_sync_engine(
                 engine.dispose()
 
 
+def _run_prequeries_sync(database: Any, conn: Connection) -> None:
+    """Run ``db_engine_spec.get_prequeries`` on a freshly-opened connection.
+
+    Mirrors ``Database.get_raw_connection``/``get_df`` (``superset/models/
+    core.py``), which already run these for SQL Lab, so prequery-only
+    session setup (e.g. Postgres' ``SET search_path``) also applies on the
+    metadata/estimate probes that go through :func:`get_sync_connection`.
+    """
+    db_spec = getattr(database, "db_engine_spec", None)
+    if db_spec is None or not hasattr(db_spec, "get_prequeries"):
+        return
+    from sqlalchemy import text as sa_text
+
+    for prequery in db_spec.get_prequeries(database=database):
+        conn.execute(sa_text(prequery))
+
+
+async def _run_prequeries_async(database: Any, conn: AsyncConnection) -> None:
+    """Async counterpart of :func:`_run_prequeries_sync`.
+
+    Closes the gap for chart/dashboard queries, which reach the database
+    exclusively through :func:`get_async_connection`: without this,
+    ``impersonate_user`` on engines that implement impersonation *only* as
+    a prequery (e.g. StarRocks' ``EXECUTE AS "<user>" WITH NO REVERT;``)
+    silently runs every chart query as the connection's service account
+    instead of the impersonated user.
+    """
+    db_spec = getattr(database, "db_engine_spec", None)
+    if db_spec is None or not hasattr(db_spec, "get_prequeries"):
+        return
+    from sqlalchemy import text as sa_text
+
+    for prequery in db_spec.get_prequeries(database=database):
+        await conn.execute(sa_text(prequery))
+
+
 @contextmanager
 def get_sync_connection(
     database: Any,
@@ -547,6 +673,7 @@ def get_sync_connection(
     spec = get_engine_spec_for_database(database)
     with get_sync_engine(database) as engine:
         with engine.connect() as conn:
+            _run_prequeries_sync(database, conn)
             yield conn, spec
 
 
@@ -570,86 +697,151 @@ async def get_async_connection(
     )
     async_uri = _to_async_uri(cast("str", uri))
 
-    engine_spec = get_engine_spec_for_database(database)
-    adjusted_uri, connect_args = engine_spec.adjust_engine_params(async_uri)
+    # SSH tunnel -- no caller on this path ever supplies an override, so
+    # resolve the database's own configured tunnel (see
+    # ``_resolve_ssh_tunnel``); previously this path never tunnelled at
+    # all. Tunnel setup/teardown is blocking (paramiko/sshtunnel), so it's
+    # dispatched to a worker thread rather than stalling the event loop.
+    ssh_tunnel = await _resolve_ssh_tunnel(database)
+    ssh_manager: Any = None
+    tunnel_cm: Any = nullcontext()
+    if ssh_tunnel is not None:
+        from superset.extensions import ssh_manager_factory
 
-    # Capture effective_username from the post-adjust, pre-impersonation URL
-    # (computed before impersonate_user runs) so DB_CONNECTION_MUTATOR
-    # receives the correct value.
-    from sqlalchemy.engine import make_url as _make_url_pre_imp
-
-    effective_for_mutator: str | None = (
-        _impersonation_username(
-            database.get_effective_user(_make_url_pre_imp(adjusted_uri))
+        ssh_manager = ssh_manager_factory.instance
+        tunnel_cm = ssh_manager.create_tunnel(
+            ssh_tunnel=ssh_tunnel,
+            sqlalchemy_database_uri=async_uri,
         )
-        if hasattr(database, "get_effective_user")
-        else None
-    )
 
-    # Impersonation: rewrite the URL / connect_args to run as the effective user.
-    # The impersonation hook
-    # lives on the *sync* engine spec (it's a pure URL/connect_args transform,
-    # driver-agnostic), so use ``database.db_engine_spec``. The OAuth2
-    # access_token is intentionally NOT resolved here: every OAuth2-impersonation
-    # engine (Trino/BigQuery/Snowflake/Databricks/GSheets) is sync-only and
-    # connects via ``get_sync_engine`` (where the token IS threaded). An async
-    # driver implies a non-OAuth2 backend (postgres/mysql), so None is correct.
-    if getattr(database, "impersonate_user", False):
-        try:
-            from sqlalchemy.engine import make_url
-
-            sync_spec = getattr(database, "db_engine_spec", None)
-            if sync_spec is not None and hasattr(sync_spec, "impersonate_user"):
-                url_obj = make_url(adjusted_uri)
-                url_obj, _ek = sync_spec.impersonate_user(
-                    database,
-                    effective_for_mutator,
-                    None,
-                    url_obj,
-                    {"connect_args": connect_args},
-                )
-                adjusted_uri = url_obj.render_as_string(hide_password=False)
-                connect_args = _ek.get("connect_args", connect_args)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("impersonation skipped for async connection: %s", exc)
-
-    # Apply the encrypted-extra merge + DB_CONNECTION_MUTATOR hooks right
-    # before ``create_async_engine``. A mutator that rewrites the URL /
-    # connect args must be respected on the async runtime path too, otherwise
-    # it would be silently ignored for postgres/mysql.
-    # ``pool_pre_ping``/``pool_size``/``max_overflow`` are async-engine-only
-    # kwargs and are intentionally kept out of the mutator-visible
-    # ``engine_kwargs``. Pass the pre-impersonation effective_for_mutator so
-    # DB_CONNECTION_MUTATOR receives the correct pre-impersonation value.
-    from sqlalchemy.engine import make_url
-    from sqlalchemy.engine.url import URL
-
-    async_engine_kwargs: dict[str, Any] = {"connect_args": connect_args}
-    mutated_url, async_engine_kwargs = _apply_connection_hooks(
-        database,
-        make_url(adjusted_uri),
-        async_engine_kwargs,
-        None,
-        effective_for_mutator,
-    )
-    if isinstance(mutated_url, URL):
-        adjusted_uri = mutated_url.render_as_string(hide_password=False)
-    else:
-        adjusted_uri = str(mutated_url)
-    connect_args = async_engine_kwargs.get("connect_args", connect_args)
-
-    engine = create_async_engine(
-        adjusted_uri,
-        connect_args=connect_args,
-        pool_pre_ping=True,
-        pool_size=1,
-        max_overflow=0,
-    )
+    tunnel_server = await asyncio.to_thread(tunnel_cm.__enter__)
     try:
-        async with engine.connect() as conn:
-            yield conn, engine_spec
+        if tunnel_server is not None and ssh_manager is not None:
+            logger.info("[SSH] Using tunnel at %s", tunnel_server.local_bind_address)
+            async_uri = str(ssh_manager.build_sqla_url(async_uri, tunnel_server))
+
+        # Validate the URI against the operator's DB_SQLA_URI_VALIDATOR /
+        # per-spec disallow_uri_query_params -- matches the sync path
+        # (_build_engine_kwargs_sync) so chart/dashboard queries are gated
+        # by the same host allow-list / tenancy checks as SQL Lab, instead
+        # of bypassing them entirely.
+        db_spec_for_validation = getattr(database, "db_engine_spec", None)
+        if db_spec_for_validation is not None and hasattr(
+            db_spec_for_validation, "validate_database_uri"
+        ):
+            from sqlalchemy.engine import make_url as _make_url_validate
+
+            db_spec_for_validation.validate_database_uri(_make_url_validate(async_uri))
+
+        engine_spec = get_engine_spec_for_database(database)
+
+        # Seed connect_args from database.extra["engine_params"] BEFORE
+        # adjust_engine_params -- mirrors the sync path's precedence
+        # (_build_engine_kwargs_sync: engine_kwargs starts from
+        # extra.engine_params, then adjust_engine_params/impersonation layer
+        # on top). Without this an operator-pinned connect_args (e.g.
+        # sslmode=verify-full) was silently dropped for every chart query
+        # while SQL Lab honoured it.
+        extra = database.get_extra() if hasattr(database, "get_extra") else {}
+        engine_params = dict((extra or {}).get("engine_params") or {})
+        base_connect_args: dict[str, Any] = dict(
+            engine_params.pop("connect_args", None) or {}
+        )
+
+        adjusted_uri, connect_args = engine_spec.adjust_engine_params(
+            async_uri, base_connect_args
+        )
+
+        # Capture effective_username from the post-adjust, pre-impersonation URL
+        # (computed before impersonate_user runs) so DB_CONNECTION_MUTATOR
+        # receives the correct value.
+        from sqlalchemy.engine import make_url as _make_url_pre_imp
+
+        effective_for_mutator: str | None = (
+            _impersonation_username(
+                database.get_effective_user(_make_url_pre_imp(adjusted_uri))
+            )
+            if hasattr(database, "get_effective_user")
+            else None
+        )
+
+        # Impersonation: rewrite the URL / connect_args to run as the effective
+        # user. The impersonation hook lives on the *sync* engine spec (it's a
+        # pure URL/connect_args transform, driver-agnostic), so use
+        # ``database.db_engine_spec``. The OAuth2 access_token is intentionally
+        # NOT resolved here: every OAuth2-impersonation engine (Trino/BigQuery/
+        # Snowflake/Databricks/GSheets) is sync-only and connects via
+        # ``get_sync_engine`` (where the token IS threaded). An async driver
+        # implies a non-OAuth2 backend (postgres/mysql), so None is correct.
+        if getattr(database, "impersonate_user", False):
+            try:
+                from sqlalchemy.engine import make_url
+
+                sync_spec = getattr(database, "db_engine_spec", None)
+                if sync_spec is not None and hasattr(sync_spec, "impersonate_user"):
+                    url_obj = make_url(adjusted_uri)
+                    url_obj, _ek = sync_spec.impersonate_user(
+                        database,
+                        effective_for_mutator,
+                        None,
+                        url_obj,
+                        {"connect_args": connect_args},
+                    )
+                    adjusted_uri = url_obj.render_as_string(hide_password=False)
+                    connect_args = _ek.get("connect_args", connect_args)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("impersonation skipped for async connection: %s", exc)
+
+        # Apply the encrypted-extra merge + DB_CONNECTION_MUTATOR hooks right
+        # before ``create_async_engine``. A mutator that rewrites the URL /
+        # connect args must be respected on the async runtime path too,
+        # otherwise it would be silently ignored for postgres/mysql. Pass the
+        # pre-impersonation effective_for_mutator so DB_CONNECTION_MUTATOR
+        # receives the correct pre-impersonation value.
+        from sqlalchemy.engine import make_url
+        from sqlalchemy.engine.url import URL
+
+        async_engine_kwargs: dict[str, Any] = {
+            **engine_params,
+            "connect_args": connect_args,
+        }
+        mutated_url, async_engine_kwargs = _apply_connection_hooks(
+            database,
+            make_url(adjusted_uri),
+            async_engine_kwargs,
+            None,
+            effective_for_mutator,
+        )
+        if isinstance(mutated_url, URL):
+            adjusted_uri = mutated_url.render_as_string(hide_password=False)
+        else:
+            adjusted_uri = str(mutated_url)
+        connect_args = async_engine_kwargs.pop("connect_args", connect_args)
+
+        # pool_pre_ping/pool_size/max_overflow are hard-set for the async
+        # runtime and always win over an operator's engine_params, to keep
+        # pool behaviour predictable; every other engine_params key (plus
+        # connect_args) passes through -- matches the sync path's precedence
+        # (create_engine(sync_uri, **engine_kwargs)).
+        for _pool_key in ("pool_pre_ping", "pool_size", "max_overflow"):
+            async_engine_kwargs.pop(_pool_key, None)
+
+        engine = create_async_engine(
+            adjusted_uri,
+            connect_args=connect_args,
+            pool_pre_ping=True,
+            pool_size=1,
+            max_overflow=0,
+            **async_engine_kwargs,
+        )
+        try:
+            async with engine.connect() as conn:
+                await _run_prequeries_async(database, conn)
+                yield conn, engine_spec
+        finally:
+            await engine.dispose()
     finally:
-        await engine.dispose()
+        await asyncio.to_thread(tunnel_cm.__exit__, None, None, None)
 
 
 def get_or_create_db(

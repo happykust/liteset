@@ -34,6 +34,7 @@ from typing import Any, ClassVar, TYPE_CHECKING, TypedDict
 
 import numpy as np
 import pandas as pd
+from sqlalchemy.exc import SQLAlchemyError
 
 from superset.common.query_object import AsyncQueryObject
 from superset.typing import DatasourceProtocol
@@ -891,7 +892,9 @@ class AsyncQueryContextProcessor:
         """
         datasource = self._datasource
         extra_cache_keys = (
-            datasource.get_extra_cache_keys(query_object.to_dict())
+            await asyncio.to_thread(
+                datasource.get_extra_cache_keys, query_object.to_dict()
+            )
             if hasattr(datasource, "get_extra_cache_keys")
             else []
         )
@@ -2256,9 +2259,67 @@ class AsyncQueryContextProcessor:
                 query=self._datasource, user=self._user
             )
         else:
+            await self._resolve_stored_slice()
             await self._security_manager.raise_for_access(
                 query_context=self._query_context, user=self._user
             )
+
+    async def _resolve_stored_slice(self) -> None:
+        """Attach the saved chart to the query context for the guest check.
+
+        ``security_manager.query_context_modified`` compares the requested
+        metrics/columns against the *stored* chart's params, and returns
+        ``False`` immediately when either ``form_data`` or ``slice_`` is
+        missing — so leaving ``slice_`` unset disables the "Guest user cannot
+        modify chart payload" control entirely.  Upstream populates both in
+        ``QueryContextFactory.create()``; this port builds the context in the
+        controllers, so the lookup is centralised here instead of repeated at
+        every construction site.
+
+        Only guests are affected: the comparison runs nowhere else, so the
+        lookup is skipped for everyone else rather than costing a query per
+        chart request.
+        """
+        query_context = self._query_context
+        if query_context is None or getattr(query_context, "slice_", None) is not None:
+            return
+        if not self._security_manager.is_guest_user(self._user):
+            return
+
+        form_data = getattr(query_context, "form_data", None) or {}
+        slice_id = form_data.get("slice_id")
+        if slice_id is None:
+            return
+
+        from superset.exceptions import QueryObjectValidationError
+        from superset.models.slice import Slice
+
+        session = getattr(self._security_manager, "dao", None)
+        session = getattr(session, "session", None)
+        if session is None:
+            return
+        try:
+            chart_pk = int(slice_id)
+        except (TypeError, ValueError):
+            # Not a chart reference at all (native filter request, malformed
+            # id) — there is genuinely nothing to compare against.
+            return
+
+        try:
+            query_context.slice_ = await session.get(Slice, chart_pk)
+        except SQLAlchemyError as ex:
+            # A transient database failure must NOT be conflated with "no
+            # stored chart": ``query_context_modified`` returns False when
+            # ``slice_`` is unset, so swallowing this would silently disable
+            # the guest payload check for the duration of the incident.
+            logger.warning(
+                "Could not load stored chart %s for the guest payload check",
+                chart_pk,
+                exc_info=True,
+            )
+            raise QueryObjectValidationError(
+                "Could not verify this request against the saved chart. Please retry."
+            ) from ex
 
     @staticmethod
     def get_data(

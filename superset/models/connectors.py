@@ -753,6 +753,42 @@ class SqlMetric(AuditMixinNullable, ImportExportMixin, CertificationMixin, Base)
         return self.table.database.make_sqla_column_compatible(sqla_col, label)
 
 
+def _is_read_only_select(parsed_script: Any) -> bool:
+    """Return whether every statement is a plain, side-effect-free SELECT.
+
+    Upstream states the rule as "Only `SELECT` statements are allowed" but
+    implements it as ``has_mutation()`` alone, which sqlglot answers ``False``
+    for several statements that very much do have side effects — ``GRANT``,
+    ``CALL``, ``SET GLOBAL``, ``VACUUM``, ``COPY … TO PROGRAM`` all parse as an
+    opaque ``Command``. On engines where DDL implicitly commits (MySQL), the
+    probe's rollback does not undo them, so a user who can define a virtual
+    dataset could grant themselves privileges. ``COPY … TO PROGRAM`` takes
+    effect regardless of rollback.
+
+    Enforcing what upstream's own error message says is therefore a faithful
+    implementation of its rule, not a departure from it.
+
+    Two details matter for not over-rejecting legitimate datasets:
+
+    * a parenthesised query parses as ``Subquery``, so ``unnest()`` is applied
+      before the type check;
+    * ``SELECT … INTO`` parses as a ``Select`` and reports no mutation, yet
+      creates a table — detected via the ``into`` argument.
+    """
+    from sqlglot import expressions as exp
+
+    for statement in parsed_script.statements:
+        parsed = getattr(statement, "_parsed", None)
+        if parsed is None:
+            return False
+        target = parsed.unnest() if hasattr(parsed, "unnest") else parsed
+        if not isinstance(target, (exp.Select, exp.Union, exp.Except, exp.Intersect)):
+            return False
+        if isinstance(target, exp.Select) and target.args.get("into") is not None:
+            return False
+    return True
+
+
 class AsyncQueryExecutionMixin:
     """Datasource-agnostic async SQL build/execution helpers.
 
@@ -954,11 +990,38 @@ class AsyncQueryExecutionMixin:
         # alias, exactly matching original ``get_from_clause``.
         return TextAsFrom(sa.text(inner), []).alias("virtual_table"), None
 
+    def _execute_sql_sync(self, sql: str) -> pd.DataFrame:
+        """Execute SQL over a synchronous connection (blocking).
+
+        Only reached for engines with no asyncio SQLAlchemy driver — Trino,
+        ClickHouse, MSSQL, Oracle, BigQuery, Snowflake, Databricks and the
+        like.  ``create_async_engine`` raises "the asyncio extension requires
+        an async driver" on those URIs, so the query has to go over the sync
+        engine; callers offload this to a thread.
+        """
+        from sqlalchemy.sql import text as sa_text
+
+        from superset.utils.database import get_sync_connection
+
+        with get_sync_connection(self.database) as (conn, _spec):
+            result = conn.execute(sa_text(sql))
+            if result.returns_rows:
+                cols = list(result.keys())
+                rows = result.fetchall()
+                return pd.DataFrame([tuple(row) for row in rows], columns=cols)
+            return pd.DataFrame()
+
     async def _execute_sql(self, sql: str) -> pd.DataFrame:
         """Execute SQL against the dataset's database and return a DataFrame."""
         from sqlalchemy.sql import text as sa_text
 
-        from superset.utils.database import get_async_connection
+        from superset.utils.database import (
+            database_has_async_driver,
+            get_async_connection,
+        )
+
+        if not database_has_async_driver(self.database):
+            return await asyncio.to_thread(self._execute_sql_sync, sql)
 
         async with get_async_connection(self.database) as (conn, _spec):
             result = await conn.execute(sa_text(sql))
@@ -1347,11 +1410,60 @@ class SqlaTable(
             return self._get_virtual_table_metadata()
         return self._get_physical_table_metadata()
 
+    def _validate_and_limit_virtual_sql(self, inner_sql: str) -> str:
+        """Parse ``inner_sql``, reject anything but a single read-only query,
+        then apply the column-description LIMIT + ``SQL_QUERY_MUTATOR``.
+
+        Mirrors upstream's ``get_virtual_table_metadata``
+        (``superset_old/connectors/sqla/utils.py:100-170``): no parse, no
+        ``has_mutation()``, no single-statement check and no
+        ``SQL_QUERY_MUTATOR`` here meant a virtual dataset's ``sql`` could
+        close the wrapping subquery and append arbitrary statements
+        (stacked-query injection) to a probe reachable by any user who can
+        create/refresh a dataset — no SQL Lab access or ``allow_dml``
+        required.
+        """
+        from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
+        from superset.exceptions import (
+            SupersetGenericDBErrorException,
+            SupersetParseError,
+            SupersetSecurityException,
+        )
+        from superset.sql.parse import SQLScript
+
+        try:
+            parsed_script = SQLScript(inner_sql, engine=self.db_engine_spec.engine)
+        except SupersetParseError as ex:
+            raise SupersetGenericDBErrorException(
+                message=f"Invalid SQL: {ex.error.message}"
+            ) from ex
+
+        if parsed_script.has_mutation() or not _is_read_only_select(parsed_script):
+            raise SupersetSecurityException(
+                SupersetError(
+                    error_type=SupersetErrorType.DATASOURCE_SECURITY_ACCESS_ERROR,
+                    message="Only `SELECT` statements are allowed",
+                    level=ErrorLevel.ERROR,
+                )
+            )
+        if len(parsed_script.statements) > 1:
+            raise SupersetSecurityException(
+                SupersetError(
+                    error_type=SupersetErrorType.DATASOURCE_SECURITY_ACCESS_ERROR,
+                    message="Only single queries supported",
+                    level=ErrorLevel.ERROR,
+                )
+            )
+
+        limit = self.db_engine_spec.get_column_description_limit_size()
+        metadata_sql = self.database.apply_limit_to_sql(inner_sql, limit=limit)
+        return self.database.mutate_sql_based_on_config(metadata_sql)
+
     def _get_virtual_table_metadata(self) -> list[dict[str, Any]]:
         """Get column metadata for a virtual dataset (custom SQL query).
 
-        Executes the SQL with a LIMIT 0 to get column names and types from the
-        result set metadata.
+        Executes the (limited, mutated) query and reads column names and
+        types from the result set metadata.
 
         Execution errors are raised as ``SupersetGenericDBErrorException`` rather
         than swallowed to ``[]`` — otherwise a transient warehouse / invalid-SQL
@@ -1382,7 +1494,11 @@ class SqlaTable(
                 message=f"Template processing error: {ex}"
             ) from ex
 
-        metadata_sql = f"SELECT * FROM ({inner_sql}) AS virtual_table LIMIT 0"  # noqa: S608
+        # Raises SupersetSecurityException / SupersetGenericDBErrorException
+        # for mutating, multi-statement or unparseable SQL -- deliberately
+        # NOT caught below, so it propagates as its own error rather than
+        # being rewrapped into a generic "Invalid SQL" 400.
+        metadata_sql = self._validate_and_limit_virtual_sql(inner_sql)
 
         try:
             with get_sync_connection(self.database) as (conn, spec):
@@ -2783,10 +2899,15 @@ class SqlaTable(
             )
         ).label("column_values")
 
-        # Resolve the FROM clause as a native SQLAlchemy AST node.
-        # For virtual datasets this may produce a CTE that has to be
-        # prepended to the final SQL.
-        from_clause, cte_sql = self._build_from_ast()
+        # Resolve the FROM clause as a native SQLAlchemy AST node via
+        # ``get_from_clause`` (NOT ``_build_from_ast``): for virtual datasets
+        # it renders Jinja, rejects multi-statement/mutating SQL and applies
+        # each underlying physical table's RLS predicates inside the
+        # subquery -- ``_build_from_ast`` skips all of that, so a virtual
+        # dataset built on top of an RLS-protected table bypassed the RLS
+        # filter entirely for this endpoint. Sync/CPU work; dispatched to a
+        # worker thread like the other sync helpers above.
+        from_clause, cte_sql = await asyncio.to_thread(self.get_from_clause, processor)
 
         # Build the AST: SELECT DISTINCT <col> AS column_values FROM <tbl>
         qry = sa.select(select_col).distinct().select_from(from_clause)

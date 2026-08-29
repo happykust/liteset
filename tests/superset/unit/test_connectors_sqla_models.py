@@ -766,3 +766,58 @@ def test_quoted_name_prevents_double_quoting(mocker: MockerFixture) -> None:
     assert '"MY_DB.MY_SCHEMA.MY_TABLE"' not in compiled
     # GOOD: each component quoted separately
     assert '"MY_DB"."MY_SCHEMA"."MY_TABLE"' in compiled
+
+
+def test_execute_sql_uses_sync_engine_without_async_driver(
+    mocker: MockerFixture,
+) -> None:
+    """Engines with no asyncio driver must not go through create_async_engine.
+
+    Trino, ClickHouse, MSSQL and friends raise "the asyncio extension requires
+    an async driver" there, which used to surface as an empty chart with
+    ``status="error"``.  They take the thread-offloaded sync path instead.
+    """
+    database = Database(database_name="trino_db", sqlalchemy_uri="trino://u@h:8080/c")
+    sqla_table = SqlaTable(table_name="t", database=database)
+
+    expected = pd.DataFrame({"a": [1]})
+    sync_exec = mocker.patch.object(
+        SqlaTable, "_execute_sql_sync", return_value=expected
+    )
+    async_conn = mocker.patch("superset.utils.database.get_async_connection")
+
+    df = asyncio.run(sqla_table._execute_sql("SELECT 1"))
+
+    assert df.equals(expected)
+    sync_exec.assert_called_once_with("SELECT 1")
+    async_conn.assert_not_called()
+
+
+def test_execute_sql_keeps_async_path_for_async_driver(
+    mocker: MockerFixture,
+) -> None:
+    """Postgres still runs over the async engine — no thread offload."""
+    from contextlib import asynccontextmanager
+
+    database = Database(database_name="pg", sqlalchemy_uri="postgresql://u:p@h:5432/db")
+    sqla_table = SqlaTable(table_name="t", database=database)
+
+    sync_exec = mocker.patch.object(SqlaTable, "_execute_sql_sync")
+
+    result = mocker.MagicMock()
+    result.returns_rows = True
+    result.keys.return_value = ["a"]
+    result.fetchall.return_value = [(1,)]
+    conn = mocker.MagicMock()
+    conn.execute = AsyncMock(return_value=result)
+
+    @asynccontextmanager
+    async def _fake_conn(_database):
+        yield conn, mocker.MagicMock()
+
+    mocker.patch("superset.utils.database.get_async_connection", _fake_conn)
+
+    df = asyncio.run(sqla_table._execute_sql("SELECT 1"))
+
+    assert df["a"].tolist() == [1]
+    sync_exec.assert_not_called()

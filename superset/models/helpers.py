@@ -1176,14 +1176,31 @@ class ExploreMixin:
                     apply_rls(
                         self.database,
                         self.catalog,
-                        self.schema or default_schema or "",
+                        # Do NOT coerce a missing schema to "": a dataset row
+                        # stored with ``schema IS NULL`` never matches "", so
+                        # the coercion silently drops its RLS rules.
+                        self.schema or default_schema,
                         statement,
                     )
                 # Regenerate the SQL after RLS application
                 from_sql = parsed_script.format()
-            except Exception as ex:  # noqa: BLE001
-                # Log the error but don't fail -- RLS application is best-effort
-                logger.warning("Failed to apply RLS to virtual dataset SQL: %s", ex)
+            except Exception as ex:
+                # Deliberate divergence from upstream, which logs a warning
+                # here and runs the *unmodified* user SQL
+                # (``superset_old/models/helpers.py:1185-1197``). That fails
+                # open: when the inner SQL cannot be parsed or an RLS clause
+                # cannot be rendered, the underlying physical tables' row
+                # filters are silently skipped while the query still runs.
+                # A row-level security control has to fail closed.
+                logger.warning(
+                    "Failed to apply RLS to virtual dataset SQL: %s", ex, exc_info=True
+                )
+                raise QueryObjectValidationError(
+                    "Row-level security could not be applied to this virtual "
+                    "dataset's SQL, so the query was not run. Check the "
+                    "dataset's SQL and any row-level security rules on the "
+                    "tables it reads."
+                ) from ex
 
         cte = self.db_engine_spec.get_cte_query(from_sql)
         from_clause: Union[TableClause, Alias] = (

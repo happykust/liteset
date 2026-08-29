@@ -33,11 +33,12 @@ the call site, every ``clause`` is run through Jinja templating.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
 from collections import defaultdict
 from contextlib import contextmanager
-from typing import Any, TYPE_CHECKING
+from typing import Any, cast, TYPE_CHECKING
 
 from sqlalchemy import and_, create_engine, or_, select
 from sqlalchemy.orm import Session
@@ -53,6 +54,34 @@ if TYPE_CHECKING:
     from superset.sql.parse import BaseSQLStatement
 
 logger = logging.getLogger(__name__)
+
+
+def _rls_text_clause(table: Any, rendered: str) -> ClauseElement:
+    """Build ``({rendered})`` as a SQLAlchemy text clause, escaping colons.
+
+    Upstream (``connectors/sqla/models.py:672`` -> ``ExploreMixin.text`` ->
+    ``db_engine_spec.get_text_clause``) routes every RLS clause through the
+    dataset's engine spec so a literal colon (e.g. an RLS rule written as
+    ``department != ':restricted'``) is escaped (``:`` -> ``\\:``) before
+    SQLAlchemy's ``text()`` parses it — otherwise SQLAlchemy treats
+    ``:restricted`` as an unbound bind parameter and silently renders it as
+    ``NULL`` under ``literal_binds``, so the clause becomes
+    ``role = 'NULL'`` instead of ``role = ':admin'`` and matches every row
+    with no error (security audit finding L4).
+
+    When the table has no resolvable ``database.db_engine_spec`` the escaping
+    is applied directly rather than falling back to a bare ``text()`` — a
+    fallback that silently reproduces the very bug this function exists to
+    prevent. ``allows_escaped_colons`` is ``True`` for every engine spec that
+    does not override it, so escaping is the correct default.
+    """
+    clause_str = f"({rendered})"
+    database = getattr(table, "database", None)
+    engine_spec = getattr(database, "db_engine_spec", None)
+    get_text_clause = getattr(engine_spec, "get_text_clause", None)
+    if callable(get_text_clause):
+        return cast("ClauseElement", get_text_clause(clause_str))
+    return text(clause_str.replace(":", r"\:"))
 
 
 async def compose_rls_where_clauses(  # noqa: C901  # complex business logic
@@ -82,6 +111,12 @@ async def compose_rls_where_clauses(  # noqa: C901  # complex business logic
     - if ``EMBEDDED_SUPERSET`` is on, guest-token RLS clauses are appended
       (also Jinja-processed)
     - rendering errors surface as ``QueryObjectValidationError``
+
+    Jinja rendering is synchronous and can hit the metadata database
+    (``current_user_roles()`` resolves group-inherited roles over a sync
+    session), so it is offloaded to a thread rather than run on the event
+    loop.  ``asyncio.to_thread`` copies the current context, which keeps the
+    ``current_user`` ContextVar visible to the template macros.
     """
     from jinja2 import TemplateError
 
@@ -90,42 +125,50 @@ async def compose_rls_where_clauses(  # noqa: C901  # complex business logic
         SupersetSyntaxErrorException,
     )
 
-    if template_processor is None:
-        from superset.jinja_context import get_template_processor
+    # Async work first: everything below this point is blocking and runs in a
+    # worker thread.
+    rls_filters = await security_manager.get_rls_filters(table, user=user)
+    guest_rules: list[dict[str, Any]] = []
+    if _embedded_superset_enabled():
+        guest_rules = list(security_manager.get_guest_rls_filters(table, user=user))
 
-        database = getattr(table, "database", None)
-        if database is not None:
-            template_processor = get_template_processor(database=database, table=table)
+    def _render() -> list[ClauseElement]:
+        processor = template_processor
+        if processor is None:
+            from superset.jinja_context import get_template_processor
 
-    def _process(clause: str) -> str:
-        if template_processor is None or not clause:
-            return clause
-        return template_processor.process_template(clause)
+            database = getattr(table, "database", None)
+            if database is not None:
+                processor = get_template_processor(database=database, table=table)
 
-    all_filters: list[ClauseElement] = []
-    filter_groups: dict[str | int, list[ClauseElement]] = defaultdict(list)
+        def _process(clause: str) -> str:
+            if processor is None or not clause:
+                return clause
+            return processor.process_template(clause)
 
-    try:
-        rls_filters = await security_manager.get_rls_filters(table, user=user)
+        all_filters: list[ClauseElement] = []
+        filter_groups: dict[str | int, list[ClauseElement]] = defaultdict(list)
+
         for filter_ in rls_filters:
             rendered = _process(filter_.clause)
-            clause = text(f"({rendered})")
+            clause = _rls_text_clause(table, rendered)
             if filter_.group_key:
                 filter_groups[filter_.group_key].append(clause)
             else:
                 all_filters.append(clause)
 
-        if _embedded_superset_enabled():
-            guest_rules = security_manager.get_guest_rls_filters(table, user=user)
-            for rule in guest_rules:
-                rendered = _process(rule.get("clause", ""))
-                if rendered:
-                    all_filters.append(text(f"({rendered})"))
+        for rule in guest_rules:
+            rendered = _process(rule.get("clause", ""))
+            if rendered:
+                all_filters.append(_rls_text_clause(table, rendered))
 
         # OR within a group; groups themselves are AND-ed by the caller.
         for clauses in filter_groups.values():
             all_filters.append(or_(*clauses))
         return all_filters
+
+    try:
+        return await asyncio.to_thread(_render)
     except (TemplateError, SupersetSyntaxErrorException) as ex:
         msg = getattr(ex, "message", str(ex))
         raise QueryObjectValidationError(
@@ -134,13 +177,33 @@ async def compose_rls_where_clauses(  # noqa: C901  # complex business logic
 
 
 def _embedded_superset_enabled() -> bool:
-    """Return whether the ``EMBEDDED_SUPERSET`` feature flag is on.
+    """Return whether embedded/guest RLS should be enforced.
+
+    Reads BOTH the dedicated ``embedded_superset`` settings field and the
+    ``EMBEDDED_SUPERSET`` feature flag and ORs them — matching
+    ``security.manager.build_async_security_manager`` and
+    ``middleware.auth.AuthMiddleware._authenticate_guest_token``, which both
+    do ``getattr(settings, "embedded_superset", False) or
+    feature_flags.get("EMBEDDED_SUPERSET", False)``.  Previously this read
+    ONLY the feature flag: with ``LITESET_EMBEDDED_SUPERSET=true`` and the
+    flag left at its default, the guest token still parsed and the guest
+    still passed the dashboard check, but every guest RLS clause below was
+    silently skipped — every tenant's rows were returned to an embedded
+    viewer (security audit finding C2).  ``SupersetSettings`` also
+    reconciles the two at construction time
+    (``_reconcile_duplicate_config_switches`` in config.py), so in practice
+    ``settings.embedded_superset`` alone is enough; the feature-flag lookup
+    is kept as a second, independent check so this does not depend on that
+    validator alone.
 
     Returns ``False`` if the feature-flag module isn't importable (e.g.
     very early in app boot before the manager is registered) — the only
     legitimate failure mode for this lookup. All other errors must
     surface so misconfiguration is loud.
     """
+    settings = _cached_settings()
+    if bool(getattr(settings, "embedded_superset", False)):
+        return True
     try:
         from superset.utils.feature_flags import feature_flag_manager
     except ImportError:
@@ -479,7 +542,7 @@ def compose_rls_text_clauses(  # noqa: C901  # complex business logic
             clause_str = filter_.clause
             if template_processor is not None:
                 clause_str = template_processor.process_template(clause_str)
-            text_clause = text(f"({clause_str})")
+            text_clause = _rls_text_clause(table, clause_str)
             if filter_.group_key:
                 filter_groups[filter_.group_key].append(text_clause)
             else:
@@ -491,7 +554,7 @@ def compose_rls_text_clauses(  # noqa: C901  # complex business logic
             if template_processor is not None and clause_str:
                 clause_str = template_processor.process_template(clause_str)
             if clause_str:
-                all_filters.append(text(f"({clause_str})"))
+                all_filters.append(_rls_text_clause(table, clause_str))
 
         for clauses in filter_groups.values():
             all_filters.append(or_(*clauses))
