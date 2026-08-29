@@ -62,16 +62,14 @@ def _computed(minimum: int, maximum: int) -> int:
 
 def default_pool_size(settings: Any) -> int:
     """Resolve ``ASYNCIO_MAX_WORKER_THREADS``, falling back to a computed size."""
-    configured = getattr(settings, "asyncio_max_worker_threads", None)
-    if configured:
+    if configured := getattr(settings, "asyncio_max_worker_threads", None):
         return int(configured)
     return _computed(_MIN_DEFAULT_THREADS, _MAX_DEFAULT_THREADS)
 
 
 def sqllab_pool_size(settings: Any) -> int:
     """Resolve ``SQLLAB_MAX_WORKER_THREADS``, falling back to a computed size."""
-    configured = getattr(settings, "sqllab_max_worker_threads", None)
-    if configured:
+    if configured := getattr(settings, "sqllab_max_worker_threads", None):
         return int(configured)
     return _computed(_MIN_SQLLAB_THREADS, _MAX_SQLLAB_THREADS)
 
