@@ -242,6 +242,8 @@ _SUPERSET_TO_LITESET: dict[str, str] = {
     "SQLGLOT_DIALECTS_EXTENSIONS": "sqlglot_dialects_extensions",
     "QUERY_SEARCH_LIMIT": "query_search_limit",
     "WTF_CSRF_EXEMPT_LIST": "wtf_csrf_exempt_list",
+    "ASYNCIO_MAX_WORKER_THREADS": "asyncio_max_worker_threads",
+    "SQLLAB_MAX_WORKER_THREADS": "sqllab_max_worker_threads",
     "FLASK_USE_RELOAD": "flask_use_reload",
     "PROFILING": "profiling",
     "SHOW_STACKTRACE": "show_stacktrace",
@@ -809,6 +811,11 @@ class SupersetSettings(BaseSettings):
     api_login_allow_multiple_providers: bool = False
     oauth_providers: list[dict[str, Any]] = []
     recaptcha_public_key: str = ""
+    # Subclass of ``superset.security.manager.AsyncSecurityManager`` (class or
+    # dotted path) used in place of the built-in manager.  A Flask-AppBuilder
+    # ``SupersetSecurityManager`` subclass from an upstream config is rejected
+    # at startup rather than silently ignored — see
+    # ``_resolve_custom_security_manager``.
     custom_security_manager: Any | None = None
     auth_roles_mapping: dict[str, list[str]] = {}
     auth_roles_sync_at_login: bool = False
@@ -981,6 +988,17 @@ class SupersetSettings(BaseSettings):
     sqlalchemy_encrypted_field_type_adapter: Any | None = None
     sqlglot_dialects_extensions: Any = {}
     query_search_limit: int = 1000
+    # Size of the default asyncio executor.  Every ``asyncio.to_thread``
+    # offload — sync engine specs, Jinja rendering, screenshots, RLS — draws
+    # from it.  CPython's default is ``min(32, cpu_count + 4)``, i.e. 8 threads
+    # on a 4-vCPU container, which is far too small for an I/O-bound workload
+    # and produces silent queueing under load.  ``None`` selects the computed
+    # default in ``superset.utils.threadpool``.
+    asyncio_max_worker_threads: int | None = None
+    # SQL Lab's synchronous execution runs on its own bounded pool so that a
+    # thread left behind by a timed-out query cannot starve the rest of the
+    # application.  ``None`` selects the computed default.
+    sqllab_max_worker_threads: int | None = None
     wtf_csrf_exempt_list: list[str] = [
         "superset.charts.data.api.data",
         "superset.dashboards.api.cache_dashboard_screenshot",
@@ -1117,6 +1135,9 @@ class SupersetSettings(BaseSettings):
         "sql_lab",
     ]
 
+    # Last-mile hook called at startup with the **Litestar** application (the
+    # closest analogue of upstream's Flask app).  Exceptions propagate and
+    # abort startup, as they do upstream.
     flask_app_mutator: Any | None = None
     enable_chunk_encoding: bool = False
     silence_fab: bool = True
@@ -1137,6 +1158,10 @@ class SupersetSettings(BaseSettings):
     fab_password_complexity_validator: Any | None = None
     troubleshooting_link: str = ""
     permission_instructions_link: str = ""
+    # Accepted for ``superset_config.py`` compatibility only: Flask Blueprints
+    # cannot be registered on a Litestar app.  A non-empty list is reported as
+    # an error at startup and ignored; port the routes and register them from
+    # ``FLASK_APP_MUTATOR`` instead.
     blueprints: list[Any] = []
     tracking_url_transformer: Any | None = None
     db_poll_interval_seconds: dict[str, int] = {}
@@ -1363,6 +1388,22 @@ class SupersetSettings(BaseSettings):
     global_async_queries_jwt_cookie_samesite: str | None = None
     global_async_queries_jwt_cookie_domain: str | None = None
     global_async_queries_jwt_secret: str = "test-secret-change-me"  # noqa: S105
+    # Bounded lifetime for the ``async-token`` JWT (channel id + sub) minted
+    # by AsyncTokenMiddleware.  Neither upstream's ``async_query_manager.py``
+    # nor the original port set an ``exp`` claim or a cookie ``Max-Age``, so
+    # a captured token never expires and there is no server-side revocation
+    # (audit finding M21).  The middleware already re-mints the cookie
+    # whenever decoding the existing one fails (missing/expired/malformed),
+    # so this value is purely a ceiling — no other behavioural change.
+    global_async_queries_jwt_exp_seconds: int = 86400
+    # Off by default: honour a GAQ channel JWT passed as ``?token=`` on the
+    # ``/ws/events`` WebSocket handshake.  The frontend never sends one — it
+    # relies solely on the HttpOnly ``async-token`` cookie
+    # (``superset-frontend/src/middleware/asyncEvent.ts``) — so this is
+    # unused attack surface: a token in a URL lands in proxy access logs and
+    # browser history (audit finding M21).  Flip on only for a non-browser
+    # embedder that genuinely cannot complete a cookie-bearing handshake.
+    global_async_queries_ws_allow_query_token: bool = False
     global_async_queries_cache_backend: dict[str, Any] = {
         "CACHE_TYPE": "RedisCache",
         "CACHE_REDIS_HOST": "localhost",
@@ -1512,6 +1553,49 @@ class SupersetSettings(BaseSettings):
                 )
         merged.update(self.feature_flags)
         self.feature_flags = merged
+        return self
+
+    @model_validator(mode="after")
+    def _reconcile_duplicate_config_switches(self) -> SupersetSettings:
+        """Reconcile config concepts exposed as BOTH a settings field AND a
+        FEATURE_FLAGS entry.
+
+        The Litestar port added dedicated, typed settings fields
+        (``embedded_superset``, ``global_async_queries``, ``dashboard_rbac``)
+        alongside the upstream ``FEATURE_FLAGS`` keys that already control the
+        same subsystems (``EMBEDDED_SUPERSET``, ``GLOBAL_ASYNC_QUERIES``,
+        ``DASHBOARD_RBAC``) — with nothing tying the two together.  Different
+        call sites across the codebase read different ones, so a config that
+        sets only one half of a pair left the other call sites on the "off"
+        branch:
+
+        * guest RLS clauses silently dropped when only
+          ``LITESET_EMBEDDED_SUPERSET`` was set (security audit finding C2),
+        * the >= 32 byte JWT-secret startup guard and the periodic
+          stale-channel cleanup task skipped depending on which
+          ``GLOBAL_ASYNC_QUERIES`` switch was used (finding H6),
+        * dashboard-list RBAC filtering and the manager's RBAC gate
+          disagreeing (finding M8).
+
+        Runs AFTER ``_merge_feature_flags`` so ``self.feature_flags`` already
+        holds the fully-merged dict.  Reconciles with an OR so a config that
+        sets EITHER form for a given concept ends up with BOTH in agreement —
+        every existing call site becomes correct regardless of which one it
+        reads.  Individual call sites are still fixed directly (see
+        ``superset/utils/rls.py:_embedded_superset_enabled`` and
+        ``superset/app.py:_global_async_queries_enabled``) so correctness
+        does not depend on this validator alone.
+        """
+        for flag_name, field_name in (
+            ("EMBEDDED_SUPERSET", "embedded_superset"),
+            ("GLOBAL_ASYNC_QUERIES", "global_async_queries"),
+            ("DASHBOARD_RBAC", "dashboard_rbac"),
+        ):
+            effective = bool(getattr(self, field_name, False)) or bool(
+                self.feature_flags.get(flag_name, False)
+            )
+            setattr(self, field_name, effective)
+            self.feature_flags[flag_name] = effective
         return self
 
     @classmethod

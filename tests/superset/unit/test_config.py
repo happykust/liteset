@@ -180,3 +180,60 @@ def test_version_sha_respects_configured_length():
     ):
         settings._resolve_version_info()
     assert settings.version_sha == "abcd"
+
+
+# ---------------------------------------------------------------------------
+# _reconcile_duplicate_config_switches — the duplicated config switches
+#
+# EMBEDDED_SUPERSET, GLOBAL_ASYNC_QUERIES and DASHBOARD_RBAC each exist as
+# BOTH a dedicated settings field and a FEATURE_FLAGS entry.  Different call
+# sites across the codebase read different ones, so a config that set only
+# one half of a pair left the other call sites on the "off" branch.  The
+# validator must reconcile both directions for all three flags.
+# ---------------------------------------------------------------------------
+
+_RECONCILED_PAIRS = [
+    ("EMBEDDED_SUPERSET", "embedded_superset"),
+    ("GLOBAL_ASYNC_QUERIES", "global_async_queries"),
+    ("DASHBOARD_RBAC", "dashboard_rbac"),
+]
+
+
+@pytest.mark.parametrize(("flag_name", "field_name"), _RECONCILED_PAIRS)
+def test_reconcile_settings_field_sets_feature_flag(flag_name, field_name) -> None:
+    """Setting ONLY the dedicated settings field must also set the
+    FEATURE_FLAGS entry of the same name."""
+    settings = SupersetSettings(
+        secret_key="test-key-long-enough",
+        sqlalchemy_database_uri="sqlite:///superset.db",
+        **{field_name: True},
+    )
+    assert getattr(settings, field_name) is True
+    assert settings.feature_flags[flag_name] is True
+
+
+@pytest.mark.parametrize(("flag_name", "field_name"), _RECONCILED_PAIRS)
+def test_reconcile_feature_flag_sets_settings_field(flag_name, field_name) -> None:
+    """Setting ONLY the FEATURE_FLAGS entry must also set the dedicated
+    settings field of the same concept — the exact scenario in security
+    the silent-guest-RLS case (LITESET_EMBEDDED_SUPERSET left at its default while
+    ``FEATURE_FLAGS = {"EMBEDDED_SUPERSET": True}`` is set)."""
+    settings = SupersetSettings(
+        secret_key="test-key-long-enough",
+        sqlalchemy_database_uri="sqlite:///superset.db",
+        feature_flags={flag_name: True},
+    )
+    assert getattr(settings, field_name) is True
+    assert settings.feature_flags[flag_name] is True
+
+
+@pytest.mark.parametrize(("flag_name", "field_name"), _RECONCILED_PAIRS)
+def test_reconcile_defaults_both_stay_false(flag_name, field_name) -> None:
+    """When neither form is configured, both stay False — the validator
+    must not accidentally enable anything."""
+    settings = SupersetSettings(
+        secret_key="test-key-long-enough",
+        sqlalchemy_database_uri="sqlite:///superset.db",
+    )
+    assert getattr(settings, field_name) is False
+    assert settings.feature_flags[flag_name] is False
