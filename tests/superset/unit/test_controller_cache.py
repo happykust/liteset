@@ -91,7 +91,7 @@ async def test_do_invalidate_logs_object_ref():
     and passes it through to log_with_context.
 
     Without this, the logs.json field is absent for every cache-invalidation
-    request — an admin-visible regression (audit finding).
+    request — an admin-visible regression.
     """
     controller = object.__new__(CacheController)
 

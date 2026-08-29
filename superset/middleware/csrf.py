@@ -29,6 +29,7 @@ import hmac
 import logging
 import os
 import time
+import urllib.parse
 from typing import cast
 
 from litestar.middleware.base import (
@@ -59,7 +60,17 @@ def generate_csrf_token(
 
     The session hash binds the token to a specific session cookie so it
     cannot be replayed across sessions.
+
+    Refuses to mint a token when *session_id* is falsy: ``sha256("")`` is a
+    fixed, publicly computable constant, so a token "bound" to an empty
+    session would authenticate any caller who also presents no session --
+    which is exactly what a cross-site request does.  Returns ``""`` in that
+    case; callers must treat an empty result as "no token available", not
+    fall back to an unbound one.
     """
+    if not session_id:
+        logger.debug("Refusing to mint a CSRF token with an empty session binding")
+        return ""
     salt = os.urandom(8).hex()
     ts = str(int(time.time()))
     sess_hash = _hash_session_id(session_id)
@@ -79,39 +90,35 @@ def validate_csrf_token(
     session_id: str = "",
 ) -> bool:
     """Validate an HMAC-signed CSRF token, rejecting cross-session
-    replays and expired tokens."""
+    replays and expired tokens.
+
+    An empty *session_id* is always rejected outright, even when the token
+    carries a hash that happens to match ``sha256("")``: that hash is a
+    fixed constant computable without ever seeing a real session cookie, so
+    honouring it as a legitimate binding would let a token minted (or
+    fetched) with no session at all validate on behalf of any other caller
+    who also presents no session -- the login-CSRF gap this binding exists
+    to close.
+    """
     if not token or "." not in token:
+        return False
+    if not session_id:
         return False
     try:
         parts = token.split(".")
-        if len(parts) == 4:
-            salt, ts_str, token_sess_hash, sig = parts
-            expected_sess_hash = _hash_session_id(session_id)
-            if not hmac.compare_digest(token_sess_hash, expected_sess_hash):
-                return False
-            payload = f"{salt}.{ts_str}.{token_sess_hash}"
-            expected_sig = hmac.new(
-                secret.encode(),
-                payload.encode(),
-                hashlib.sha256,
-            ).hexdigest()
-            if not hmac.compare_digest(sig, expected_sig):
-                return False
-        elif len(parts) == 3:  # Legacy format: salt.ts.sig (no session binding)
-            salt, ts_str, sig = parts
-            data = f"{salt}{ts_str}"
-            expected_sig = hmac.new(
-                secret.encode(),
-                data.encode(),
-                hashlib.sha256,
-            ).hexdigest()
-            if not hmac.compare_digest(sig, expected_sig):
-                return False
-            logger.warning(
-                "Legacy CSRF token without session binding accepted; "
-                "this will be rejected in a future release."
-            )
-        else:
+        if len(parts) != 4:
+            return False
+        salt, ts_str, token_sess_hash, sig = parts
+        expected_sess_hash = _hash_session_id(session_id)
+        if not hmac.compare_digest(token_sess_hash, expected_sess_hash):
+            return False
+        payload = f"{salt}.{ts_str}.{token_sess_hash}"
+        expected_sig = hmac.new(
+            secret.encode(),
+            payload.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(sig, expected_sig):
             return False
         if max_age:
             ts = int(ts_str)
@@ -141,6 +148,34 @@ def _extract_cookie(
     return ""
 
 
+def _extract_host(headers: dict[bytes, bytes]) -> str:
+    """Return the (ProxyFix-corrected) ``Host`` header, or empty string."""
+    return headers.get(b"host", b"").decode("latin-1", errors="ignore")
+
+
+def _same_origin_https(candidate: str, expected_host: str) -> bool:
+    """Return whether *candidate* (a ``Referer`` or ``Origin`` value) is an
+    ``https://`` URL on *expected_host*.
+
+    Mirrors ``flask_wtf.csrf.same_origin`` -- upstream builds
+    ``good_referrer = f"https://{request.host}/"`` and compares scheme +
+    netloc.  Here the comparison is against a corrected ``Host`` header
+    (post-:class:`~superset.middleware.proxy_fix.ProxyFixMiddleware`) and
+    accepts either header since modern browsers may omit ``Referer`` (a
+    strict ``Referrer-Policy``) while always sending ``Origin`` on
+    state-changing fetch/XHR requests.
+    """
+    if not candidate or not expected_host:
+        return False
+    try:
+        parsed = urllib.parse.urlparse(candidate)
+    except ValueError:
+        return False
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        return False
+    return parsed.netloc.lower() == expected_host.lower()
+
+
 class CSRFMiddleware(MiddlewareProtocol):
     """CSRF middleware compatible with the original
     CSRF flow used by Apache Superset.
@@ -150,6 +185,9 @@ class CSRFMiddleware(MiddlewareProtocol):
     - Frontend sends token in X-CSRFToken header
     - This middleware validates the header on
       POST/PUT/DELETE/PATCH
+    - When ``ssl_strict`` and the (corrected) request scheme is
+      ``https``, also requires a same-origin ``Referer``/``Origin``,
+      mirroring Flask-WTF's ``WTF_CSRF_SSL_STRICT`` (default ``True``)
     """
 
     def __init__(
@@ -161,6 +199,7 @@ class CSRFMiddleware(MiddlewareProtocol):
         max_age: int = 604800,
         exclude_paths: list[str] | None = None,
         session_cookie_name: str = "session",
+        ssl_strict: bool = True,
     ) -> None:
         self.app = app
         self.secret = secret
@@ -168,6 +207,7 @@ class CSRFMiddleware(MiddlewareProtocol):
         self.max_age = max_age
         self.exclude_paths = set(exclude_paths or [])
         self.session_cookie_name = session_cookie_name
+        self.ssl_strict = ssl_strict
 
     async def __call__(
         self,
@@ -200,6 +240,14 @@ class CSRFMiddleware(MiddlewareProtocol):
                 return
 
         headers = dict(scope.get("headers", []))
+
+        if self._ssl_strict_enabled(scope) and not self._referer_origin_ok(
+            scope, headers
+        ):
+            logger.warning("CSRF rejected: missing or cross-origin Referer/Origin")
+            await self._send_csrf_failure(scope, send, headers)
+            return
+
         token_bytes = headers.get(
             self.header_name.encode(),
             b"",
@@ -217,87 +265,125 @@ class CSRFMiddleware(MiddlewareProtocol):
             self.max_age,
             session_id=session_id,
         ):
-            import json as _json
-
             logger.warning("Refresh CSRF token error")
-
-            content_type_header = headers.get(b"content-type", b"").decode(
-                "utf-8", errors="ignore"
-            )
-            mt = content_type_header.split(";")[0].strip().lower()
-            is_json = mt == "application/json" or (
-                mt.startswith("application/") and mt.endswith("+json")
-            )
-
-            if not is_json:
-                qs = scope.get("query_string", b"")
-                path = scope.get("path", "/")
-                next_url = path + (
-                    ("?" + qs.decode("utf-8", errors="ignore")) if qs else ""
-                )
-                import urllib.parse as _parse
-
-                redirect_target = "/login?next=" + _parse.quote(next_url, safe="")
-                location = redirect_target.encode("utf-8")
-                await send(
-                    {
-                        "type": "http.response.start",
-                        "status": 302,
-                        "headers": [
-                            (b"location", location),
-                            (b"content-length", b"0"),
-                        ],
-                    }
-                )
-                await send(cast("Message", {"type": "http.response.body", "body": b""}))
-                return
-
-            body = _json.dumps(
-                {
-                    "errors": [
-                        {
-                            "message": "CSRF token verification failed",
-                            "error_type": "GENERIC_BACKEND_ERROR",
-                            "level": "error",
-                            "extra": {
-                                "issue_codes": [
-                                    {
-                                        "code": 1011,
-                                        "message": "Issue 1011 - Superset encountered"
-                                        " an unexpected error.",
-                                    }
-                                ]
-                            },
-                        }
-                    ],
-                }
-            ).encode()
-
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 400,
-                    "headers": [
-                        (b"content-type", b"application/json"),
-                        (
-                            b"content-length",
-                            str(len(body)).encode(),
-                        ),
-                    ],
-                }
-            )
-            await send(
-                cast(
-                    "Message",
-                    {
-                        "type": "http.response.body",
-                        "body": body,
-                    },
-                )
-            )
+            await self._send_csrf_failure(scope, send, headers)
             return
 
         await self.app(scope, receive, send)
+
+    def _ssl_strict_enabled(self, scope: Scope) -> bool:
+        """Resolve the effective ``ssl_strict`` setting for this request.
+
+        Reads ``settings.wtf_csrf_ssl_strict`` when available so deployments
+        can override the constructor default without redeploying the
+        middleware; otherwise falls back to ``self.ssl_strict``.
+        """
+        settings = getattr(getattr(scope.get("app"), "state", None), "settings", None)
+        if settings is not None and hasattr(settings, "wtf_csrf_ssl_strict"):
+            return bool(settings.wtf_csrf_ssl_strict)
+        return self.ssl_strict
+
+    @staticmethod
+    def _referer_origin_ok(scope: Scope, headers: dict[bytes, bytes]) -> bool:
+        """Return True when the request is not HTTPS, or carries a
+        same-origin ``Referer``/``Origin`` for the (corrected) Host.
+
+        Skipped entirely for non-HTTPS requests so local development (and
+        any deployment that terminates TLS before Litestar without
+        forwarding ``X-Forwarded-Proto``) is unaffected.
+        """
+        scheme = str(scope.get("scheme", "http")).lower()
+        if scheme != "https":
+            return True
+        host = _extract_host(headers)
+        candidate = headers.get(b"referer", b"").decode(
+            "latin-1", errors="ignore"
+        ) or headers.get(b"origin", b"").decode("latin-1", errors="ignore")
+        return _same_origin_https(candidate, host)
+
+    async def _send_csrf_failure(
+        self,
+        scope: Scope,
+        send: Send,
+        headers: dict[bytes, bytes],
+    ) -> None:
+        """Send the CSRF-rejection response: a JSON 400 for API/JSON
+        clients, a 302 redirect to ``/login`` for browser navigations."""
+        import json as _json
+
+        content_type_header = headers.get(b"content-type", b"").decode(
+            "utf-8", errors="ignore"
+        )
+        mt = content_type_header.split(";")[0].strip().lower()
+        is_json = mt == "application/json" or (
+            mt.startswith("application/") and mt.endswith("+json")
+        )
+
+        if not is_json:
+            qs = scope.get("query_string", b"")
+            path = scope.get("path", "/")
+            next_url = path + (
+                ("?" + qs.decode("utf-8", errors="ignore")) if qs else ""
+            )
+
+            redirect_target = "/login?next=" + urllib.parse.quote(next_url, safe="")
+            location = redirect_target.encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 302,
+                    "headers": [
+                        (b"location", location),
+                        (b"content-length", b"0"),
+                    ],
+                }
+            )
+            await send(cast("Message", {"type": "http.response.body", "body": b""}))
+            return
+
+        body = _json.dumps(
+            {
+                "errors": [
+                    {
+                        "message": "CSRF token verification failed",
+                        "error_type": "GENERIC_BACKEND_ERROR",
+                        "level": "error",
+                        "extra": {
+                            "issue_codes": [
+                                {
+                                    "code": 1011,
+                                    "message": "Issue 1011 - Superset encountered"
+                                    " an unexpected error.",
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+        ).encode()
+
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 400,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (
+                        b"content-length",
+                        str(len(body)).encode(),
+                    ),
+                ],
+            }
+        )
+        await send(
+            cast(
+                "Message",
+                {
+                    "type": "http.response.body",
+                    "body": body,
+                },
+            )
+        )
 
 
 def create_csrf_middleware(
@@ -307,6 +393,7 @@ def create_csrf_middleware(
     max_age: int = 604800,
     exclude_paths: list[str] | None = None,
     session_cookie_name: str = "session",
+    ssl_strict: bool = True,
 ) -> DefineMiddleware:
     return DefineMiddleware(
         CSRFMiddleware,
@@ -315,4 +402,5 @@ def create_csrf_middleware(
         max_age=max_age,
         exclude_paths=exclude_paths,
         session_cookie_name=session_cookie_name,
+        ssl_strict=ssl_strict,
     )

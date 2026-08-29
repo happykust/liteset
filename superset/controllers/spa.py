@@ -1005,7 +1005,17 @@ class SPAController(Controller):
                 status_code=404,
                 media_type="text/plain",
             )
-        referrer = request.headers.get("Referer") or "/"
+        # The route needs no auth and no CSRF token, so the redirect target
+        # must not be trusted verbatim: an attacker-controlled Referer would
+        # otherwise turn this into an open redirect.  Route it through the
+        # same allow-list the login flow uses (relative or same-host only).
+        from superset.controllers.auth import _get_safe_redirect
+
+        referrer = _get_safe_redirect(
+            request.headers.get("Referer") or "",
+            request_host=request.headers.get("host", ""),
+            fallback="/",
+        )
         response: Response[Any] = Response(
             content=b"",
             status_code=302,

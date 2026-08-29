@@ -184,12 +184,37 @@ async def test_disabled_switch_never_limits():
     assert res["status"] == 200
 
 
-async def test_no_redis_fails_open():
+async def test_no_redis_falls_back_to_memory_store_and_enforces_limit():
+    """redis=None no longer means unlimited (M13): the in-process
+    sliding-window fallback still enforces RATELIMIT_APPLICATION, just
+    per worker process rather than cluster-wide."""
+    import superset.middleware.rate_limit as rl_mod
+
+    rl_mod._memory_windows.clear()
+    mw = RateLimitMiddleware()
+    settings = _settings(ratelimit_application="3 per second")
+    statuses = [
+        (await _run(mw, _make_scope(settings=settings, redis=None)))["status"]
+        for _ in range(4)
+    ]
+    assert statuses == [200, 200, 200, 429]
+
+
+async def test_no_redis_warns_operator_once(caplog):
+    """Missing shared store logs a one-time operator-visible warning (M13)."""
+    import logging
+
+    import superset.middleware.rate_limit as rl_mod
+
+    rl_mod._memory_windows.clear()
+    rl_mod._no_shared_store_warning_logged = False
     mw = RateLimitMiddleware()
     settings = _settings()
-    for _ in range(20):
-        res = await _run(mw, _make_scope(settings=settings, redis=None))
-    assert res["status"] == 200
+    with caplog.at_level(logging.WARNING, logger="superset.middleware.rate_limit"):
+        for _ in range(3):
+            await _run(mw, _make_scope(settings=settings, redis=None))
+    warnings = [r for r in caplog.records if "no shared Redis store" in r.message]
+    assert len(warnings) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -293,3 +318,26 @@ async def test_get_login_not_auth_limited():
             _make_scope(settings=settings, redis=redis, method="GET", path="/login/"),
         )
     assert res["status"] == 200
+
+
+async def test_json_login_endpoint_is_auth_limited():
+    """POST /api/v1/security/login (M13) is covered by the same brute-force
+    limit as the browser login form, not just /login/."""
+    mw = RateLimitMiddleware()
+    redis = _FakeRedis()
+    settings = _settings(ratelimit_application="100 per second")
+    statuses = [
+        (
+            await _run(
+                mw,
+                _make_scope(
+                    settings=settings,
+                    redis=redis,
+                    method="POST",
+                    path="/api/v1/security/login",
+                ),
+            )
+        )["status"]
+        for _ in range(3)
+    ]
+    assert statuses == [200, 200, 429]
