@@ -146,7 +146,6 @@ class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
         url = make_url_safe(uri)
         self._context = {
             "hostname": url.host,
-            "password": url.password,
             "port": url.port,
             "username": url.username,
             "database": url.database,
@@ -227,6 +226,15 @@ class DatabaseTestConnectionCommand(AsyncBaseCommand[dict[str, Any]]):
                 "Invalid SQLAlchemy URI — host/port/driver could not be "
                 "parsed; double-check your connection string."
             ) from ex
+
+        # ``create``/``update`` both gate on the unsafe-URI blocklist
+        # (PREVENT_UNSAFE_DB_CONNECTIONS, default True) via this same helper;
+        # test_connection skipped it entirely, so e.g. a sqlite:/// URI could
+        # be probed (and the file created) without ever persisting a Database
+        # row.
+        from superset.commands.database.utils import _validate_sqlalchemy_uri_safety
+
+        _validate_sqlalchemy_uri_safety(self._uri)
 
         if self._properties.get("ssh_tunnel"):
             if not feature_flag_manager.is_feature_enabled("SSH_TUNNELING"):

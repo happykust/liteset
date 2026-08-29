@@ -154,6 +154,12 @@ class UpdateDatabaseCommand(AsyncBaseCommand["Database"]):
             except ValueError as ex:
                 raise DatabaseParametersInvalidError(str(ex)) from ex
 
+            # ``validate()`` checked the *incoming* URI, but this rebuilds it
+            # from ``parameters`` afterwards and persists the result — so the
+            # blocklist has to be re-applied to the value that actually lands
+            # in the database, not only to the one the caller sent.
+            _validate_sqlalchemy_uri_safety(self._data["sqlalchemy_uri"])
+
         # Unmask before writing: without this step the "XXXXXXXXXX" sentinel
         # would be persisted verbatim, permanently destroying stored credentials.
         if "masked_encrypted_extra" in self._data:

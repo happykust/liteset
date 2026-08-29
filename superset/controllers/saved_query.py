@@ -546,7 +546,7 @@ class SavedQueryController(Controller):
 
     @get(
         "/export/",
-        guards=[require_permission("can_read", "SavedQuery")],
+        guards=[require_permission("can_export", "SavedQuery")],
         media_type="application/zip",
     )
     async def export(
@@ -591,6 +591,7 @@ class SavedQueryController(Controller):
         self,
         request: Request[Any, Any, Any],
         dao: CRUDDAOProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
         # Read the multipart body manually (see parse_import_request): the
         # ``data: UploadFile = Body(MULTI_PART)`` injection 500'd when no file
@@ -607,6 +608,7 @@ class SavedQueryController(Controller):
         cmd = ImportSavedQueriesCommand(
             contents=buf,
             dao=dao,
+            security_manager=security_manager,
             overwrite=overwrite,
             passwords=passwords_dict,
             ssh_tunnel_passwords=ssh_dict,

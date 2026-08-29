@@ -683,12 +683,14 @@ class DatasetController(Controller):
         data: DatasetDuplicateSchema,
         dao: DatasetDAOProtocol,
         current_user: UserProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> DatasetGetResponse:
         cmd = DuplicateDatasetCommand(
             dao=cast("AsyncDatasetDAO", dao),
             base_model_id=data.base_model_id,
             table_name=data.table_name,
             user_id=current_user.id,
+            security_manager=security_manager,
         )
         dataset = await cmd.execute()
         await event_logger.alog_with_context(
@@ -817,6 +819,7 @@ class DatasetController(Controller):
         self,
         request: Request[Any, Any, Any],
         dao: DatasetDAOProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
         # Read the multipart body manually (see parse_import_request): the
         # ``data: UploadFile = Body(MULTI_PART)`` injection 500'd when no file
@@ -851,8 +854,14 @@ class DatasetController(Controller):
         # sync v0 command on ``IncorrectVersionError``.
         parsed, is_zip = _parse_import_upload(filename, contents)
         if is_zip:
+            # ``security_manager`` is what makes the importer enforce
+            # ``can_write`` on Database/Dataset. Without it the importer falls
+            # back to ``ignore_permissions``, which is how a bundle carrying a
+            # ``databases/`` entry could create a connection with an
+            # attacker-controlled URI.
             dispatcher = LegacyImportDatasetsDispatcher(
                 parsed,
+                security_manager=security_manager,
                 overwrite=overwrite,
                 passwords=passwords_dict,
                 ssh_tunnel_passwords=ssh_dict,
@@ -886,7 +895,12 @@ class DatasetController(Controller):
 
     @put(
         "/warm_up_cache",
-        guards=[require_permission("can_write", "Dataset")],
+        # Upstream resolves this to ``can_warm_up_cache`` (absent from
+        # MODEL_API_RW_METHOD_PERMISSION_MAP, so it's NOT covered by
+        # ``can_write``) and ``can_warm_up_cache`` is Admin-only. The chart
+        # twin already gets this right (controllers/chart.py's warm_up_cache
+        # guard); this endpoint had been downgraded to Alpha via ``can_write``.
+        guards=[require_permission("can_warm_up_cache", "Dataset")],
     )
     async def warm_up_cache(
         self,
@@ -913,26 +927,54 @@ class DatasetController(Controller):
         guards=[require_permission("can_read", "Dataset")],
     )
     async def related_objects(
-        self, id_or_uuid: str, dao: DatasetDAOProtocol
+        self,
+        id_or_uuid: str,
+        dao: DatasetDAOProtocol,
+        security_manager: SecurityManagerProtocol,
+        current_user: UserProtocol,
     ) -> dict[str, Any]:
-        """GET related objects (charts/dashboards using dataset)."""
+        """GET related objects (charts/dashboards using dataset).
+
+        Access-scoped exactly like ``get_dataset``: without this, any
+        authenticated Gamma could walk the id range and harvest chart/
+        dashboard metadata (including full ``json_metadata``) for datasets
+        they cannot otherwise see — the sibling ``GET /{pk}`` was scoped,
+        this endpoint was an isolated miss.
+        """
+        from superset.db.filters import dataset_access_filters
+        from superset.models.connectors import SqlaTable
+
+        base_filters = await dataset_access_filters(security_manager, current_user)
+
         # Parse id_or_uuid: integer ID or UUID string
         try:
             pk = int(id_or_uuid)
-            dataset = await dao.find_by_id(pk)
+            id_filter = SqlaTable.id == pk
         except ValueError:
-            from superset.models.connectors import SqlaTable
+            id_filter = SqlaTable.uuid == id_or_uuid
 
-            results = await dao.find_all(
-                filters=[SqlaTable.uuid == id_or_uuid],
-                page=0,
-                page_size=1,
-            )
-            dataset = results[0] if results else None
-            pk = int(dataset.id) if dataset else 0
+        results = await dao.find_all(
+            filters=[id_filter, *(base_filters or [])],
+            page=0,
+            page_size=1,
+        )
+        dataset = results[0] if results else None
+        pk = int(dataset.id) if dataset else 0
         if not dataset:
             raise ObjectNotFoundError("Dataset", id_or_uuid)
-        related = await dao.get_related_objects(pk)
+        # Scope the related charts and dashboards to what this caller may see.
+        # Reading the dataset is not entitlement to every dashboard built on it.
+        from superset.db.filters import chart_access_filters, dashboard_access_filters
+
+        related = await dao.get_related_objects(
+            pk,
+            chart_filters=list(
+                await chart_access_filters(security_manager, current_user)
+            ),
+            dashboard_filters=list(
+                await dashboard_access_filters(security_manager, current_user)
+            ),
+        )
         charts = related.get("charts", [])
         dashboards = related.get("dashboards", [])
         return {

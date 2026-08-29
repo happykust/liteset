@@ -104,6 +104,17 @@ from superset.utils.screenshots import ChartScreenshot, DashboardScreenshot
 
 logger = logging.getLogger(__name__)
 
+
+def _strip_sql_payload(message: str) -> str:
+    """Remove the ``[SQL: …] [parameters: …]`` tail SQLAlchemy 2.0 appends.
+
+    Mirrors the stripping the HTTP error handlers already do; the bound
+    parameters are the caller's own request values, but the SQL text discloses
+    metadata-schema detail to everyone who can read a report's execution log.
+    """
+    return message.split("\n[SQL:")[0].strip()
+
+
 REPORT_SCHEDULE_ERROR_NOTIFICATION_MARKER = "Notification sent with error"
 
 
@@ -917,7 +928,14 @@ class ReportNotTriggeredErrorState(BaseReportState):
             self.send()
             self.update_report_schedule_and_log(ReportState.SUCCESS)
         except (SupersetErrorsException, Exception) as first_ex:
-            error_message = str(first_ex)
+            # ``str(exc)`` on a SQLAlchemy 2.0 error carries a
+            # ``[SQL: …] [parameters: …]`` tail, and this string is persisted
+            # to ``ReportExecutionLog.error_message`` and served by
+            # ``GET /api/v1/report/{pk}/log/`` to any ``can_read
+            # ReportSchedule`` holder. Upstream stores it verbatim; this port
+            # already ships a stripper for exactly this and applies it on every
+            # other path that reaches a response body, so apply it here too.
+            error_message = _strip_sql_payload(str(first_ex))
             # Join the structured per-error messages when present; the
             # ``errors`` payload may be ``SupersetError`` objects OR dicts.
             # Fall back to ``str(first_ex)`` when the list is empty so the

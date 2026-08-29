@@ -415,10 +415,23 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
     async def get_related_objects(
         self,
         dataset_id: int,
+        *,
+        chart_filters: list[Any] | None = None,
+        dashboard_filters: list[Any] | None = None,
     ) -> dict[str, list[Any]]:
+        """Return the charts and dashboards built on a dataset.
+
+        The caller passes the access filters for the current user.  Being able
+        to read the *dataset* does not entitle you to the titles, slugs and
+        full ``json_metadata`` — native-filter values, chart configuration,
+        cross-filter scoping — of every dashboard that happens to use it,
+        including unpublished drafts and, under ``DASHBOARD_RBAC``,
+        role-restricted ones.
+        """
         chart_stmt = select(Slice).where(
             Slice.datasource_id == dataset_id,
             Slice.datasource_type == "table",
+            *(chart_filters or []),
         )
         chart_result = await self.session.execute(chart_stmt)
         charts = list(chart_result.scalars().all())
@@ -429,7 +442,10 @@ class AsyncDatasetDAO(BaseAsyncDAO[SqlaTable]):
             dash_stmt = (
                 select(Dashboard)
                 .join(dashboard_slices, Dashboard.id == dashboard_slices.c.dashboard_id)
-                .where(dashboard_slices.c.slice_id.in_(chart_ids))
+                .where(
+                    dashboard_slices.c.slice_id.in_(chart_ids),
+                    *(dashboard_filters or []),
+                )
                 .distinct()
             )
             dash_result = await self.session.execute(dash_stmt)

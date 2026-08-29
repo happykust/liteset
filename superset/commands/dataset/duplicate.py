@@ -35,11 +35,13 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         base_model_id: int,
         table_name: str,
         user_id: int | None = None,
+        security_manager: Any | None = None,
     ) -> None:
         self._dao = dao
         self._base_model_id = base_model_id
         self._table_name = table_name
         self._user_id = user_id
+        self._security_manager = security_manager
         self._source: Any | None = None
 
     async def validate(self) -> None:
@@ -51,7 +53,29 @@ class DuplicateDatasetCommand(AsyncBaseCommand["SqlaTable"]):
         )
         from superset.sql.parse import Table
 
-        self._source = await self._dao.find_by_id(self._base_model_id)
+        # Access-scoped: every sibling command (refresh/delete/update) calls
+        # ``raise_for_ownership``; this one previously used the DAO's
+        # unfiltered ``find_by_id``, so any authenticated user could copy a
+        # dataset — SQL included — they cannot otherwise see, landing the
+        # copy in their own ownership.
+        if self._security_manager is not None and self._user_id is not None:
+            from superset.db.filters import dataset_access_filters
+            from superset.models.connectors import SqlaTable
+
+            user = await self._security_manager.find_user_by_id(self._user_id)
+            self._source = None
+            if user is not None:
+                access_filters = await dataset_access_filters(
+                    self._security_manager, user
+                )
+                results = await self._dao.find_all(
+                    filters=[SqlaTable.id == self._base_model_id, *access_filters],
+                    page=0,
+                    page_size=1,
+                )
+                self._source = results[0] if results else None
+        else:
+            self._source = await self._dao.find_by_id(self._base_model_id)
 
         exceptions: list[DatasetValidationError] = []
         if not self._source:

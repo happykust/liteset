@@ -74,6 +74,45 @@ logger = logging.getLogger(__name__)
 # the Liteset port can drop that dependency entirely.
 API_URI_RIS_KEY = "q"
 
+# INTENTIONAL, security-positive divergence from upstream Superset (which
+# persists the full raw request body to ``logs.json`` unfiltered —
+# ``superset_old/utils/log.py`` builds ``records`` straight from
+# ``collect_request_payload()`` with no redaction, and this port inherited
+# that as-is). A database create/update body carries the inline URI
+# password, the real (unmasked) ``masked_encrypted_extra``
+# (BigQuery/GSheets service-account keys, Snowflake keys, OAuth2
+# ``client_secret``), ``server_cert``, and ``ssh_tunnel.password`` /
+# ``.private_key`` — all of which would otherwise be written unencrypted to
+# the ``Log`` table indefinitely, readable by any holder of ``can_read Log``,
+# and echoed to stdout under ``StdOutEventLogger``. This denylist is applied
+# to every persisted/printed audit record (see ``_scrub_sensitive_payload``
+# below), not just database endpoints, since ``collect_request_payload``
+# merges the *entire* request body/query-string generically for any action.
+_SENSITIVE_PAYLOAD_KEYS: frozenset[str] = frozenset(
+    {
+        "sqlalchemy_uri",
+        "password",
+        "masked_encrypted_extra",
+        "encrypted_extra",
+        "server_cert",
+        "ssh_tunnel",
+    }
+)
+
+
+def _scrub_sensitive_payload(record: dict[str, Any]) -> dict[str, Any]:
+    """Drop credential-bearing keys before a record is persisted or printed.
+
+    Shallow by design — ``_SENSITIVE_PAYLOAD_KEYS`` targets the top-level
+    request-body fields ``collect_request_payload`` merges in wholesale
+    (``sqlalchemy_uri``, ``password``, ``masked_encrypted_extra``,
+    ``encrypted_extra``, ``server_cert``, ``ssh_tunnel``); it is not a
+    general-purpose redactor.
+    """
+    if not any(key in record for key in _SENSITIVE_PAYLOAD_KEYS):
+        return record
+    return {k: v for k, v in record.items() if k not in _SENSITIVE_PAYLOAD_KEYS}
+
 
 class EventLogger(ABC):
     """Abstract event logger.
@@ -452,6 +491,15 @@ class EventLogger(ABC):
             records = json.loads(payload.get(explode_by))  # type: ignore[arg-type]
         except Exception:  # noqa: BLE001
             records = [payload]
+
+        # See ``_SENSITIVE_PAYLOAD_KEYS`` above: every concrete ``log()``
+        # implementation either persists ``records`` verbatim (AsyncDBEvent
+        # Logger -> Log.json) or prints it (StdOutEventLogger's **kwargs) —
+        # neither goes through ``curate_payload``'s allow-list, which is
+        # request-classification only, not a security boundary.
+        records = [
+            _scrub_sensitive_payload(r) if isinstance(r, dict) else r for r in records
+        ]
 
         self.log(
             user_id,

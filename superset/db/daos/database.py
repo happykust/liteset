@@ -148,7 +148,17 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
     async def get_related_objects(
         self,
         database_id: int,
+        *,
+        chart_filters: list[Any] | None = None,
+        dashboard_filters: list[Any] | None = None,
     ) -> dict[str, list[Any]]:
+        """Return the charts and dashboards that depend on a database.
+
+        The caller passes the access filters for the current user: being able
+        to see the *database* is not entitlement to the titles, slugs and full
+        ``json_metadata`` of every dashboard built on it, which can include
+        unpublished drafts and role-restricted ones.
+        """
         dataset_stmt = select(SqlaTable.id).where(SqlaTable.database_id == database_id)
         dataset_result = await self.session.execute(dataset_stmt)
         dataset_ids = list(dataset_result.scalars().all())
@@ -160,6 +170,7 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
             chart_stmt = select(Slice).where(
                 Slice.datasource_id.in_(dataset_ids),
                 Slice.datasource_type == "table",
+                *(chart_filters or []),
             )
             chart_result = await self.session.execute(chart_stmt)
             charts = list(chart_result.scalars().all())
@@ -172,7 +183,10 @@ class AsyncDatabaseDAO(BaseAsyncDAO[Database]):
                         dashboard_slices,
                         Dashboard.id == dashboard_slices.c.dashboard_id,
                     )
-                    .where(dashboard_slices.c.slice_id.in_(chart_ids))
+                    .where(
+                        dashboard_slices.c.slice_id.in_(chart_ids),
+                        *(dashboard_filters or []),
+                    )
                     .distinct()
                 )
                 dash_result = await self.session.execute(dash_stmt)

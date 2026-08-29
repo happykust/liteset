@@ -211,9 +211,13 @@ class ValidateParametersCommand(AsyncBaseCommand[dict[str, Any]]):
                 return {"message": "OK"}
             if ping_error is not None:
                 url = make_url_safe(sqlalchemy_uri)
+                # No password here: this dict is ``%``-formatted into
+                # user-visible error messages by each engine spec's
+                # ``custom_errors`` templates, so one template mentioning
+                # ``%(password)s`` would print the plaintext credential into
+                # an HTTP response body. Specs only need the address fields.
                 context = {
                     "hostname": url.host,
-                    "password": url.password,
                     "port": url.port,
                     "username": url.username,
                     "database": url.database,

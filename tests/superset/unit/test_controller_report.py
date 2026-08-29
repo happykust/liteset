@@ -37,6 +37,22 @@ def mock_dao():
     dao.session.add = MagicMock()
     dao.session.flush = AsyncMock()
     dao.session.delete = AsyncMock()
+    # ``_validate_chart_dashboard``/``_find_accessible_database`` now resolve
+    # the referenced chart/dashboard/database through an access-filtered
+    # ``AsyncChartDAO``/``AsyncDashboardDAO``/``AsyncDatabaseDAO`` query
+    # (``session.execute(...).scalars().unique().all()``) instead of a bare
+    # ``session.get(...)``. A plain ``AsyncMock()`` session auto-generates
+    # ``.execute()``'s return value as ANOTHER AsyncMock, so the chained sync
+    # ``.scalars()``/``.unique()``/``.all()`` calls blow up. Configure it to
+    # return a stand-in row so these tests (which are about the OTHER
+    # validation rules, not chart/dashboard/database access itself — see
+    # test_report_schedule_access_scoping.py for that) keep resolving the
+    # referenced chart/dashboard/database as "found", like before.
+    execute_result = MagicMock()
+    execute_result.scalars.return_value.unique.return_value.all.return_value = [
+        MagicMock(id=1)
+    ]
+    dao.session.execute = AsyncMock(return_value=execute_result)
     return dao
 
 

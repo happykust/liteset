@@ -404,9 +404,14 @@ async def test_test_connection_validates_uri_required(mock_dao):
 
 
 async def test_test_connection_validates_success(mock_dao):
+    # ``postgresql://`` rather than ``sqlite://``: DatabaseTestConnectionCommand
+    # .validate() now runs the same PREVENT_UNSAFE_DB_CONNECTIONS blocklist
+    # check as create/update (sqlite/shillelagh are rejected as local-
+    # filesystem-escape vectors), so a "validates successfully" fixture must
+    # use a non-blocklisted dialect.
     cmd = DatabaseTestConnectionCommand(
         dao=mock_dao,
-        data={"sqlalchemy_uri": "sqlite:///test.db"},
+        data={"sqlalchemy_uri": "postgresql://user:pass@localhost:5432/test"},
     )
     await cmd.validate()  # Should not raise
 

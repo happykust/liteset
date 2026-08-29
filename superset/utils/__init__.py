@@ -17,9 +17,12 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlparse, urlunparse
 
 import msgspec
+
+#: Returned by :func:`mask_uri_password` when the URI can't be parsed at all,
+#: instead of echoing the (possibly credential-bearing) raw input back.
+_UNPARSEABLE_URI_PLACEHOLDER = "<invalid sqlalchemy uri>"  # noqa: S105
 
 
 def filter_unset(data: dict[str, Any]) -> dict[str, Any]:
@@ -38,17 +41,25 @@ def escape_like(value: str) -> str:
 
 
 def mask_uri_password(uri: str) -> str:
-    """Replace password component in a SQLAlchemy URI with a placeholder."""
+    """Replace password component in a SQLAlchemy URI with a placeholder.
+
+    Parses via ``make_url_safe`` (SQLAlchemy's URL parser) rather than
+    ``urlparse`` — ``urlparse`` mis-splits a password containing an
+    unencoded ``@`` or ``/``, and on any parse failure the previous
+    implementation's bare ``except: pass`` returned the UNMODIFIED input,
+    leaking the real password. A parse failure now returns a constant
+    placeholder instead.
+    """
     if not uri:
         return uri
     try:
-        parsed = urlparse(uri)
-        if parsed.password:
-            masked = parsed._replace(
-                netloc=f"{parsed.username or ''}:XXXXXXXXXX@{parsed.hostname}"
-                + (f":{parsed.port}" if parsed.port else ""),
-            )
-            return urlunparse(masked)
-    except Exception:  # noqa: BLE001, S110
-        pass
-    return uri
+        from superset.commands.database.utils import PASSWORD_MASK
+        from superset.databases.utils import make_url_safe
+
+        url = make_url_safe(uri)
+    except Exception:  # noqa: BLE001
+        return _UNPARSEABLE_URI_PLACEHOLDER
+
+    if not url.password:
+        return uri
+    return url.set(password=PASSWORD_MASK).render_as_string(hide_password=False)

@@ -2212,7 +2212,20 @@ class DatabaseController(Controller):
         current_user: UserProtocol,
     ) -> dict[str, Any]:
         await _get_accessible_database_or_404(dao, security_manager, current_user, pk)
-        related = await dao.get_related_objects(pk)
+        # Scope the dependent charts and dashboards to what this caller may
+        # see; reading the database is not entitlement to everything built on
+        # it. Mirrors the dataset endpoint of the same shape.
+        from superset.db.filters import chart_access_filters, dashboard_access_filters
+
+        related = await dao.get_related_objects(
+            pk,
+            chart_filters=list(
+                await chart_access_filters(security_manager, current_user)
+            ),
+            dashboard_filters=list(
+                await dashboard_access_filters(security_manager, current_user)
+            ),
+        )
         return {
             "charts": {
                 "count": len(related.get("charts", [])),
@@ -2351,6 +2364,7 @@ class DatabaseController(Controller):
         self,
         request: Request[Any, Any, Any],
         dao: DatabaseDAOProtocol,
+        security_manager: SecurityManagerProtocol,
     ) -> dict[str, str]:
         """Import database(s) from a ZIP bundle.
 
@@ -2376,9 +2390,15 @@ class DatabaseController(Controller):
             ssh_private_key_passwords,
         ) = await parse_import_request(request)
 
+        # ``security_manager`` is what makes the importer enforce
+        # ``can_write`` on Database/Dataset. Without it the importer falls
+        # back to ``ignore_permissions``, which is how a bundle carrying a
+        # ``databases/`` entry could create a connection with an
+        # attacker-controlled URI.
         cmd = ImportDatabasesCommand(
             contents=buf,
             dao=cast("AsyncDatabaseDAO", dao),
+            security_manager=security_manager,
             overwrite=overwrite,
             passwords=passwords_dict,
             ssh_tunnel_passwords=ssh_dict,
@@ -2748,10 +2768,11 @@ class DatabaseController(Controller):
             raise CommandInvalidError("'file' field is required")
 
         filename = file_field.filename or ""
-        if not validate_file_extension(filename):
+        allowed_extensions = SupersetSettings().allowed_extensions  # type: ignore[call-arg]
+        if not validate_file_extension(filename, allowed=allowed_extensions):
             raise CommandInvalidError(
                 f"Invalid file extension for '{filename}'. "
-                "Allowed: csv, tsv, xls, xlsx, parquet, zip"
+                f"Allowed: {', '.join(sorted(allowed_extensions))}"
             )
 
         file_contents = await file_field.read()
@@ -2814,6 +2835,18 @@ class DatabaseController(Controller):
         from superset.commands.database.uploaders.columnar_reader import ColumnarReader
         from superset.commands.database.uploaders.csv_reader import CSVReader
         from superset.commands.database.uploaders.excel_reader import ExcelReader
+        from superset.utils.upload import validate_file_extension
+
+        # This endpoint previously performed no extension check at all
+        # (unlike ``POST /{pk}/upload/``, right above). Apply the same
+        # operator-configured allow-list.
+        filename = data.filename or ""
+        allowed_extensions = SupersetSettings().allowed_extensions  # type: ignore[call-arg]
+        if not validate_file_extension(filename, allowed=allowed_extensions):
+            raise CommandInvalidError(
+                f"Invalid file extension for '{filename}'. "
+                f"Allowed: {', '.join(sorted(allowed_extensions))}"
+            )
 
         # Only ``delimiter`` and ``header_row`` are forwarded into the reader
         # options.

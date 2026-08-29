@@ -115,7 +115,10 @@ class ReportSchedulePostSchema(msgspec.Struct, forbid_unknown_fields=True):
     log_retention: Annotated[int, Meta(ge=1)] = 90
     # ``grace_period`` Range(min=1).
     grace_period: Annotated[int, Meta(ge=1)] = 14400
-    email_subject: str | None = None
+    # ``ReportSchedule.email_subject`` is String(255); without the cap an
+    # over-long value reaches the INSERT and the driver error (carrying the
+    # statement and its parameters) surfaces in the 422 body.
+    email_subject: Annotated[str, Meta(max_length=255)] | None = None
     context_markdown: str | None = None
     # ``creation_method`` has no ``allow_none=True`` in the POST schema; absent →
     # server_default='alerts_reports' applies; explicit null → HTTP 422.
@@ -353,7 +356,10 @@ class ReportDetailResult(ModelStruct):
     last_value_row_json: str | None = None
     report_format: str | None = None
     working_timeout: int | None = None
-    email_subject: str | None = None
+    # ``ReportSchedule.email_subject`` is String(255); without the cap an
+    # over-long value reaches the INSERT and the driver error (carrying the
+    # statement and its parameters) surfaces in the 422 body.
+    email_subject: Annotated[str, Meta(max_length=255)] | None = None
     chart: ChartRef | None = None
     dashboard: ReportDashboardRef | None = None
     database: ReportDatabaseRef | None = None

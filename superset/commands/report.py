@@ -62,10 +62,72 @@ if TYPE_CHECKING:
     from superset.models.reports import ReportSchedule
 
 
-async def _validate_chart_dashboard(
+async def _resolve_security_manager_and_user(
+    dao: "AsyncReportScheduleDAO",
+    security_manager: Any | None,
+    user_id: int | None,
+) -> tuple[Any | None, Any | None]:
+    """Resolve ``(security_manager, user)`` once for the access-filtered
+    chart/dashboard/database lookups below.
+
+    Builds a manager (bound to ``dao.session``) when the caller didn't supply
+    one, mirroring the fallback already used for owners further down in
+    ``validate()``. When no concrete acting user can be resolved (``user_id``
+    is ``None`` — CLI/system contexts with no security_manager threaded
+    either), the filter callers degrade to unfiltered lookups, consistent
+    with every other "no security context" fallback in this codebase
+    (``AsyncExportModelsCommand._validate_access``, ``filter_visible_ids``,
+    the async import helpers in ``chart/importers/v1/utils.py``, ...).
+    """
+    sm = security_manager
+    if sm is None:
+        from superset.security.manager import build_async_security_manager
+
+        sm = build_async_security_manager(dao.session, _get_settings())
+
+    user = None
+    if user_id is not None:
+        user = await sm.find_user_by_id(user_id)
+
+    return sm, user
+
+
+async def _find_accessible_database(
+    session: Any,
+    database_id: int,
+    security_manager: Any | None,
+    user: Any | None,
+) -> Any | None:
+    """Resolve an ALERT's referenced database, scoped to what ``user`` can see.
+
+    ``AsyncDatabaseDAO.find_by_id`` carries no base filter (unlike upstream's
+    DAO), so without this an Alpha with no grant on the target connection
+    could still bind — and run — an alert against it. Mirrors
+    ``_validate_chart_dashboard``'s access-filtered lookup below.
+    """
+    from superset.db.daos.database import AsyncDatabaseDAO
+
+    if security_manager is None or user is None:
+        return await AsyncDatabaseDAO(session).find_by_id(database_id)
+
+    from superset.db.filters import database_access_filters
+    from superset.models.core import Database
+
+    access_filters = await database_access_filters(security_manager, user)
+    results = await AsyncDatabaseDAO(session).find_all(
+        filters=[Database.id == database_id, *access_filters],
+        page=0,
+        page_size=1,
+    )
+    return results[0] if results else None
+
+
+async def _validate_chart_dashboard(  # noqa: C901
     dao: "AsyncReportScheduleDAO",
     data: dict[str, Any],
     exceptions: list[ReportScheduleValidationError],
+    security_manager: Any | None = None,
+    user: Any | None = None,
     *,
     update: bool = False,
 ) -> None:
@@ -74,6 +136,13 @@ async def _validate_chart_dashboard(
     Resolves the referenced chart / dashboard, collecting per-field errors,
     and stores the resolved objects back into ``data`` under ``chart`` /
     ``dashboard``.
+
+    Resolution IS the authorization here: neither the alert-execution path
+    (``report_alert.py``) nor the dashboard-render path re-checks access at
+    run time, so an id the caller cannot see must resolve to "not found" —
+    exactly like ``GET``/``PUT`` on the chart/dashboard endpoints themselves.
+    ``security_manager``/``user`` are optional so CLI/test callers that don't
+    thread a security context keep the previous unfiltered behaviour.
     """
     from superset.db.daos.chart import AsyncChartDAO
     from superset.db.daos.dashboard import AsyncDashboardDAO
@@ -96,12 +165,38 @@ async def _validate_chart_dashboard(
         exceptions.append(ReportScheduleOnlyChartOrDashboardError())
 
     if chart_id:
-        chart = await AsyncChartDAO(dao.session).find_by_id(chart_id)
+        chart = None
+        if security_manager is not None and user is not None:
+            from superset.db.filters import chart_access_filters
+            from superset.models.slice import Slice
+
+            access_filters = await chart_access_filters(security_manager, user)
+            results = await AsyncChartDAO(dao.session).find_all(
+                filters=[Slice.id == chart_id, *access_filters],
+                page=0,
+                page_size=1,
+            )
+            chart = results[0] if results else None
+        else:
+            chart = await AsyncChartDAO(dao.session).find_by_id(chart_id)
         if not chart:
             exceptions.append(ChartNotFoundValidationError())
         data["chart"] = chart
     elif dashboard_id:
-        dashboard = await AsyncDashboardDAO(dao.session).find_by_id(dashboard_id)
+        dashboard = None
+        if security_manager is not None and user is not None:
+            from superset.db.filters import dashboard_access_filters
+            from superset.models.dashboard import Dashboard
+
+            access_filters = await dashboard_access_filters(security_manager, user)
+            dashboard_results = await AsyncDashboardDAO(dao.session).find_all(
+                filters=[Dashboard.id == dashboard_id, *access_filters],
+                page=0,
+                page_size=1,
+            )
+            dashboard = dashboard_results[0] if dashboard_results else None
+        else:
+            dashboard = await AsyncDashboardDAO(dao.session).find_by_id(dashboard_id)
         if not dashboard:
             exceptions.append(DashboardNotFoundValidationError())
         data["dashboard"] = dashboard
@@ -277,7 +372,6 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         self._owners: list[Any] | None = None
 
     async def validate(self) -> None:  # noqa: C901
-        from superset.db.daos.database import AsyncDatabaseDAO
         from superset.models.reports import ReportCreationMethod, ReportScheduleType
 
         name = self._data.get("name")
@@ -300,6 +394,15 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         dashboard_id = self._data.get("dashboard")
 
         exceptions: list[ReportScheduleValidationError] = []
+
+        # Resolved once and reused below for the database/chart/dashboard
+        # lookups so an id the caller cannot see resolves to "not found"
+        # rather than silently binding the schedule to an inaccessible
+        # object (neither the alert-execution nor the dashboard-render path
+        # re-checks access at run time — this resolution IS the check).
+        sm, sm_user = await _resolve_security_manager_and_user(
+            self._dao, self._security_manager, self._user_id
+        )
 
         if not await self._dao.validate_update_uniqueness(
             name=name, report_type=report_type
@@ -325,17 +428,19 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
             database_id = self._data.get("database")
             if database_id is None:
                 exceptions.append(ReportScheduleAlertRequiredDatabaseValidationError())
-            elif database := await AsyncDatabaseDAO(self._dao.session).find_by_id(
-                database_id
-            ):
-                self._data["database"] = database
             else:
-                exceptions.append(DatabaseNotFoundValidationError())
+                database = await _find_accessible_database(
+                    self._dao.session, database_id, sm, sm_user
+                )
+                if database is not None:
+                    self._data["database"] = database
+                else:
+                    exceptions.append(DatabaseNotFoundValidationError())
 
         if crontab:
             _validate_report_frequency(crontab, report_type, exceptions)
 
-        await _validate_chart_dashboard(self._dao, self._data, exceptions)
+        await _validate_chart_dashboard(self._dao, self._data, exceptions, sm, sm_user)
         await _validate_report_extra(self._dao, self._data, exceptions)
 
         if (
@@ -373,12 +478,8 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
                     )
                 )
 
-        sm = self._security_manager
-        if sm is None:
-            from superset.security.manager import build_async_security_manager
-
-            sm = build_async_security_manager(self._dao.session, _get_settings())
-
+        # ``sm`` was already resolved above for the database/chart/dashboard
+        # access checks — reuse it rather than building a second manager.
         owner_ids_raw: list[int] | None = self._data.get("owners")
         try:
             self._owners = await populate_owner_list(
@@ -434,7 +535,7 @@ class CreateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
             report = await self._dao.create(create_data)
             await self._dao.session.flush()
         except SQLAlchemyError as ex:
-            raise ReportScheduleCreateFailedError(str(ex)) from ex
+            raise ReportScheduleCreateFailedError() from ex
         return report
 
 
@@ -456,8 +557,7 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         self._owners: list[Any] | None = None
 
     async def validate(self) -> None:  # noqa: C901
-        from superset.db.daos.database import AsyncDatabaseDAO
-        from superset.models.reports import ReportScheduleType, ReportState
+        from superset.models.reports import ReportState
 
         self._report = await self._dao.find_by_id(self._pk)
         if not self._report:
@@ -477,6 +577,13 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
             raise CommandInvalidError(f"Invalid crontab: {crontab}")
 
         exceptions: list[ReportScheduleValidationError] = []
+
+        # Resolved once and reused below for the database/chart/dashboard
+        # lookups (access-scoped, so an id the caller cannot see resolves to
+        # "not found") and for the ownership check further down.
+        sm, sm_user = await _resolve_security_manager_and_user(
+            self._dao, self._security_manager, self._user_id
+        )
 
         # Change the state to not triggered when the user deactivates a report
         # that is currently in a working state. This prevents an alert/report
@@ -498,8 +605,16 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
                     )
                 )
 
-        if report_type == ReportScheduleType.ALERT.value and database_id:
-            database = await AsyncDatabaseDAO(self._dao.session).find_by_id(database_id)
+        # Validate the database binding whenever one is supplied, NOT only for
+        # ``type == Alert``. ``run()`` persists ``database_id`` unconditionally,
+        # so gating the access check on a caller-controlled field let a writer
+        # bind an inaccessible database under ``type: Report`` and then flip the
+        # type to ``Alert`` in a second request — at which point the alert
+        # executes arbitrary SQL on a connection they were never granted.
+        if database_id:
+            database = await _find_accessible_database(
+                self._dao.session, database_id, sm, sm_user
+            )
             if not database:
                 exceptions.append(DatabaseNotFoundValidationError())
             self._data["database"] = database
@@ -507,7 +622,9 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
         if crontab:
             _validate_report_frequency(crontab, report_type, exceptions)
 
-        await _validate_chart_dashboard(self._dao, self._data, exceptions, update=True)
+        await _validate_chart_dashboard(
+            self._dao, self._data, exceptions, sm, sm_user, update=True
+        )
 
         if self._data.get("validator_config_json") is not None:
             self._data["validator_config_json"] = json.dumps(
@@ -532,12 +649,11 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
                     )
                 )
 
-        sm = self._security_manager
-        if sm is None:
-            from superset.security.manager import build_async_security_manager
-
-            sm = build_async_security_manager(self._dao.session, _get_settings())
-
+        # ``sm`` was already resolved above for the database/chart/dashboard
+        # access checks — reuse it rather than building a second manager.
+        # ``_resolve_security_manager_and_user`` always returns a manager (it
+        # builds one when none was injected), so this cannot be None here.
+        assert sm is not None
         try:
             await sm.raise_for_ownership(self._report, self._user_id)
         except SupersetSecurityException as ex:
@@ -587,7 +703,7 @@ class UpdateReportScheduleCommand(AsyncBaseCommand["ReportSchedule"]):
 
             await self._dao.session.flush()
         except SQLAlchemyError as ex:
-            raise ReportScheduleUpdateFailedError(str(ex)) from ex
+            raise ReportScheduleUpdateFailedError() from ex
         return report
 
 
@@ -628,7 +744,7 @@ class DeleteReportScheduleCommand(AsyncBaseCommand[None]):
             await self._dao.delete([self._report])
             await self._dao.session.flush()
         except SQLAlchemyError as ex:
-            raise ReportScheduleDeleteFailedError(str(ex)) from ex
+            raise ReportScheduleDeleteFailedError() from ex
 
 
 class BulkDeleteReportScheduleCommand(AsyncBaseCommand[None]):
@@ -672,4 +788,4 @@ class BulkDeleteReportScheduleCommand(AsyncBaseCommand[None]):
             await self._dao.delete(self._reports)
             await self._dao.session.flush()
         except SQLAlchemyError as ex:
-            raise ReportScheduleDeleteFailedError(str(ex)) from ex
+            raise ReportScheduleDeleteFailedError() from ex
