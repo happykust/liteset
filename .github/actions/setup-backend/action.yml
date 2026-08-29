@@ -54,6 +54,6 @@ runs:
             uv pip install --system -r requirements/base.txt
           fi
 
-          uv pip install --system -e .
+          uv pip install --system --no-deps -e .
         fi
       shell: bash
