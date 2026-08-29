@@ -365,7 +365,7 @@ class AuthController(Controller):
             context={
                 "bootstrap_data": json.dumps(bootstrap),
                 "entry": "spa",
-                "title": "Superset",
+                "title": getattr(settings, "app_name", "Liteset"),
                 "assets_prefix": settings.static_assets_prefix,
                 "standalone_mode": False,
                 "favicons": [{"href": "/static/assets/images/favicon.png"}],

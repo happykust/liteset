@@ -405,7 +405,7 @@ def _build_menu_data(user: Any, settings: Any) -> dict[str, Any]:
         },
         "environment_tag": _get_environment_tag(settings),
         "navbar_right": {
-            "show_watermark": "superset-logo-horiz" not in app_icon,
+            "show_watermark": "superset-logo-horiz" in app_icon,
             "bug_report_url": bug_report_url,
             "bug_report_icon": bug_report_icon,
             "bug_report_text": bug_report_text,
@@ -1219,7 +1219,7 @@ class SPAController(Controller):
             context={
                 "bootstrap_data": json.dumps(bootstrap),
                 "entry": "spa",
-                "title": "Superset",
+                "title": getattr(settings, "app_name", "Liteset"),
                 "assets_prefix": getattr(settings, "static_assets_prefix", ""),
                 "standalone_mode": False,
                 "favicons": [{"href": "/static/assets/images/favicon.png"}],
@@ -1298,7 +1298,7 @@ class SPAController(Controller):
             context={
                 "bootstrap_data": json.dumps(bootstrap),
                 "entry": "spa",
-                "title": "Superset",
+                "title": getattr(settings, "app_name", "Liteset"),
                 "assets_prefix": getattr(
                     settings,
                     "static_assets_prefix",
