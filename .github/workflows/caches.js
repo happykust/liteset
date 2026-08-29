@@ -29,6 +29,7 @@ const assetsConfig = {
     `${workspaceDirectory}/superset-frontend/plugins/**/*`,
     `${workspaceDirectory}/superset-frontend/*.js`,
     `${workspaceDirectory}/superset-frontend/*.json`,
+    `${workspaceDirectory}/.github/workflows/bashlib.sh`,
   ],
   // dont use restore keys as it may give an invalid older build
   restoreKeys: '',

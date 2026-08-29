@@ -217,12 +217,13 @@ def _issue_login_csrf(
     ``new_binding`` is non-empty when the visitor has no binding value yet and
     the caller must set the pre-auth cookie on the response.
     """
+    if not _csrf_protection_enabled(settings):
+        return "", ""
+
     binding = _csrf_binding_id(request, settings)
     new_binding = ""
     if not binding:
         binding = new_binding = secrets.token_urlsafe(32)
-    if not _csrf_protection_enabled(settings):
-        return "", new_binding
 
     from superset.middleware.csrf import generate_csrf_token
 
@@ -272,8 +273,7 @@ def _extract_submitted_csrf_token(
     ``SupersetClient.postForm`` posts it as a hidden ``csrf_token`` field;
     programmatic clients may send the usual ``X-CSRFToken`` header instead.
     """
-    header = request.headers.get("X-CSRFToken", "")
-    if header:
+    if header := request.headers.get("X-CSRFToken", ""):
         return str(header)
     if json_data:
         return str(json_data.get("csrf_token", "") or "")
@@ -534,6 +534,7 @@ class AuthController(Controller):
                     ).lower(),
                 ),
             )
+            redirect.cookies.append(_expired_csrf_session_cookie())
             return redirect
 
         # User lookup. Always perform both by-username and by-email queries so
@@ -645,6 +646,7 @@ class AuthController(Controller):
                 ).lower(),
             ),
         )
+        redirect.cookies.append(_expired_csrf_session_cookie())
         return redirect
 
     @get(
@@ -818,6 +820,7 @@ class AuthController(Controller):
                 ).lower(),
             ),
         )
+        redirect.cookies.append(_expired_csrf_session_cookie())
         # Expire the one-shot state cookie.
         redirect.cookies.append(
             Cookie(key=_OAUTH_STATE_COOKIE_NAME, value="", max_age=0, path="/")
@@ -924,6 +927,7 @@ class AuthController(Controller):
                 ).lower(),
             ),
         )
+        redirect.cookies.append(_expired_csrf_session_cookie())
         return redirect
 
 
@@ -1085,6 +1089,11 @@ def _oauth_redirect_uri(request: Request[Any, Any, Any], provider: str) -> str:
     scheme = request.url.scheme
     host = request.headers.get("host", request.url.netloc)
     return f"{scheme}://{host}/oauth-authorized/{provider}"
+
+
+def _expired_csrf_session_cookie() -> Cookie:
+    """Return a cookie that clears the pre-auth CSRF binding."""
+    return Cookie(key=_CSRF_SESSION_COOKIE_NAME, value="", max_age=0, path="/")
 
 
 def _make_session_cookie(
