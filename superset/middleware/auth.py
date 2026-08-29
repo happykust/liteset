@@ -31,6 +31,13 @@ from typing import Any
 from litestar.connection import ASGIConnection
 from litestar.middleware import AbstractAuthenticationMiddleware, AuthenticationResult
 
+from superset.security.auth_cache import (
+    as_cache_str,
+    AUTH_EPOCH_KEY,
+    read_auth_epoch,
+    sign_keyed_payload,
+    verify_keyed_payload,
+)
 from superset.utils.core import set_current_user
 
 logger = logging.getLogger(__name__)
@@ -174,21 +181,17 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         if not role_name:
             return UnauthenticatedUser()
 
-        permissions: set[tuple[str, str]] = set()
         redis = getattr(connection.app.state, "redis", None)
+        secret_key = _get_secret_key(settings)
 
         if redis is not None:
             try:
-                cached = await redis.get(_PUBLIC_ROLE_CACHE_KEY)
+                cached = await self._get_cached_public_role_perms(
+                    redis, role_name, secret_key
+                )
                 if cached is not None:
-                    perm_list = json.loads(cached)
-                    permissions = {
-                        (p[0], p[1])
-                        for p in perm_list
-                        if isinstance(p, (list, tuple)) and len(p) == 2
-                    }
-                    roles = [_CachedRole(id=0, name=role_name)] if permissions else []
-                    return UnauthenticatedUser(roles=roles, permissions=permissions)
+                    roles = [_CachedRole(id=0, name=role_name)] if cached else []
+                    return UnauthenticatedUser(roles=roles, permissions=cached)
             except Exception:
                 logger.debug("Redis error reading public role cache")
 
@@ -196,10 +199,8 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
 
         if redis is not None:
             try:
-                await redis.set(
-                    _PUBLIC_ROLE_CACHE_KEY,
-                    json.dumps(sorted(permissions)),
-                    ex=_PUBLIC_ROLE_CACHE_TTL,
+                await self._cache_public_role_perms(
+                    redis, role_name, permissions, secret_key
                 )
             except Exception:
                 logger.debug("Failed to cache public role permissions in Redis")
@@ -223,6 +224,87 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
             logger.exception("Failed to resolve public role permissions")
             return set()
 
+    @staticmethod
+    async def _get_cached_public_role_perms(
+        redis: Any,
+        role_name: str,
+        secret: str,
+    ) -> set[tuple[str, str]] | None:
+        """Read+verify the signed Public-role permission cache entry.
+
+        Mirrors ``_get_cached_user``: the entry is a signed envelope keyed
+        to the current auth epoch, so a Redis write cannot grant anonymous
+        callers permissions the database never assigned to the role, and a
+        role/permission mutation (``bump_auth_epoch``) invalidates it
+        immediately rather than after the full TTL.  Also binds the role
+        name into the signed payload so a rename of ``AUTH_ROLE_PUBLIC``
+        cannot resurrect a stale grant under the new name.
+        """
+        data, raw_epoch = await redis.mget(_PUBLIC_ROLE_CACHE_KEY, AUTH_EPOCH_KEY)
+        if data is None:
+            return None
+        try:
+            envelope = json.loads(data)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(envelope, dict):
+            return None
+
+        payload = envelope.get("data")
+        if not isinstance(payload, str) or not verify_keyed_payload(
+            _PUBLIC_ROLE_CACHE_KEY, payload, str(envelope.get("sig", "")), secret
+        ):
+            logger.warning(
+                "Discarding public-role auth cache entry: missing or invalid signature"
+            )
+            return None
+
+        try:
+            parsed = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        if parsed.get("role") != role_name:
+            return None
+        if str(parsed.get("epoch", "")) != as_cache_str(raw_epoch):
+            return None
+
+        perm_list = parsed.get("permissions")
+        if not isinstance(perm_list, list):
+            return None
+        return {
+            (p[0], p[1])
+            for p in perm_list
+            if isinstance(p, (list, tuple)) and len(p) == 2
+        }
+
+    @staticmethod
+    async def _cache_public_role_perms(
+        redis: Any,
+        role_name: str,
+        permissions: set[tuple[str, str]],
+        secret: str,
+    ) -> None:
+        epoch = await read_auth_epoch(redis)
+        payload = json.dumps(
+            {
+                "epoch": epoch,
+                "role": role_name,
+                "permissions": sorted(list(p) for p in permissions),
+            }
+        )
+        await redis.set(
+            _PUBLIC_ROLE_CACHE_KEY,
+            json.dumps(
+                {
+                    "sig": sign_keyed_payload(_PUBLIC_ROLE_CACHE_KEY, payload, secret),
+                    "data": payload,
+                }
+            ),
+            ex=_PUBLIC_ROLE_CACHE_TTL,
+        )
+
     async def _authenticate_cookie(  # noqa: C901
         self, connection: ASGIConnection[Any, Any, Any, Any]
     ) -> Any | None:
@@ -238,21 +320,34 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         user_id: int | None = None
         token_iat: int | None = None
         try:
+            # ``require: ["exp"]`` + the "type" == "session" check below
+            # together ensure only a cookie minted by ``_create_session_cookie``
+            # authenticates -- not just any HS256/SECRET_KEY JWT carrying a
+            # ``user_id`` claim.  Without this, the signed ``state`` JWT the
+            # database-OAuth2 flow puts in a query parameter (sent to a
+            # third-party IdP, and so exposed in its logs / Referer / browser
+            # history) would double as a fully authenticated session cookie.
             payload = pyjwt.decode(
                 cookie,
                 secret_key,
                 algorithms=["HS256"],
+                options={"require": ["exp"]},
             )
-            user_id = payload.get("user_id")
-            iat_raw = payload.get("iat")
-            if iat_raw is not None:
-                token_iat = int(iat_raw)
+            if payload.get("type") == "session":
+                user_id = payload.get("user_id")
+                iat_raw = payload.get("iat")
+                if iat_raw is not None:
+                    token_iat = int(iat_raw)
+            else:
+                logger.debug("Rejecting cookie JWT without a 'session' type claim")
         except Exception:  # noqa: S110
             pass
 
+        is_legacy_cookie = False
         if user_id is None:
             decoder = self._get_or_create_decoder(connection)
             user_id = decoder.get_user_id(cookie)
+            is_legacy_cookie = user_id is not None
 
         if user_id is None:
             return None
@@ -261,8 +356,21 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         # was issued, reject it.  The logout handler writes
         # ``auth:token_blacklist:{user_id}`` with the logout timestamp.
         redis = getattr(connection.app.state, "redis", None)
-        if redis is not None and token_iat is not None:
-            if await self._is_token_blacklisted(redis, user_id, token_iat):
+        if redis is not None:
+            if is_legacy_cookie:
+                # Legacy itsdangerous cookies carry no "iat"-equivalent
+                # claim this middleware can read, so a per-token timestamp
+                # comparison isn't possible: any blacklist entry for this
+                # user must revoke every legacy cookie outright.
+                if await self._is_user_blacklisted(redis, user_id):
+                    logger.debug(
+                        "Rejecting blacklisted legacy cookie for user %d",
+                        user_id,
+                    )
+                    return None
+            elif token_iat is not None and await self._is_token_blacklisted(
+                redis, user_id, token_iat
+            ):
                 logger.debug(
                     "Rejecting blacklisted cookie token for user %d (iat=%d)",
                     user_id,
@@ -272,7 +380,9 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
 
         if redis is not None:
             try:
-                cached = await self._get_cached_user(redis, f"auth:user:{user_id}")
+                cached = await self._get_cached_user(
+                    redis, f"auth:user:{user_id}", user_id, secret_key
+                )
                 if cached is not None:
                     self._set_sentry_user(cached)
                     return cached
@@ -295,7 +405,7 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
 
         if redis is not None:
             try:
-                await self._cache_user(redis, user)
+                await self._cache_user(redis, user, secret_key)
             except Exception:
                 logger.debug("Failed to cache user %d in Redis", user_id)
 
@@ -400,9 +510,12 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         if await self._check_blacklist(redis, user_id, token_iat):
             return None
 
+        cache_secret = _get_secret_key(connection.app.state.settings)
         if redis is not None:
             try:
-                cached = await self._get_cached_user(redis, f"auth:user:{user_id}")
+                cached = await self._get_cached_user(
+                    redis, f"auth:user:{user_id}", user_id, cache_secret
+                )
                 if cached is not None:
                     return cached
             except Exception:
@@ -427,7 +540,7 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
             )
         else:
             try:
-                await self._cache_user(redis, user)
+                await self._cache_user(redis, user, cache_secret)
                 logger.debug("JWT auth: cached user %d in Redis", user_id)
             except Exception:
                 # Surface the real failure instead of silently masking it.
@@ -475,6 +588,23 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
                     created_on_str = created_on_raw.isoformat()
                 else:
                     created_on_str = str(created_on_raw)
+            # Group-inherited roles count. Flask-AppBuilder's
+            # ``get_user_roles`` returns ``user.roles`` plus every role reached
+            # through the user's groups, and callers such as ``is_admin`` read
+            # this list by name — so building it from direct roles alone denies
+            # a user whose Admin role comes via a group. Permissions were
+            # already resolved across both (``get_all_permissions_for_user_
+            # with_groups``); this brings the role list in line with them.
+            roles = {
+                r.id: _CachedRole(id=r.id, name=r.name)
+                for r in getattr(user, "roles", [])
+            }
+            for group in await dao.get_user_groups(user_id):
+                for group_role in await dao.get_group_roles(group[0]):
+                    roles.setdefault(
+                        group_role[0], _CachedRole(id=group_role[0], name=group_role[1])
+                    )
+
             return CachedUser(
                 id=user.id,
                 username=user.username,
@@ -484,10 +614,7 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
                 last_name=getattr(user, "last_name", ""),
                 login_count=getattr(user, "login_count", 0) or 0,
                 created_on=created_on_str,
-                roles=[
-                    _CachedRole(id=r.id, name=r.name)
-                    for r in getattr(user, "roles", [])
-                ],
+                roles=list(roles.values()),
                 permissions=permissions,
             )
 
@@ -630,6 +757,26 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
             )
             return False
 
+    @staticmethod
+    async def _is_user_blacklisted(redis: Any, user_id: int) -> bool:
+        """Check for *any* blacklist entry for *user_id*, with no per-token
+        timestamp comparison.
+
+        Used for the legacy itsdangerous cookie path, which carries no
+        "iat"-equivalent claim this middleware can read: without a
+        timestamp to compare, presence of a blacklist entry must revoke
+        every legacy cookie for that user outright, not just ones issued
+        after it.  Fails open (returns False) on Redis errors.
+        """
+        try:
+            return await redis.get(f"auth:token_blacklist:{user_id}") is not None
+        except Exception:
+            logger.debug(
+                "Redis error checking legacy cookie blacklist for user %d",
+                user_id,
+            )
+            return False
+
     async def _check_blacklist(
         self,
         redis: Any | None,
@@ -652,13 +799,58 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
             )
         return blacklisted
 
-    async def _get_cached_user(self, redis: Any, cache_key: str) -> CachedUser | None:
-        data = await redis.get(cache_key)
+    async def _get_cached_user(
+        self,
+        redis: Any,
+        cache_key: str,
+        expected_user_id: int,
+        secret: str,
+    ) -> CachedUser | None:
+        # Fetch the entry and the global cache epoch in one round-trip.  The
+        # epoch is bumped by every role / permission / group mutation, so a
+        # stale entry (one minted before the change) is rejected here rather
+        # than being trusted for the rest of its TTL.
+        data, raw_epoch = await redis.mget(cache_key, AUTH_EPOCH_KEY)
         if data is None:
             return None
         try:
-            parsed = json.loads(data)
+            envelope = json.loads(data)
         except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(envelope, dict):
+            return None
+
+        # The payload carries the user's roles and permissions and is trusted
+        # for authorization, so it must be authenticated: whoever can write to
+        # Redis must not thereby be able to grant themselves permissions.
+        # The signature covers *cache_key* as well as the payload so that an
+        # entry copied onto a different key (``COPY auth:user:1
+        # auth:user:42``) does not verify under its new key.
+        payload = envelope.get("data")
+        if not isinstance(payload, str) or not verify_keyed_payload(
+            cache_key, payload, str(envelope.get("sig", "")), secret
+        ):
+            logger.warning(
+                "Discarding auth cache entry %s: missing or invalid signature",
+                cache_key,
+            )
+            return None
+
+        try:
+            parsed = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if str(parsed.get("epoch", "")) != as_cache_str(raw_epoch):
+            return None
+        # Belt-and-suspenders alongside the key-bound signature above: even
+        # if an entry's signature verified for *this* key, the payload's own
+        # ``id`` must match the user being looked up under it.
+        if _safe_int(parsed.get("id")) != expected_user_id:
+            logger.warning(
+                "Discarding auth cache entry %s: payload id does not match "
+                "the requested user id",
+                cache_key,
+            )
             return None
         user = CachedUser.from_dict(parsed)
         if user is None:
@@ -667,14 +859,18 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
             return None
         return user
 
-    async def _cache_user(self, redis: Any, user: Any) -> None:
+    async def _cache_user(self, redis: Any, user: Any, secret: str) -> None:
         roles = [
             {"id": r.id, "name": r.name}
             for r in getattr(user, "roles", [])
             if hasattr(r, "id") and hasattr(r, "name")
         ]
-        user_data = json.dumps(
+        # Stamp the entry with the epoch it was minted under so a later
+        # role/permission change invalidates it (see ``_get_cached_user``).
+        epoch = await read_auth_epoch(redis)
+        payload = json.dumps(
             {
+                "epoch": epoch,
                 "id": user.id,
                 "username": user.username,
                 "email": getattr(user, "email", ""),
@@ -690,9 +886,15 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
                 ),
             }
         )
+        cache_key = f"auth:user:{user.id}"
         await redis.set(
-            f"auth:user:{user.id}",
-            user_data,
+            cache_key,
+            json.dumps(
+                {
+                    "sig": sign_keyed_payload(cache_key, payload, secret),
+                    "data": payload,
+                }
+            ),
             ex=_USER_CACHE_TTL,
         )
 

@@ -230,8 +230,14 @@ class SecurityController(Controller):
             secret = str(sk)
             cookie_name = getattr(settings, "session_cookie_name", "session")
 
-        # Extract the session cookie to bind the token
-        session_id = request.cookies.get(cookie_name, "")
+        # Extract the session cookie to bind the token.  Anonymous callers
+        # (the login page fetching a token before any session exists) are
+        # bound to the pre-auth ``csrf_session`` cookie instead, so a token
+        # fetched here validates against the same value the login handler
+        # checks.
+        session_id = request.cookies.get(cookie_name, "") or request.cookies.get(
+            "csrf_session", ""
+        )
 
         token = generate_csrf_token(secret, session_id=session_id)
         await event_logger.alog_with_context("security.csrf_token")
@@ -623,6 +629,24 @@ class SecurityController(Controller):
             raise NotAuthorizedException(
                 detail="Invalid refresh token (bad sub)"
             ) from exc
+
+        # A refresh token stolen before logout must not go on minting fresh
+        # access tokens forever: consult the same
+        # ``auth:token_blacklist:{user_id}`` entry the cookie/access-token
+        # paths check (superset.middleware.auth._is_token_blacklisted).
+        redis = getattr(state, "redis", None)
+        token_iat = payload.get("iat")
+        if redis is not None and token_iat is not None:
+            from superset.middleware.auth import SupersetAuthMiddleware
+
+            try:
+                revoked = await SupersetAuthMiddleware._is_token_blacklisted(
+                    redis, user_id, int(token_iat)
+                )
+            except (ValueError, TypeError):
+                revoked = False
+            if revoked:
+                raise NotAuthorizedException(detail="Refresh token has been revoked")
 
         access_expires = getattr(settings, "jwt_access_token_expires", 900)
         access_token = _create_api_access_token(

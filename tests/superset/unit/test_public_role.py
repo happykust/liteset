@@ -53,6 +53,22 @@ from superset.middleware.auth import (
 SECRET_KEY = "test-secret-key-at-least-16-chars"
 
 
+def _signed_public_role_entry(
+    permissions: list[list[str]],
+    role: str = "Public",
+    epoch: str = "",
+    secret: str = SECRET_KEY,
+) -> str:
+    """Build a Public-role cache envelope the middleware will accept."""
+    from superset.middleware.auth import _PUBLIC_ROLE_CACHE_KEY
+    from superset.security.auth_cache import sign_keyed_payload
+
+    body = json.dumps({"epoch": epoch, "role": role, "permissions": permissions})
+    return json.dumps(
+        {"sig": sign_keyed_payload(_PUBLIC_ROLE_CACHE_KEY, body, secret), "data": body}
+    )
+
+
 # ---------------------------------------------------------------------------
 # Mock helpers
 # ---------------------------------------------------------------------------
@@ -223,16 +239,30 @@ class TestRequirePermissionWithPublicRole:
         with pytest.raises(PermissionDeniedException, match="can_write on Chart"):
             guard(conn, MagicMock())
 
-    def test_admin_bypasses_permission_check(self) -> None:
+    def test_admin_passes_through_its_seeded_permissions(self) -> None:
+        """Holding the Admin role is not itself authorization.
+
+        Upstream Flask-AppBuilder's ``has_access`` never special-cases
+        ``AUTH_ROLE_ADMIN`` — Admin reaches a route because role seeding gave
+        it the permission. Revoking that permission from the role must deny.
+        """
         guard = require_permission("can_write", "Chart")
         admin_role = MockRole(id=1, name="Admin")
-        user = MagicMock(
+
+        granted = MagicMock(
+            is_authenticated=True,
+            permissions={("can_write", "Chart")},
+            roles=[admin_role],
+        )
+        guard(_make_mock_connection(granted), MagicMock())
+
+        revoked = MagicMock(
             is_authenticated=True,
             permissions=set(),
             roles=[admin_role],
         )
-        conn = _make_mock_connection(user)
-        guard(conn, MagicMock())
+        with pytest.raises(PermissionDeniedException):
+            guard(_make_mock_connection(revoked), MagicMock())
 
 
 # ---------------------------------------------------------------------------
@@ -351,8 +381,17 @@ class TestBuildAnonymousUser:
     ) -> None:
         """When Redis has cached public permissions, DB is not queried."""
         mock_redis = AsyncMock()
-        cached_perms = json.dumps([["can_read", "Dashboard"], ["can_read", "Chart"]])
-        mock_redis.get = AsyncMock(return_value=cached_perms)
+        # The entry is a signed envelope keyed to the cache key and the current
+        # epoch — an unsigned blob is discarded, so that a Redis write cannot
+        # grant permissions to anonymous callers.
+        mock_redis.mget = AsyncMock(
+            return_value=[
+                _signed_public_role_entry(
+                    [["can_read", "Dashboard"], ["can_read", "Chart"]]
+                ),
+                None,
+            ]
+        )
 
         state = State(
             {
@@ -383,6 +422,12 @@ class TestBuildAnonymousUser:
     ) -> None:
         """When Redis cache misses, permissions are loaded from DB and cached."""
         mock_redis = AsyncMock()
+        # ``_get_cached_public_role_perms`` reads the entry and the cache
+        # epoch in one MGET, not a plain GET -- an unconfigured ``mget`` on a
+        # bare AsyncMock returns a non-iterable default, and unpacking it
+        # would raise before ever reaching the real cache-miss branch this
+        # test names.
+        mock_redis.mget = AsyncMock(return_value=[None, None])
         mock_redis.get = AsyncMock(return_value=None)
         mock_redis.set = AsyncMock()
 

@@ -24,6 +24,23 @@ from superset.security.guest import create_guest_access_token, GuestUser
 SECRET_KEY = "integration-test-secret-key-32chr"
 
 
+def _signed_cache_entry(payload: dict, cache_key: str | None = None) -> str:
+    """Build a Redis auth-cache envelope the middleware will accept.
+
+    Entries are HMAC-signed over both the payload *and* the Redis key they
+    are stored under, so that Redis write access alone cannot grant
+    permissions, and a legitimately-signed entry cannot be copied onto a
+    different user's cache key.  Defaults *cache_key* to
+    ``auth:user:{payload["id"]}`` to match how ``_cache_user`` writes real
+    entries.
+    """
+    from superset.security.auth_cache import sign_keyed_payload
+
+    body = json.dumps(payload)
+    key = cache_key if cache_key is not None else f"auth:user:{payload.get('id')}"
+    return json.dumps({"sig": sign_keyed_payload(key, body, SECRET_KEY), "data": body})
+
+
 # --- Minimal FAB schema (prefixed to avoid pytest collection) ---
 
 
@@ -421,7 +438,7 @@ async def test_guest_token_flow():
 
 async def test_redis_cache_hit():
     mock_redis = AsyncMock()
-    cached_user_data = json.dumps(
+    cached_user_data = _signed_cache_entry(
         {
             "id": 1,
             "username": "cached_admin",
@@ -431,7 +448,10 @@ async def test_redis_cache_hit():
             "roles": [{"id": 1, "name": "Admin"}],
         }
     )
-    mock_redis.get = AsyncMock(return_value=cached_user_data)
+    # ``_get_cached_user`` fetches the entry and the cache epoch in one MGET.
+    mock_redis.mget = AsyncMock(return_value=[cached_user_data, None])
+    # Legacy-cookie blacklist check: no entry present -> None.
+    mock_redis.get = AsyncMock(return_value=None)
 
     app = Litestar(
         route_handlers=[whoami],
@@ -463,12 +483,12 @@ async def test_redis_cache_hit():
         assert resp.status_code == 200
         data = resp.json()
         assert data["username"] == "cached_admin"
-        mock_redis.get.assert_called_once()
+        mock_redis.mget.assert_called_once()
 
 
 async def test_redis_cache_rejects_inactive():
     mock_redis = AsyncMock()
-    cached_user_data = json.dumps(
+    cached_user_data = _signed_cache_entry(
         {
             "id": 3,
             "username": "inactive",
@@ -477,7 +497,10 @@ async def test_redis_cache_rejects_inactive():
             "roles": [],
         }
     )
-    mock_redis.get = AsyncMock(return_value=cached_user_data)
+    # ``_get_cached_user`` fetches the entry and the cache epoch in one MGET.
+    mock_redis.mget = AsyncMock(return_value=[cached_user_data, None])
+    # Legacy-cookie blacklist check: no entry present -> None.
+    mock_redis.get = AsyncMock(return_value=None)
 
     app = Litestar(
         route_handlers=[whoami],
@@ -672,5 +695,10 @@ async def test_can_access_all_databases_admin():
 
     admin_user = MockUser(id=1, roles=[MockRole(id=1, name="Admin")])
 
-    result = await manager.can_access_all_databases(user=admin_user)
-    assert result is True
+    # Admin passes through its seeded ``all_database_access`` permission, not
+    # through its role name — and revoking that permission denies.
+    mock_dao.has_permission_view.return_value = True
+    assert await manager.can_access_all_databases(user=admin_user) is True
+
+    mock_dao.has_permission_view.return_value = False
+    assert await manager.can_access_all_databases(user=admin_user) is False

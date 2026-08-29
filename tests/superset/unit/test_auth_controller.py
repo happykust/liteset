@@ -21,6 +21,8 @@ timing-safe behaviour, and no-cache header enforcement.
 from __future__ import annotations
 
 import hashlib
+import urllib.parse
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -29,6 +31,7 @@ from litestar.response import Redirect
 from superset.controllers.auth import (
     _check_password_hash,
     _FAKE_PASSWORD_HASH,
+    _INVALID_LOGIN_MESSAGE,
     AuthController,
 )
 
@@ -330,6 +333,8 @@ class TestLoginPageNoCacheHeaders:
         settings = MagicMock()
         settings.auth_role_public = ""
         settings.static_assets_prefix = ""
+        settings.secret_key = "x" * 32
+        settings.wtf_csrf_time_limit = 604800
         state = MagicMock()
         state.settings = settings
 
@@ -400,6 +405,39 @@ class _FakeAsyncSession:
 _login_submit_fn = _get_raw_method(AuthController, "login_submit")
 
 
+_CSRF_TEST_SECRET = "x" * 32
+
+# Fixed pre-auth binding, standing in for the random value GET /login/ mints
+# and stores in the ``csrf_session`` cookie (see ``_issue_login_csrf``).  An
+# *empty* binding is never valid post-FIX1: ``sha256("")`` is a fixed
+# constant, so a token "bound" to it would validate for any caller
+# presenting no session at all -- the login-CSRF gap FIX1 closes.
+_PRE_AUTH_BINDING = "test-pre-auth-binding"  # noqa: S105
+
+
+def _make_login_csrf_token(binding: str = _PRE_AUTH_BINDING) -> str:
+    """Mint a token bound to a fixed pre-auth binding, as GET /login/ would
+    issue after setting the ``csrf_session`` cookie."""
+    from superset.middleware.csrf import generate_csrf_token
+
+    return generate_csrf_token(_CSRF_TEST_SECRET, session_id=binding)
+
+
+def _header_getter(name: str, default: str = "") -> str:
+    """Only ``Host`` is set; ``X-CSRFToken`` is absent so the form field wins."""
+    return "liteset.local" if name.lower() == "host" else default
+
+
+def _cookie_getter(binding: str = _PRE_AUTH_BINDING) -> Any:
+    """Mock ``request.cookies.get`` as a browser that holds the pre-auth
+    ``csrf_session`` cookie GET /login/ set, but no real session yet."""
+
+    def _get(name: str, default: str = "") -> str:
+        return binding if name == "csrf_session" else default
+
+    return MagicMock(side_effect=_get)
+
+
 class TestBrowserLdapLogin:
     """POST /login/ dispatches to LDAP when AUTH_TYPE == AUTH_LDAP."""
 
@@ -414,15 +452,21 @@ class TestBrowserLdapLogin:
         request.content_type = "application/x-www-form-urlencoded"
 
         async def _form() -> dict[str, str]:
-            return {"username": "alice", "password": "secret"}
+            return {
+                "username": "alice",
+                "password": "secret",
+                "csrf_token": _make_login_csrf_token(),
+            }
 
         request.form = _form
         request.query_params.get = MagicMock(return_value="")
-        request.headers.get = MagicMock(return_value="liteset.local")
+        request.headers.get = MagicMock(side_effect=_header_getter)
+        request.cookies.get = _cookie_getter()
 
         settings = MagicMock()
         settings.auth_type = 2  # AUTH_LDAP
         settings.secret_key = "x" * 32
+        settings.wtf_csrf_time_limit = 604800
         settings.session_cookie_name = "session"
         settings.session_max_age = 3600
 
@@ -462,11 +506,16 @@ class TestBrowserLdapLogin:
         request.content_type = "application/x-www-form-urlencoded"
 
         async def _form() -> dict[str, str]:
-            return {"username": "alice", "password": "wrong"}
+            return {
+                "username": "alice",
+                "password": "wrong",
+                "csrf_token": _make_login_csrf_token(),
+            }
 
         request.form = _form
         request.query_params.get = MagicMock(return_value="")
-        request.headers.get = MagicMock(return_value="liteset.local")
+        request.headers.get = MagicMock(side_effect=_header_getter)
+        request.cookies.get = _cookie_getter()
 
         settings = MagicMock()
         settings.auth_type = 2
@@ -492,6 +541,94 @@ class TestBrowserLdapLogin:
         assert isinstance(result, Redirect)
         assert result.url.startswith("/login/")
         assert session.committed is False
+
+
+class TestLoginCsrf:
+    """POST /login/ must reject submissions without a valid CSRF token."""
+
+    @staticmethod
+    def _make_request(form: dict[str, str], cookie: str = "") -> MagicMock:
+        request = MagicMock()
+        request.content_type = "application/x-www-form-urlencoded"
+
+        async def _form() -> dict[str, str]:
+            return form
+
+        request.form = _form
+        request.query_params.get = MagicMock(return_value="")
+        request.headers.get = MagicMock(side_effect=_header_getter)
+        request.cookies.get = MagicMock(return_value=cookie)
+        return request
+
+    @staticmethod
+    def _make_state() -> MagicMock:
+        settings = MagicMock()
+        settings.auth_type = 1  # AUTH_DB
+        settings.secret_key = _CSRF_TEST_SECRET
+        settings.wtf_csrf_time_limit = 604800
+        settings.session_cookie_name = "session"
+        settings.session_max_age = 3600
+        state = MagicMock()
+        state.settings = settings
+        return state
+
+    @pytest.mark.asyncio
+    async def test_missing_token_is_rejected(self) -> None:
+        """A cross-site forged post carries no token and must not authenticate."""
+        controller = MagicMock()
+        request = self._make_request({"username": "alice", "password": "secret"})
+
+        result = await _login_submit_fn(
+            controller, request=request, state=self._make_state()
+        )
+
+        assert isinstance(result, Redirect)
+        assert result.url.startswith("/login/")
+        assert "session" not in {c.key for c in result.cookies}
+
+    @pytest.mark.asyncio
+    async def test_token_bound_to_another_session_is_rejected(self) -> None:
+        """A token minted for a different binding cannot be replayed."""
+        from superset.middleware.csrf import generate_csrf_token
+
+        controller = MagicMock()
+        foreign = generate_csrf_token(_CSRF_TEST_SECRET, session_id="someone-else")
+        request = self._make_request(
+            {"username": "alice", "password": "secret", "csrf_token": foreign},
+            cookie="this-browser",
+        )
+
+        result = await _login_submit_fn(
+            controller, request=request, state=self._make_state()
+        )
+
+        assert isinstance(result, Redirect)
+        assert result.url.startswith("/login/")
+        assert "session" not in {c.key for c in result.cookies}
+
+    @pytest.mark.asyncio
+    async def test_disabled_csrf_skips_validation(self) -> None:
+        """Deployments with WTF_CSRF_ENABLED=False (e2e) keep working."""
+        controller = MagicMock()
+        state = self._make_state()
+        state.settings.wtf_csrf_enabled = False
+        # No token, but validation is off, so the handler proceeds far enough
+        # to fail on credentials instead of on CSRF.
+        request = self._make_request({"username": "", "password": ""})
+
+        result = await _login_submit_fn(controller, request=request, state=state)
+
+        assert isinstance(result, Redirect)
+        assert result.url.startswith("/login/")
+        # ``_login_failed_redirect`` returns an identical Redirect shape for
+        # every failure reason, so asserting only the type/URL would also be
+        # satisfied by the CSRF check firing anyway (the disable flag being
+        # silently ignored). The flash-cookie message distinguishes the two:
+        # the generic invalid-login text here proves the handler reached the
+        # credentials check past a CSRF gate that was actually skipped,
+        # rather than "CSRF token verification failed. Please try again."
+        flash_cookie = next(c for c in result.cookies if c.key == "_flash")
+        assert urllib.parse.unquote(flash_cookie.value) == _INVALID_LOGIN_MESSAGE
 
 
 class TestOAuthLoginRoute:

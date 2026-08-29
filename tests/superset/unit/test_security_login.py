@@ -529,6 +529,60 @@ class TestRefreshEndpoint:
             )
             assert resp.status_code == 401
 
+    async def test_refresh_rejects_blacklisted_token(self):
+        """M22 (1/4): a refresh token stolen before logout must not go on
+        minting fresh access tokens -- the endpoint must consult
+        ``auth:token_blacklist:{user_id}`` like the cookie/access-token
+        auth paths do."""
+        issued_at = int(time.time()) - 100
+        refresh_token = jwt.encode(
+            {
+                "sub": "1",
+                "iat": issued_at,
+                "exp": int(time.time()) + 86400,
+                "type": "refresh",
+            },
+            SECRET_KEY,
+            algorithm="HS256",
+        )
+        mock_redis = AsyncMock()
+        # Logout happened after the token was issued.
+        mock_redis.get = AsyncMock(return_value=str(issued_at + 50))
+
+        app = _create_test_app(redis=mock_redis)
+        async with AsyncTestClient(app=app) as client:
+            resp = await client.post(
+                "/api/v1/security/refresh",
+                headers={"Authorization": f"Bearer {refresh_token}"},
+            )
+            assert resp.status_code == 401
+
+    async def test_refresh_accepts_token_issued_after_logout(self):
+        """A refresh token minted after the blacklist timestamp (a fresh
+        login post-logout) must still work."""
+        issued_at = int(time.time())
+        refresh_token = jwt.encode(
+            {
+                "sub": "1",
+                "iat": issued_at,
+                "exp": issued_at + 86400,
+                "type": "refresh",
+            },
+            SECRET_KEY,
+            algorithm="HS256",
+        )
+        mock_redis = AsyncMock()
+        # Blacklist entry predates this token's iat.
+        mock_redis.get = AsyncMock(return_value=str(issued_at - 100))
+
+        app = _create_test_app(redis=mock_redis)
+        async with AsyncTestClient(app=app) as client:
+            resp = await client.post(
+                "/api/v1/security/refresh",
+                headers={"Authorization": f"Bearer {refresh_token}"},
+            )
+            assert resp.status_code == 200
+
 
 # ---------------------------------------------------------------------------
 # Middleware: access token authentication tests
@@ -664,7 +718,9 @@ class TestAccessTokenMiddleware:
             SECRET_KEY, user_id=10, expires_in=900, fresh=True
         )
 
-        cached_data = json.dumps(
+        from superset.security.auth_cache import sign_keyed_payload
+
+        body = json.dumps(
             {
                 "id": 10,
                 "username": "cached-user",
@@ -674,8 +730,17 @@ class TestAccessTokenMiddleware:
                 "permissions": ["can_read_Chart"],
             }
         )
+        # Entries are HMAC-signed over both the payload and the Redis key
+        # they are stored under: Redis write access alone must not be
+        # enough to hand a request a set of permissions, or to replay
+        # another user's entry under this key.
+        cache_key = "auth:user:10"
+        cached_data = json.dumps(
+            {"sig": sign_keyed_payload(cache_key, body, SECRET_KEY), "data": body}
+        )
         mock_redis = AsyncMock()
-        mock_redis.get = AsyncMock(return_value=cached_data)
+        # ``_get_cached_user`` fetches the entry and the cache epoch in one MGET.
+        mock_redis.mget = AsyncMock(return_value=[cached_data, None])
 
         app = _create_middleware_test_app(redis=mock_redis)
         async with AsyncTestClient(app=app) as client:
@@ -694,7 +759,7 @@ class TestAccessTokenMiddleware:
 # ---------------------------------------------------------------------------
 
 
-def _create_test_app(**settings_overrides: Any) -> Litestar:
+def _create_test_app(redis: Any = None, **settings_overrides: Any) -> Litestar:
     """Create a Litestar app with SecurityController for testing."""
     settings = _make_settings(**settings_overrides)
     mock_factory = _make_mock_session_factory()
@@ -705,7 +770,7 @@ def _create_test_app(**settings_overrides: Any) -> Litestar:
             {
                 "settings": settings,
                 "session_factory": mock_factory,
-                "redis": None,
+                "redis": redis,
             }
         ),
     )

@@ -23,6 +23,7 @@ that ``SupersetAuthMiddleware`` decodes via ``SessionDecoder``.
 from __future__ import annotations
 
 import logging
+import secrets
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -54,6 +55,15 @@ _FLASH_COOKIE_NAME: str = "_flash"
 # Cookie holding the signed OAuth ``state`` between the authorize redirect
 # and the callback (no server-side session needed).
 _OAUTH_STATE_COOKIE_NAME: str = "superset_oauth_state"
+
+# Pre-authentication CSRF binding.  The login form is submitted before any
+# session exists, so the CSRF token cannot be bound to the session cookie
+# the way ``/api/v1/security/csrf_token/`` binds it for authenticated
+# requests.  Instead ``GET /login/`` mints a random id, stores it in a
+# ``SameSite=Lax`` cookie and issues a token bound to it.  A cross-site POST
+# never carries a Lax cookie, so the binding cannot be satisfied by a forged
+# request even though the token itself is served to anyone who asks.
+_CSRF_SESSION_COOKIE_NAME: str = "csrf_session"
 
 _AUTH_OAUTH: int = 4
 
@@ -124,13 +134,21 @@ def _create_session_cookie(
     """Create a JWT session cookie value.
 
     Produces a signed JWT that ``SessionDecoder.decode()`` can verify.
-    Payload: ``{"user_id": <int>, "iat": <timestamp>, "exp": <timestamp>}``.
+    Payload: ``{"type": "session", "user_id": <int>, "iat": <timestamp>,
+    "exp": <timestamp>}``.
+
+    ``type: "session"`` is mandatory and checked by
+    ``SupersetAuthMiddleware._authenticate_cookie``: without it, any other
+    HS256/SECRET_KEY JWT carrying a ``user_id`` claim -- notably the
+    database-OAuth2 ``state`` JWT, which is placed in a query parameter sent
+    to a third-party IdP -- would double as a valid session cookie.
 
     *max_age_seconds* controls the JWT expiry and should come from
     ``settings.session_max_age``.
     """
     now = datetime.now(timezone.utc)
     payload = {
+        "type": "session",
         "user_id": user_id,
         "iat": now,
         "exp": now + timedelta(seconds=max_age_seconds),
@@ -155,6 +173,113 @@ def _clear_flash_cookies(
             response.cookies.append(
                 Cookie(key="_flash_danger", value="", max_age=0, path="/")
             )
+
+
+def _csrf_protection_enabled(settings: Any) -> bool:
+    """Return whether CSRF validation is active for this deployment.
+
+    Mirrors the condition used in ``superset.app`` when installing
+    ``CSRFMiddleware`` so the login form and the rest of the API are
+    switched on and off together (the e2e suite disables both).
+    """
+    return bool(
+        getattr(settings, "csrf_enabled", True)
+        and getattr(settings, "wtf_csrf_enabled", True)
+    )
+
+
+def _csrf_session_cookie(settings: Any, value: str) -> Cookie:
+    """Build the pre-auth CSRF binding cookie.
+
+    ``SameSite=Lax`` is what makes this a real defence: browsers omit the
+    cookie on cross-site form posts, so a forged login submission arrives
+    without the binding value and fails validation.
+    """
+    return Cookie(
+        key=_CSRF_SESSION_COOKIE_NAME,
+        value=value,
+        # Outlive the token itself, so a login page left open never fails
+        # because the binding expired before the token did.
+        max_age=int(getattr(settings, "wtf_csrf_time_limit", 604800) or 604800),
+        path="/",
+        httponly=True,
+        secure=bool(getattr(settings, "session_cookie_secure", False)),
+        samesite="lax",
+    )
+
+
+def _issue_login_csrf(
+    request: Request[Any, Any, Any],
+    settings: Any,
+) -> tuple[str, str]:
+    """Return ``(token, new_binding)`` for the login form.
+
+    ``new_binding`` is non-empty when the visitor has no binding value yet and
+    the caller must set the pre-auth cookie on the response.
+    """
+    binding = _csrf_binding_id(request, settings)
+    new_binding = ""
+    if not binding:
+        binding = new_binding = secrets.token_urlsafe(32)
+    if not _csrf_protection_enabled(settings):
+        return "", new_binding
+
+    from superset.middleware.csrf import generate_csrf_token
+
+    return (
+        generate_csrf_token(_get_secret_key(settings), session_id=binding),
+        new_binding,
+    )
+
+
+def _csrf_binding_id(request: Request[Any, Any, Any], settings: Any) -> str:
+    """Return the value the login CSRF token is bound to.
+
+    An already-authenticated visitor re-posting the form (for example after
+    switching accounts) is bound to the session cookie, matching what
+    ``/api/v1/security/csrf_token/`` issues.  Anonymous visitors are bound
+    to the dedicated pre-auth cookie.
+    """
+    cookie_name = getattr(settings, "session_cookie_name", "session")
+    return request.cookies.get(cookie_name, "") or request.cookies.get(
+        _CSRF_SESSION_COOKIE_NAME, ""
+    )
+
+
+def _login_referer_ok(request: Request[Any, Any, Any]) -> bool:
+    """Return whether a login POST carries a same-origin ``Referer``/``Origin``.
+
+    Only enforced over HTTPS, mirroring ``WTF_CSRF_SSL_STRICT``: local
+    development and deployments that terminate TLS without forwarding
+    ``X-Forwarded-Proto`` are unaffected.
+    """
+    from superset.middleware.csrf import _same_origin_https
+
+    if str(request.scope.get("scheme", "http")).lower() != "https":
+        return True
+    host = request.headers.get("host", "")
+    candidate = request.headers.get("referer", "") or request.headers.get("origin", "")
+    return _same_origin_https(candidate, host)
+
+
+def _extract_submitted_csrf_token(
+    request: Request[Any, Any, Any],
+    json_data: dict[str, Any],
+    form_data: Any,
+) -> str:
+    """Pull the CSRF token out of the login submission.
+
+    ``SupersetClient.postForm`` posts it as a hidden ``csrf_token`` field;
+    programmatic clients may send the usual ``X-CSRFToken`` header instead.
+    """
+    header = request.headers.get("X-CSRFToken", "")
+    if header:
+        return str(header)
+    if json_data:
+        return str(json_data.get("csrf_token", "") or "")
+    if form_data:
+        return str(form_data.get("csrf_token", "") or "")
+    return ""
 
 
 class AuthController(Controller):
@@ -230,6 +355,11 @@ class AuthController(Controller):
         )
         import json
 
+        # Issue a CSRF token for the login form.  It is bound to a value the
+        # browser will only send back on a same-site submission, which is what
+        # stops an attacker from logging a victim into an account they control.
+        login_csrf_token, new_csrf_binding = _issue_login_csrf(request, settings)
+
         response = Template(
             template_name="spa.html",
             context={
@@ -239,9 +369,11 @@ class AuthController(Controller):
                 "assets_prefix": settings.static_assets_prefix,
                 "standalone_mode": False,
                 "favicons": [{"href": "/static/assets/images/favicon.png"}],
-                "csrf_token": "",
+                "csrf_token": login_csrf_token,
             },
         )
+        if new_csrf_binding:
+            response.cookies.append(_csrf_session_cookie(settings, new_csrf_binding))
         # Prevent browsers and proxies from caching the login page, which
         # could expose stale auth state.
         response.headers["Cache-Control"] = (
@@ -256,6 +388,11 @@ class AuthController(Controller):
     @post(
         ["/login/", "/login"],
         exclude_from_auth=True,
+        # The login form carries its token in the request *body*
+        # (``SupersetClient.postForm`` posts a hidden ``csrf_token`` input),
+        # which the header-only ``CSRFMiddleware`` cannot see.  Validation
+        # therefore happens in-handler below, once the body is parsed —
+        # this opt disables the middleware check, not the protection.
         opt={"exclude_from_csrf": True},
     )
     async def login_submit(  # noqa: C901
@@ -294,6 +431,43 @@ class AuthController(Controller):
             form_data = await request.form()
             username = str(form_data.get("username", "")).strip()
             password = str(form_data.get("password", ""))
+
+        # CSRF: the token must be bound to a cookie the browser only sends
+        # on a same-site request, so a cross-site forged submission (login
+        # CSRF — logging the victim into an attacker-controlled account)
+        # cannot satisfy it.
+        if _csrf_protection_enabled(settings):
+            from superset.middleware.csrf import validate_csrf_token
+
+            submitted_token = _extract_submitted_csrf_token(
+                request, json_data, form_data
+            )
+            if not validate_csrf_token(
+                submitted_token,
+                _get_secret_key(settings),
+                getattr(settings, "wtf_csrf_time_limit", 604800) or 604800,
+                session_id=_csrf_binding_id(request, settings),
+            ):
+                logger.warning("Login rejected: CSRF token verification failed")
+                return _login_failed_redirect(
+                    next_url=request.query_params.get("next", ""),
+                    message="CSRF token verification failed. Please try again.",
+                )
+
+            # Second, independent wall, matching Flask-WTF's
+            # ``WTF_CSRF_SSL_STRICT`` (on by default, and upstream's login form
+            # is not CSRF-exempt so it gets this too). ``/login`` sits in the
+            # middleware's exempt list — the token arrives in the body, which
+            # the header-only middleware cannot read — and that early return
+            # skips the middleware's own referer check, so it is applied here.
+            # This is the layer that stops a forged cross-site submission even
+            # if a token ever leaks.
+            if not _login_referer_ok(request):
+                logger.warning("Login rejected: cross-origin or missing referer")
+                return _login_failed_redirect(
+                    next_url=request.query_params.get("next", ""),
+                    message="CSRF token verification failed. Please try again.",
+                )
 
         # Read the ``next`` redirect target from query params or form data.
         next_url = request.query_params.get("next", "")
@@ -663,8 +837,8 @@ class AuthController(Controller):
 
         Additionally invalidates the user's Redis cache and writes a
         token-blacklist timestamp so that any previously issued JWT
-        access tokens (``type="access"``) are rejected by the auth
-        middleware if their ``iat`` is earlier than the blacklist entry.
+        access/refresh tokens or session cookies are rejected once their
+        ``iat`` (or, for legacy cookies, unconditionally) predates it.
         """
         settings: SupersetSettings = state.settings
         cookie_name = getattr(settings, "session_cookie_name", "session")
@@ -675,11 +849,24 @@ class AuthController(Controller):
             cookie_value = request.cookies.get(cookie_name)
             user_id: int | None = None
 
-            # Try JWT decode first (Liteset-native session cookies)
+            # Try JWT decode first (Liteset-native session cookies).
+            # ``type`` and ``exp`` are required for the same reason the auth
+            # middleware requires them: other SECRET_KEY-signed JWTs carry a
+            # ``user_id`` too, and the database OAuth2 ``state`` travels in a
+            # URL to a third-party IdP.  Accepting one here would let anybody
+            # holding a leaked state token blacklist that user's tokens for
+            # the blacklist TTL — an unauthenticated, repeatable account
+            # lock-out, since this route needs no authentication.
             if cookie_value:
                 try:
-                    payload = jwt.decode(cookie_value, secret_key, algorithms=["HS256"])
-                    user_id = payload.get("user_id")
+                    payload = jwt.decode(
+                        cookie_value,
+                        secret_key,
+                        algorithms=["HS256"],
+                        options={"require": ["exp"]},
+                    )
+                    if payload.get("type") == "session":
+                        user_id = payload.get("user_id")
                 except Exception:  # noqa: BLE001, S110
                     pass
 
@@ -690,17 +877,29 @@ class AuthController(Controller):
                 decoder = FlaskSessionDecoder(secret_key=secret_key)
                 user_id = decoder.get_user_id(cookie_value)
 
+            # Fallback: a Bearer-only client (no session cookie at all) --
+            # without this, logging out of the JWT API never wrote a
+            # blacklist entry, so a stolen access/refresh token stayed
+            # valid indefinitely.
+            if user_id is None:
+                user_id = _user_id_from_bearer_token(request, secret_key)
+
             if user_id is not None:
                 redis = getattr(state, "redis", None)
                 if redis is not None:
                     # Invalidate cached user object
                     await redis.delete(f"auth:user:{user_id}")
                     # Write token blacklist timestamp so that the auth
-                    # middleware rejects access tokens issued before this
-                    # moment.  TTL matches the longest token lifetime
-                    # (jwt_refresh_token_expires, default 30 days).
-                    blacklist_ttl: int = getattr(
-                        settings, "jwt_refresh_token_expires", 86400 * 30
+                    # middleware rejects tokens/cookies issued before this
+                    # moment.  TTL must cover the longest-lived credential
+                    # that could still be presented -- the refresh token
+                    # (default 30d) or the session cookie (default 31d),
+                    # whichever is longer, or a cookie minted just before
+                    # the refresh-token TTL boundary would silently become
+                    # valid again a day before it actually expires.
+                    blacklist_ttl: int = max(
+                        getattr(settings, "jwt_refresh_token_expires", 86400 * 30),
+                        getattr(settings, "session_max_age", _DEFAULT_SESSION_MAX_AGE),
                     )
                     now_ts = int(datetime.now(timezone.utc).timestamp())
                     await redis.set(
@@ -728,7 +927,41 @@ class AuthController(Controller):
         return redirect
 
 
-def _login_failed_redirect(next_url: str = "") -> Redirect:
+def _user_id_from_bearer_token(
+    request: Request[Any, Any, Any],
+    secret_key: str,
+) -> int | None:
+    """Best-effort ``user_id`` extraction from an ``Authorization: Bearer``
+    access or refresh token, for logout's Bearer-only client path.
+
+    Accepts either ``type="access"`` or ``type="refresh"`` (both carry the
+    user in the ``sub`` claim) since either can show up at logout time.
+    Returns ``None`` on any decode failure -- this is a best-effort lookup
+    for *which* user's blacklist entry to write, not an authentication
+    decision.
+    """
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return None
+    token = auth_header[7:]
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, secret_key, algorithms=["HS256"])
+    except Exception:  # noqa: BLE001
+        return None
+    if payload.get("type") not in ("access", "refresh"):
+        return None
+    sub = payload.get("sub")
+    if sub is None:
+        return None
+    try:
+        return int(sub)
+    except (ValueError, TypeError):
+        return None
+
+
+def _login_failed_redirect(next_url: str = "", message: str = "") -> Redirect:
     """Return a redirect to /login/ with a flash cookie for the error message.
 
     The GET /login/ handler reads the ``_flash`` cookie, includes it in
@@ -737,7 +970,9 @@ def _login_failed_redirect(next_url: str = "") -> Redirect:
 
     If *next_url* is provided, it is preserved as a query parameter on the
     redirect so the user can be sent to their intended destination after a
-    successful re-login attempt.
+    successful re-login attempt.  *message* overrides the generic invalid-login
+    text for failures that are not a bad credential (e.g. a stale CSRF token),
+    where telling the user what actually happened avoids a confusing loop.
     """
     import urllib.parse
 
@@ -754,7 +989,7 @@ def _login_failed_redirect(next_url: str = "") -> Redirect:
     redirect.cookies.append(
         Cookie(
             key=_FLASH_COOKIE_NAME,
-            value=urllib.parse.quote(_INVALID_LOGIN_MESSAGE),
+            value=urllib.parse.quote(message or _INVALID_LOGIN_MESSAGE),
             max_age=60,  # short-lived; consumed on next GET /login/
             path="/",
             httponly=True,

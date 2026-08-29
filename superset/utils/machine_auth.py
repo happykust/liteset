@@ -238,6 +238,13 @@ class MachineAuthProvider:
 
         now = datetime.now(timezone.utc)
         payload = {
+            # ``type`` is mandatory: the auth middleware now refuses any
+            # SECRET_KEY-signed JWT that does not declare itself a session,
+            # so that unrelated tokens signed with the same key (the database
+            # OAuth2 ``state``, which travels in a URL to a third party)
+            # cannot be replayed as one. Must stay in step with
+            # ``superset.controllers.auth._create_session_cookie``.
+            "type": "session",
             "user_id": int(user_id),
             "iat": now,
             "exp": now + timedelta(seconds=int(max_age)),

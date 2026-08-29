@@ -44,6 +44,7 @@ from superset.models.security import (
     PermissionView,
     ViewMenu,
 )
+from superset.security.auth_cache import bump_auth_epoch
 from superset.security.permissions import (
     CATALOG_ACCESS,
     DATABASE_ACCESS,
@@ -217,12 +218,20 @@ class AsyncPermissionManager:
         session: AsyncSession,
         permission_name: str,
         view_menu_name: str,
+        redis: Any = None,
     ) -> None:
         """Delete PermissionView + role associations + orphaned ViewMenu.
 
         1. Remove all role associations (ab_permission_view_role)
         2. Delete the PermissionView row
         3. Delete the orphaned ViewMenu row
+
+        *redis* is optional and forwarded to :meth:`_delete_pvm` to
+        invalidate the Redis auth cache (``bump_auth_epoch``) -- callers
+        that have a request-scoped Redis client (``state.redis``) should
+        pass it; callers that don't (e.g. sync-on-import paths) leave the
+        cache to expire on its normal TTL, same as before this parameter
+        existed.
         """
         pvm = await AsyncPermissionManager._find_permission_view_menu(
             session, permission_name, view_menu_name
@@ -230,10 +239,14 @@ class AsyncPermissionManager:
         if pvm is None:
             return
 
-        await AsyncPermissionManager._delete_pvm(session, pvm)
+        await AsyncPermissionManager._delete_pvm(session, pvm, redis=redis)
 
     @staticmethod
-    async def _delete_pvm(session: AsyncSession, pvm: PermissionView) -> None:
+    async def _delete_pvm(
+        session: AsyncSession,
+        pvm: PermissionView,
+        redis: Any = None,
+    ) -> None:
         """Delete a specific PermissionView and its role associations."""
         view_menu_id = pvm.view_menu_id
 
@@ -255,6 +268,10 @@ class AsyncPermissionManager:
             await session.execute(delete(ViewMenu).where(ViewMenu.id == view_menu_id))
 
         await session.flush()
+
+        # Removing role associations affects an unbounded set of cached
+        # users, same as the REST CRUD paths in permission_view.py / role.py.
+        await bump_auth_epoch(redis)
 
         logger.info("Deleted PVM id=%s (view_menu_id=%s)", pvm.id, view_menu_id)
 

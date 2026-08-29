@@ -23,6 +23,7 @@ from typing import Any
 
 import msgspec
 from litestar import Controller, delete, get, post, put
+from litestar.datastructures import State
 from litestar.di import Provide
 
 from superset.controllers.base import build_rison_query_params, extract_pagination
@@ -35,6 +36,7 @@ from superset.schemas.security import (
     ViewMenuResponse,
     ViewMenusSearchResponse,
 )
+from superset.security.auth_cache import bump_auth_epoch
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +213,7 @@ class ViewMenuController(Controller):
         vm_dao: Any,
         pk: int,
         data: ViewMenuPutBody,
+        state: State,
     ) -> dict[str, Any]:
         """PUT /api/v1/security/resources/{pk} -- update a view menu.
 
@@ -229,6 +232,9 @@ class ViewMenuController(Controller):
                 f"Database exception occurred: {exc}"
             ) from exc
 
+        # A role / permission / group change affects an unbounded set of
+        # users, so invalidate every cached authorization payload at once.
+        await bump_auth_epoch(getattr(state, "redis", None))
         await event_logger.alog_with_context("view_menu.update", object_ref=str(pk))
         return {"result": {"name": updated.name}}
 
@@ -244,6 +250,7 @@ class ViewMenuController(Controller):
         self,
         vm_dao: Any,
         pk: int,
+        state: State,
     ) -> dict[str, str]:
         """DELETE /api/v1/security/resources/{pk} -- delete a view menu.
 
@@ -262,5 +269,9 @@ class ViewMenuController(Controller):
                 f"Database exception occurred: {exc}"
             ) from exc
 
+        # Deleting a view menu FK-cascades ab_permission_view ->
+        # ab_permission_view_role, affecting an unbounded set of users, so
+        # invalidate every cached authorization payload at once.
+        await bump_auth_epoch(getattr(state, "redis", None))
         await event_logger.alog_with_context("view_menu.delete", object_ref=str(pk))
         return {"message": "OK"}
