@@ -195,7 +195,14 @@ describe('Native filters', () => {
         cy.get('.ant-collapse-content-box').should('be.visible');
       };
 
-      const selectRangeTypeOption = (label: string) => {
+      const selectRangeTypeOption = (
+        label: string,
+        option: string | RegExp = label,
+      ) => {
+        cy.get('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').should(
+          'not.exist',
+        );
+
         cy.contains('Range Type')
           .should('be.visible')
           .closest('.ant-form-item')
@@ -203,9 +210,17 @@ describe('Native filters', () => {
             cy.get('.ant-select-selector').click();
           });
 
-        cy.get('.ant-select-dropdown:visible')
-          .contains('.ant-select-item-option', label)
+        cy.contains(
+          '.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option',
+          option,
+        )
+          .should('be.visible')
           .click();
+
+        cy.contains('Range Type')
+          .closest('.ant-form-item')
+          .find('.ant-select-selection-item')
+          .should('contain.text', label);
       };
 
       const applyAndAssertInputs = (from: string, to: string) => {
@@ -263,19 +278,7 @@ describe('Native filters', () => {
         );
 
         expandFilterConfiguration();
-
-        cy.contains('Range Type')
-          .should('be.visible')
-          .closest('.ant-form-item')
-          .within(() => {
-            cy.get('.ant-select-selector').click({ force: true });
-          });
-
-        cy.get('.ant-select-dropdown:visible .ant-select-item-option')
-          .contains(/^Slider$/)
-          .click({ force: true });
-
-        cy.get('.ant-select-selector').should('contain.text', 'Slider');
+        selectRangeTypeOption('Slider', /^Slider$/);
 
         saveNativeFilterSettings([]);
 
