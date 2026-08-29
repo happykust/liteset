@@ -49,6 +49,7 @@ from superset.exceptions import (
 )
 from superset.utils import core as utils
 from superset.utils.dates import now_as_float
+from superset.utils.threadpool import run_sqllab_blocking
 
 if TYPE_CHECKING:
     from superset.db.daos.query import AsyncQueryDAO
@@ -325,8 +326,13 @@ class ExecuteSQLCommand(AsyncBaseCommand[dict[str, Any]]):
 
         sqllab_timeout = self._get_sqllab_timeout()
         try:
+            # Runs on the dedicated SQL Lab pool.  ``wait_for`` can only
+            # abandon the *result* — the driver call keeps running in its
+            # thread until the database returns — so the pool is bounded and
+            # kept separate from the general offload executor, and its slot is
+            # only handed on once the thread actually finishes.
             payload = await asyncio.wait_for(
-                asyncio.to_thread(
+                run_sqllab_blocking(
                     execute_sql_statements,
                     query_id,
                     rendered_sql,

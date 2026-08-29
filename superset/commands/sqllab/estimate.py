@@ -35,6 +35,7 @@ from superset.exceptions import (
     SupersetErrorException,
     SupersetTimeoutException,
 )
+from superset.utils.threadpool import run_sqllab_blocking
 
 if TYPE_CHECKING:
     from superset.db.daos.database import AsyncDatabaseDAO
@@ -151,6 +152,7 @@ class EstimateQueryCostCommand(AsyncBaseCommand[list[dict[str, Any]]]):
         from superset.commands.sqllab._shared import get_engine_name
         from superset.sql.parse import SQLScript
         from superset.utils.database import (
+            database_has_async_driver,
             get_async_connection,
             get_engine_spec_for_database,
         )
@@ -179,27 +181,58 @@ class EstimateQueryCostCommand(AsyncBaseCommand[list[dict[str, Any]]]):
         engine_name = get_engine_name(self._database)
         parsed_script = SQLScript(sql, engine=engine_name)
 
+        def _statement_sql(statement: Any) -> str:
+            statement_sql = statement.format(
+                comments=getattr(engine_spec, "allows_sql_comments", True),
+            )
+            if hasattr(self._database, "mutate_sql_based_on_config"):
+                try:
+                    statement_sql = self._database.mutate_sql_based_on_config(
+                        statement_sql,
+                        is_split=True,
+                    )
+                except TypeError:
+                    statement_sql = self._database.mutate_sql_based_on_config(
+                        statement_sql
+                    )
+            return statement_sql
+
+        statements = [_statement_sql(s) for s in parsed_script.statements]
+
+        if not database_has_async_driver(self._database):
+            # Sync-only engine (Trino, ClickHouse, …).  ``create_async_engine``
+            # rejects these URIs, so estimate over the sync engine — Trino and
+            # Presto are precisely the engines that support cost estimation, so
+            # this branch is the common one here.  It runs on the dedicated SQL
+            # Lab pool: the outer ``wait_for`` abandons the result on timeout
+            # but cannot stop the driver call, so it must not consume a slot in
+            # the general offload executor.
+            return await run_sqllab_blocking(
+                self._estimate_sync, engine_spec, statements
+            )
+
         results: list[dict[str, Any]] = []
         async with get_async_connection(self._database) as (conn, _):
-            for statement in parsed_script.statements:
-                statement_sql = statement.format(
-                    comments=getattr(engine_spec, "allows_sql_comments", True),
-                )
-                if hasattr(self._database, "mutate_sql_based_on_config"):
-                    try:
-                        statement_sql = self._database.mutate_sql_based_on_config(
-                            statement_sql,
-                            is_split=True,
-                        )
-                    except TypeError:
-                        statement_sql = self._database.mutate_sql_based_on_config(
-                            statement_sql
-                        )
-
+            for statement_sql in statements:
                 cost = await engine_spec.estimate_statement_cost(conn, statement_sql)
                 results.append(cost or {})
 
         return results
+
+    def _estimate_sync(
+        self,
+        engine_spec: Any,
+        statements: list[str],
+    ) -> list[dict[str, Any]]:
+        """Blocking cost estimation over a synchronous connection."""
+        from superset.utils.database import get_sync_connection
+
+        collected: list[dict[str, Any]] = []
+        with get_sync_connection(self._database) as (conn, _):
+            for statement_sql in statements:
+                cost = engine_spec.estimate_statement_cost_sync(conn, statement_sql)
+                collected.append(cost or {})
+        return collected
 
     def _is_cost_estimate_allowed(
         self, engine_spec: Any, extra: dict[str, Any]
