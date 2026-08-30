@@ -341,6 +341,16 @@ InternalRepresentation = TypeVar("InternalRepresentation")
 TBaseSQLStatement = TypeVar("TBaseSQLStatement")  # pylint: disable=invalid-name
 
 
+#: Opaque ``Command`` verbs that read data or only touch session/connection
+#: state.  Every other ``Command`` is treated as mutating (fail-closed) by
+#: :meth:`SQLStatement.is_mutating`.  ``EXPLAIN`` is here because plain
+#: ``EXPLAIN`` runs nothing; the ``EXPLAIN ANALYZE`` case that does run its
+#: inner statement is upgraded to mutating separately.
+_READ_ONLY_COMMAND_NAMES = frozenset(
+    {"EXPLAIN", "SHOW", "SET", "USE", "DESCRIBE", "DESC", "PRAGMA"}
+)
+
+
 class BaseSQLStatement(Generic[InternalRepresentation]):
     """
     Base class for SQL statements.
@@ -672,6 +682,9 @@ class SQLStatement(BaseSQLStatement[exp.Expression]):
             exp.Drop,
             exp.TruncateTable,
             exp.Alter,
+            exp.Grant,
+            exp.Revoke,
+            exp.Copy,
         )
 
         for node_type in mutating_nodes:
@@ -706,6 +719,19 @@ class SQLStatement(BaseSQLStatement[exp.Expression]):
                 statement=analyzed_sql,
                 engine=self.engine,
             ).is_mutating()
+
+        # sqlglot represents anything it cannot fully parse as an opaque
+        # ``Command``.  A handful of these are read-only or session-scoped and
+        # must stay non-mutating; everything else in this bucket -- ``CALL``,
+        # ``VACUUM``, ``REFRESH``, ``COPY ... TO/FROM PROGRAM`` on dialects
+        # without a dedicated node, and any statement sqlglot does not
+        # recognise at all -- is treated as mutating so the ``allow_dml`` gate
+        # fails closed rather than open.
+        if (
+            isinstance(self._parsed, exp.Command)
+            and self._parsed.name.upper() not in _READ_ONLY_COMMAND_NAMES
+        ):
+            return True
 
         return False
 

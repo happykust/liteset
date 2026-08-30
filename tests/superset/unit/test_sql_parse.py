@@ -1304,6 +1304,79 @@ def test_is_mutating_anonymous_block(sql: str, expected: bool) -> None:
     assert SQLStatement(sql, "postgresql").is_mutating() == expected
 
 
+@pytest.mark.parametrize(
+    "sql, engine",
+    [
+        # sqlglot parses these as dedicated nodes.
+        ("GRANT ALL ON t TO PUBLIC", "postgresql"),
+        ("GRANT SELECT ON t TO alice", "mysql"),
+        ("REVOKE ALL ON t FROM PUBLIC", "postgresql"),
+        ("REVOKE SELECT ON t FROM alice", "mysql"),
+        ("COPY t TO '/tmp/x'", "postgresql"),
+        ("COPY t FROM PROGRAM 'sh -c id'", "postgresql"),
+        ("COPY (SELECT 1) TO PROGRAM 'id > /tmp/pwned'", "postgresql"),
+        # sqlglot cannot parse these and falls back to an opaque Command whose
+        # verb is not on the read-only allow-list.
+        ("CALL do_stuff()", "postgresql"),
+        ("VACUUM t", "postgresql"),
+        ("VACUUM FULL t", "postgresql"),
+        ("REFRESH MATERIALIZED VIEW mv", "postgresql"),
+        ("REINDEX TABLE t", "postgresql"),
+    ],
+)
+def test_is_mutating_side_effecting_commands(sql: str, engine: str) -> None:
+    """Side-effecting statements that are not a plain ``SELECT`` must count as
+    mutating, so the SQL Lab ``allow_dml`` gate rejects them.
+
+    ``is_mutating`` historically only knew the DML/DDL node types, so
+    ``GRANT``, ``REVOKE``, ``COPY ... TO/FROM PROGRAM``, ``CALL``, ``VACUUM``
+    and friends -- which sqlglot represents as a dedicated node or as an opaque
+    ``Command`` -- slipped through as non-mutating and reached the warehouse
+    even with ``allow_dml`` off.
+    """
+    assert SQLStatement(sql, engine).is_mutating() is True
+
+
+@pytest.mark.parametrize(
+    "sql, engine",
+    [
+        # Read / session / metadata verbs. sqlglot represents several of these
+        # as an opaque ``Command`` too, so the fix must not sweep them up.
+        ("EXPLAIN SELECT 1", "postgresql"),
+        ("EXPLAIN SELECT * FROM foo", "trino"),
+        ("SHOW search_path", "postgresql"),
+        ("SHOW SCHEMAS", "trino"),
+        ("SHOW LOCKS test EXTENDED", "base"),
+        ("SET search_path TO public", "postgresql"),
+        ("SET statement_timeout = 1000", "postgresql"),
+        ("SET SESSION optimization_level = '3'", "trino"),
+        ("SET hivevar:desc='Legislators'", "base"),
+        ("USE mydb", "mysql"),
+        ("DESCRIBE t", "mysql"),
+    ],
+)
+def test_is_mutating_benign_commands_not_flagged(sql: str, engine: str) -> None:
+    """Read-only, session and metadata statements must stay non-mutating, or
+    the ``allow_dml`` gate would reject legitimate SQL Lab queries."""
+    assert SQLStatement(sql, engine).is_mutating() is False
+
+
+@pytest.mark.parametrize(
+    "script, engine, expected",
+    [
+        ("SELECT 1; SELECT 2", "postgresql", False),
+        ("SELECT 1; GRANT ALL ON t TO PUBLIC", "postgresql", True),
+        ("SELECT 1; CALL do_stuff()", "postgresql", True),
+        ("SELECT 1; COPY t TO PROGRAM 'id'", "postgresql", True),
+        ("EXPLAIN SELECT 1; SHOW search_path", "postgresql", False),
+    ],
+)
+def test_has_mutation_side_effecting(script: str, engine: str, expected: bool) -> None:
+    """A script is mutating if *any* statement is -- a benign read followed by
+    a side-effecting command must still be caught."""
+    assert SQLScript(script, engine).has_mutation() is expected
+
+
 def test_optimize() -> None:
     """
     Test that the `optimize` method works as expected.
