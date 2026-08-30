@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -987,7 +987,9 @@ async def test_is_token_blacklisted_semantics(
     ``<`` (which would let a token minted in the same second survive logout) is
     caught."""
     mapping = (
-        {"auth:token_blacklist:7": str(blacklist_ts)} if blacklist_ts is not None else {}
+        {"auth:token_blacklist:7": str(blacklist_ts)}
+        if blacklist_ts is not None
+        else {}
     )
     result = await SupersetAuthMiddleware._is_token_blacklisted(
         _MapRedis(mapping), 7, token_iat
@@ -1029,4 +1031,3 @@ async def test_is_user_blacklisted_fails_open_and_warns(caplog) -> None:
         result = await SupersetAuthMiddleware._is_user_blacklisted(_RaisingRedis(), 7)
     assert result is False
     assert any(rec.levelno >= logging.WARNING for rec in caplog.records)
-
