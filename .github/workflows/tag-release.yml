@@ -37,7 +37,6 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.meta.outputs.version }}
-      base_version: ${{ steps.meta.outputs.base_version }}
       git_ref: ${{ steps.meta.outputs.git_ref }}
       push_latest: ${{ steps.meta.outputs.push_latest }}
     steps:
@@ -66,18 +65,20 @@ jobs:
         run: |
           VERSION="${{ steps.ref.outputs.raw_version }}"
           VERSION="${VERSION#v}"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(rc[0-9]+)?$ ]]; then
-            echo "::error::Release '${VERSION}' is not a MAJOR.MINOR.PATCH[rcN] version."
+          # Liteset versions are ``<upstream-base>.postN`` (PEP 440): the base
+          # is the upstream Superset version this edition ports (6.0.0), and
+          # ``.postN`` is our edition counter.  A pre-release of the base may
+          # carry an ``rcN`` before the ``.postN`` segment.
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(rc[0-9]+)?(\.post[0-9]+)?$ ]]; then
+            echo "::error::Release '${VERSION}' is not a PEP 440 X.Y.Z[rcN][.postN] version."
             exit 1
           fi
-          BASE_VERSION="${VERSION%%rc*}"
           PKG_VERSION=$(jq -r .version superset-frontend/package.json)
-          if [ "$BASE_VERSION" != "$PKG_VERSION" ]; then
-            echo "::error::Release '${VERSION}' carries base version '${BASE_VERSION}', but superset-frontend/package.json holds '${PKG_VERSION}'. Bump it there first, then retag."
+          if [ "$VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Release '${VERSION}' does not match superset-frontend/package.json ('${PKG_VERSION}'), which is what setup.py publishes. Bump it there first, then retag."
             exit 1
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "base_version=${BASE_VERSION}" >> $GITHUB_OUTPUT
           echo "git_ref=${{ steps.ref.outputs.git_ref }}" >> $GITHUB_OUTPUT
           echo "push_latest=${{ steps.ref.outputs.push_latest }}" >> $GITHUB_OUTPUT
 
