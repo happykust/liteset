@@ -15,7 +15,11 @@ jobs:
     - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
       uses: actions/checkout@v4
       with:
-        persist-credentials: false
+        # The latest-tag action force-pushes the ``latest`` git tag, so the
+        # checkout must keep its credentials (default) rather than strip them,
+        # and needs full history so the tag walk does not see a grafted HEAD.
+        persist-credentials: true
+        fetch-depth: 0
         submodules: recursive
 
     - name: Check for latest tag
