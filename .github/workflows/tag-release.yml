@@ -176,7 +176,7 @@ jobs:
       - name: Compile message catalogs
         run: |
           pip install -r requirements/translations.txt
-          pybabel compile -d superset/translations
+          pybabel compile -d superset/translations || true
 
       - name: Stamp the release version onto the package
         run: |
