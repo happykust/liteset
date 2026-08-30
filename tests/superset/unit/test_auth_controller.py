@@ -887,3 +887,55 @@ class TestOAuthAuthorizedRoute:
         assert result.url.startswith("/login/")
         assert session.committed is False
         assert "session" not in {c.key for c in result.cookies}
+
+
+# ---------------------------------------------------------------------------
+# Logout token revocation write (finding: revocation must be robust + visible)
+# ---------------------------------------------------------------------------
+
+
+class TestRevokeTokens:
+    """``AuthController._revoke_tokens`` writes the token blacklist entry and
+    clears the cached user on logout. It must (a) actually write both keys,
+    (b) use the caller-supplied TTL, and (c) never raise into the logout
+    handler while still logging a failed revocation loudly."""
+
+    async def test_writes_blacklist_and_clears_cache(self) -> None:
+        from unittest.mock import AsyncMock
+
+        redis = AsyncMock()
+        await AuthController._revoke_tokens(redis, 7, 3600)
+
+        redis.delete.assert_awaited_once_with("auth:user:7")
+        redis.set.assert_awaited_once()
+        (key, value), kwargs = redis.set.call_args
+        assert key == "auth:token_blacklist:7"
+        assert int(value) > 0  # a unix timestamp, not a placeholder
+        assert kwargs.get("ex") == 3600
+
+    async def test_blacklist_write_survives_cache_delete_failure(self) -> None:
+        """A failure deleting the cached-user key must not prevent the
+        blacklist write -- otherwise a stolen token stays valid because the
+        two operations shared one try/except."""
+        from unittest.mock import AsyncMock
+
+        redis = AsyncMock()
+        redis.delete.side_effect = ConnectionError("cache key gone")
+        await AuthController._revoke_tokens(redis, 7, 3600)
+
+        redis.set.assert_awaited_once()
+        (key, _value), _kwargs = redis.set.call_args
+        assert key == "auth:token_blacklist:7"
+
+    async def test_logs_loudly_when_blacklist_write_fails(self, caplog) -> None:
+        import logging
+        from unittest.mock import AsyncMock
+
+        redis = AsyncMock()
+        redis.set.side_effect = ConnectionError("redis down")
+
+        with caplog.at_level(logging.WARNING, logger="superset.controllers.auth"):
+            # Must NOT raise -- logout has to complete for the user.
+            await AuthController._revoke_tokens(redis, 7, 3600)
+
+        assert any(rec.levelno >= logging.WARNING for rec in caplog.records)

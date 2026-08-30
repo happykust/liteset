@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import json
 import time
 from dataclasses import dataclass, field
@@ -943,3 +944,89 @@ async def test_jwt_cookie_with_wrong_type_claim_is_rejected(app):
             resp = await client.get("/protected", cookies={"session": cookie})
             assert resp.status_code == 200
             assert resp.json()["username"] == "anon"
+
+
+# ---------------------------------------------------------------------------
+# Token / user blacklist: revocation semantics + fail-open visibility
+# ---------------------------------------------------------------------------
+
+
+class _RaisingRedis:
+    """A Redis stand-in whose ``get`` always fails, to exercise the
+    availability (fail-open) branch of the blacklist checks."""
+
+    async def get(self, *args: object, **kwargs: object) -> object:
+        raise ConnectionError("redis unavailable")
+
+
+class _MapRedis:
+    """Minimal async Redis stand-in backed by an in-memory dict."""
+
+    def __init__(self, mapping: dict[str, str]) -> None:
+        self._m = mapping
+
+    async def get(self, key: str) -> str | None:
+        return self._m.get(key)
+
+
+@pytest.mark.parametrize(
+    "blacklist_ts, token_iat, expected",
+    [
+        (None, 1000, False),  # no logout recorded -> token accepted
+        (1000, 999, True),  # issued before the logout instant -> revoked
+        (1000, 1000, True),  # issued *at* the logout instant -> revoked
+        (1000, 1001, False),  # issued after the logout instant -> accepted
+        (1000, 100000, False),  # much later -> accepted
+    ],
+)
+async def test_is_token_blacklisted_semantics(
+    blacklist_ts: int | None, token_iat: int, expected: bool
+) -> None:
+    """A token is revoked iff it was issued at or before the recorded logout
+    timestamp. Pins the ``token_iat <= blacklist_ts`` comparison so a flip to
+    ``<`` (which would let a token minted in the same second survive logout) is
+    caught."""
+    mapping = (
+        {"auth:token_blacklist:7": str(blacklist_ts)} if blacklist_ts is not None else {}
+    )
+    result = await SupersetAuthMiddleware._is_token_blacklisted(
+        _MapRedis(mapping), 7, token_iat
+    )
+    assert result is expected
+
+
+async def test_is_token_blacklisted_fails_open_and_warns(caplog) -> None:
+    """A Redis outage must not block authentication (fail-open), but the
+    skipped revocation check must be visible at WARNING, not swallowed at
+    DEBUG."""
+    with caplog.at_level(logging.WARNING, logger="superset.middleware.auth"):
+        result = await SupersetAuthMiddleware._is_token_blacklisted(
+            _RaisingRedis(), 7, 1000
+        )
+    assert result is False
+    assert any(rec.levelno >= logging.WARNING for rec in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "mapping, expected",
+    [
+        ({"auth:token_blacklist:7": "1"}, True),
+        ({}, False),
+    ],
+)
+async def test_is_user_blacklisted_presence(
+    mapping: dict[str, str], expected: bool
+) -> None:
+    """The legacy-cookie check revokes on the mere presence of a blacklist
+    entry (no per-token timestamp to compare)."""
+    result = await SupersetAuthMiddleware._is_user_blacklisted(_MapRedis(mapping), 7)
+    assert result is expected
+
+
+async def test_is_user_blacklisted_fails_open_and_warns(caplog) -> None:
+    """Legacy-cookie blacklist check: fail-open on Redis error, but warn."""
+    with caplog.at_level(logging.WARNING, logger="superset.middleware.auth"):
+        result = await SupersetAuthMiddleware._is_user_blacklisted(_RaisingRedis(), 7)
+    assert result is False
+    assert any(rec.levelno >= logging.WARNING for rec in caplog.records)
+

@@ -751,8 +751,12 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
             blacklist_ts = int(blacklist_ts_raw)
             return token_iat <= blacklist_ts
         except Exception:
-            logger.debug(
-                "Redis error checking token blacklist for user %d",
+            # Fail open so a Redis outage cannot lock everyone out, but log at
+            # WARNING: this silently skips token revocation, so an operator must
+            # be able to see it happened.
+            logger.warning(
+                "Redis error checking token blacklist for user %d; "
+                "token revocation NOT enforced for this request",
                 user_id,
             )
             return False
@@ -771,8 +775,9 @@ class SupersetAuthMiddleware(AbstractAuthenticationMiddleware):
         try:
             return await redis.get(f"auth:token_blacklist:{user_id}") is not None
         except Exception:
-            logger.debug(
-                "Redis error checking legacy cookie blacklist for user %d",
+            logger.warning(
+                "Redis error checking legacy cookie blacklist for user %d; "
+                "cookie revocation NOT enforced for this request",
                 user_id,
             )
             return False

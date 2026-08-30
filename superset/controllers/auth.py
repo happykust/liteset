@@ -827,6 +827,43 @@ class AuthController(Controller):
         )
         return redirect
 
+    @staticmethod
+    async def _revoke_tokens(redis: Any, user_id: int, blacklist_ttl: int) -> None:
+        """Revoke every credential for *user_id* on logout.
+
+        Writes ``auth:token_blacklist:{user_id}`` with the current timestamp so
+        the auth middleware rejects any token or cookie issued at or before this
+        moment, and clears the cached user object.
+
+        The two writes are independently guarded: a failure clearing the cache
+        must not skip the blacklist write (a stolen bearer token would otherwise
+        stay valid), and neither failure may propagate into the logout handler,
+        which has to complete for the user regardless.  A failed blacklist write
+        means revocation did not take effect, so it is logged at WARNING rather
+        than swallowed.
+        """
+        try:
+            await redis.delete(f"auth:user:{user_id}")
+        except Exception:
+            logger.warning(
+                "Failed to clear cached user %d on logout", user_id, exc_info=True
+            )
+
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        try:
+            await redis.set(
+                f"auth:token_blacklist:{user_id}",
+                str(now_ts),
+                ex=blacklist_ttl,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to write token blacklist for user %d on logout; "
+                "existing tokens were NOT revoked",
+                user_id,
+                exc_info=True,
+            )
+
     @get(
         ["/logout/", "/logout"],
         exclude_from_auth=True,
@@ -890,28 +927,22 @@ class AuthController(Controller):
             if user_id is not None:
                 redis = getattr(state, "redis", None)
                 if redis is not None:
-                    # Invalidate cached user object
-                    await redis.delete(f"auth:user:{user_id}")
-                    # Write token blacklist timestamp so that the auth
-                    # middleware rejects tokens/cookies issued before this
-                    # moment.  TTL must cover the longest-lived credential
-                    # that could still be presented -- the refresh token
-                    # (default 30d) or the session cookie (default 31d),
-                    # whichever is longer, or a cookie minted just before
-                    # the refresh-token TTL boundary would silently become
-                    # valid again a day before it actually expires.
+                    # TTL must cover the longest-lived credential that could
+                    # still be presented -- the refresh token (default 30d) or
+                    # the session cookie (default 31d), whichever is longer, or
+                    # a cookie minted just before the refresh-token TTL boundary
+                    # would silently become valid again a day before it actually
+                    # expires.
                     blacklist_ttl: int = max(
                         getattr(settings, "jwt_refresh_token_expires", 86400 * 30),
                         getattr(settings, "session_max_age", _DEFAULT_SESSION_MAX_AGE),
                     )
-                    now_ts = int(datetime.now(timezone.utc).timestamp())
-                    await redis.set(
-                        f"auth:token_blacklist:{user_id}",
-                        str(now_ts),
-                        ex=blacklist_ttl,
-                    )
+                    await self._revoke_tokens(redis, user_id, blacklist_ttl)
         except Exception:
-            logger.debug("Failed to invalidate Redis cache on logout")
+            logger.warning(
+                "Failed to resolve user for token revocation on logout",
+                exc_info=True,
+            )
 
         redirect = Redirect(path="/login/")
         # Expire the session cookie by setting max_age=0
